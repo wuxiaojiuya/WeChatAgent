@@ -3,6 +3,7 @@ import {createMemoryConsole} from './memory-console.mjs';
 import {fishNotebookSnapshot} from './fish-notebook-console.mjs';
 import {createSpeechPluginConsole} from './speech-plugin-console.mjs';
 import {createAudioCapabilities} from './audio-capabilities.mjs';
+import {createAudioRuntimeInstaller} from './audio-runtime-installer.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {createRvcModels} from './rvc-models.mjs';
 import {createPersonaApprovals} from './persona-approvals.mjs';
@@ -97,12 +98,13 @@ export function validateConsoleConfig(config, root) {
 
 import {allowedConversation,validateConversationSettings,conversationWorkMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {createNativeVoiceDelivery} from './native-voice-delivery.mjs';
-export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities } = {}) {
+export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions } = {}) {
   const updates=createUpdateChecker({root,fetchImpl});
   const publicDir = path.join(projectRoot, 'public', 'console');
   const pluginInstaller=new PluginInstaller(root);
   const speechChecks=createSpeechPluginConsole({root,fetchImpl,...(speechCapabilities?{readCapabilities:speechCapabilities}:{})});
   const rvcModels=createRvcModels({root});
+  const audioInstaller=createAudioRuntimeInstaller({root,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
   const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport});
   const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels});
@@ -150,7 +152,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     atomic(preferenceFile, { ...previous, pendingApply: true, dshRestartRequired: previous.dshRestartRequired || dsh });
     statusTime = 0;
   };
-  const assertIdle = () => { if(shuttingDown)throw fault('正在退出并停止后台服务，请等待操作完成。',409);if (activeJob || protectingCredential || processRecoveryBusy) throw fault('有操作正在进行，请等它完成后再保存或执行其他操作。', 409); };
+  const assertIdle = () => { if(shuttingDown)throw fault('正在退出并停止后台服务，请等待操作完成。',409);if (activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy()) throw fault('有操作正在进行，请等它完成后再保存或执行其他操作。', 409); };
   const personaApprovals=createPersonaApprovals({root,configFor:()=>snapshot().config,saveConfig:config=>{validateConsoleConfig(config,root);backup(configFile);atomic(configFile,config);statusTime=0;}});
   const chatAdministrator=async(key,config)=>{
     if(!/^wechat:private:[1-9]\d{0,15}$/.test(key??''))return null;
@@ -440,6 +442,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         assets['/liquid-glass.js']=['liquid-glass.js','text/javascript; charset=utf-8'];assets['/liquid-glass.css']=['liquid-glass.css','text/css; charset=utf-8'];
         assets['/dsh-access.js']=['dsh-access.js','text/javascript; charset=utf-8'];assets['/extensions.js']=['extensions.js','text/javascript; charset=utf-8'];
         assets['/audio-capabilities.js']=['audio-capabilities.js','text/javascript; charset=utf-8'];
+        assets['/audio-runtime.js']=['audio-runtime.js','text/javascript; charset=utf-8'];
         assets['/music-source.js']=['music-source.js','text/javascript; charset=utf-8'];
         assets['/voice-emotion.mjs']=['voice-emotion.mjs','text/javascript; charset=utf-8'];
         assets['/singing-voice.mjs']=['singing-voice.mjs','text/javascript; charset=utf-8'];
@@ -449,6 +452,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method === 'GET' && route === '/api/info') return reply(200, { project: 'WeChatAgent Console', root, version: 1, token: csrf });
       if (req.headers['x-console-token'] !== csrf) throw fault('控制台连接已更新，请刷新页面。', 401);
+      if(req.method==='GET'&&route==='/api/audio-runtime/status')return reply(200,audioInstaller.status());
       if(req.method==='GET'&&route==='/api/updates')return reply(200,await updates.check());
       if(req.method==='GET'&&route==='/api/assistant-feedback')return reply(200,feedbackSnapshot(root));
       if(req.method==='GET'&&route==='/api/memory')return reply(200,memoryView.overview());
@@ -566,6 +570,10 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if(route==='/api/updates/check')return reply(200,await updates.check({force:true}));
       if (route === '/api/jobs') return reply(202, startJob(body));
       assertIdle();
+      if(route==='/api/audio-runtime/start'){
+        if(musicCapabilities.isBusy?.()||audioCapabilities.isBusy?.())throw fault('请等待音频任务完成，再安装或修复。',409);
+        return reply(202,await audioInstaller.start(body));
+      }
       if(route==='/api/persona-proposals/propose')return reply(200,personaApprovals.propose(body));
       if(route==='/api/persona-proposals/decide')return reply(200,personaApprovals.decide(body.message,body.accountScope));
       if(route==='/api/persona-proposals/ack')return reply(200,personaApprovals.acknowledge(body.id));
@@ -830,8 +838,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     };
     listen();
   });
-  server.on('close',()=>{nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();rvcModels.close();});
-  return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy, close: () => { server.closeAllConnections(); server.close(); }, start };
+  server.on('close',()=>{audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();rvcModels.close();});
+  return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

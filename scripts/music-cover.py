@@ -19,7 +19,11 @@ quality_module.loader.exec_module(quality)
 
 ROOT = Path(__file__).resolve().parents[1] / "state/maintenance/audio-capabilities/feiyu-cover"
 SERVER = ROOT / "source/astrbot_plugin_feiyu_voice-76774b499f7d306454562d56348dd63399b6d7e8/server"
-FFMPEG = Path("C:/ffmpeg-tools/bin/ffmpeg.exe")
+try:
+    import imageio_ffmpeg
+    FFMPEG = Path(imageio_ffmpeg.get_ffmpeg_exe())
+except ImportError:
+    FFMPEG = Path("C:/ffmpeg-tools/bin/ffmpeg.exe")
 
 
 def sha(path):
@@ -110,7 +114,7 @@ def main():
     if a.separate_only:
         print(out / "original-vocals.wav", flush=True)
         return
-    os.environ["PATH"] = str(ROOT / "tools/mingit/cmd") + os.pathsep + str(FFMPEG.parent) + os.pathsep + os.environ["PATH"]
+    os.environ["PATH"] = os.pathsep.join([str(ROOT / "git/cmd"), str(ROOT / "tools/mingit/cmd"), str(FFMPEG.parent), os.environ.get("PATH", "")])
     os.environ["PYTHONIOENCODING"] = "utf-8"
     rvc_input = out / "original-vocals.wav"
     reference, reference_rate = sf.read(rvc_input, always_2d=True)

@@ -255,7 +255,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     return {audio:fs.readFileSync(file).toString('base64'), mime:'audio/mpeg', seconds:job.seconds, title:job.title};
   }
   const cleanupTimer=setInterval(()=>{try{cleanup();}catch{}},3600000);cleanupTimer.unref();cleanup();
-  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,
+  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,isBusy:()=>!!active,
     async settled(id) {await jobs.get(id)?.finished; return getJob(id);},
     close() {closed = true;clearInterval(cleanupTimer); for (const controller of controllers) controller.abort();}};
 }

@@ -1,5 +1,7 @@
 # 音频运行环境
 
+当前源码支持在「设置 → 语音与翻唱环境」一键安装、修复或检查 TTS / RVC。安装器自动准备两套独立的 Windows x64 CPU 环境、固定版本源码与官方音色，无需自行混装依赖，详见 [安装操作与故障处理](AUDIO_INSTALLER.md)。
+
 音频生成和微信发送是两个环节：肥鱼服务/RVC 生成音频，项目编码后调用 4.1.8.27 Hook 发送微信原生语音条。
 
 需要让 AI 协助安装时，直接提供 [AI 安装指南](AI_INSTALL_GUIDE.md)。其中列出 Windows CPU 基线、独立环境版本、官方模型来源、本机配置与真实音频验收步骤。
@@ -14,6 +16,6 @@
 
 使用上传的 RVC 模型，不直接使用 TTS 音色 ID。QQ/网易云/酷狗音源受服务及账号权限限制。聊天中可直接点歌，由 AI 判断歌曲与版本。
 
-当前 CPU 适配需要在数据工作区的 state/maintenance/audio-capabilities/feiyu-cover/ 准备 venv/Scripts/python.exe、runtime.cpu.json，以及相关依赖、固定源码与基础模型。当前就绪检测还检查 cover_demo.py，兼容转发方式见 AI 安装指南；正式调用入口为 scripts/music-cover.py 和 scripts/music-rvc-worker.py，rvc_worker_cpu.py 是早期实验脚本，不是当前正式链路的前置文件。这是现有推理环境适配，并非自动下载安装器。
+当前 CPU 适配需要在数据工作区的 state/maintenance/audio-capabilities/feiyu-cover/ 准备 venv/Scripts/python.exe、runtime.cpu.json，以及相关依赖、固定源码与基础模型。一键安装器会准备这些文件和兼容入口 cover_demo.py；正式调用入口为 scripts/music-cover.py 和 scripts/music-rvc-worker.py，rvc_worker_cpu.py 是早期实验脚本，不是当前正式链路的前置文件。
 
 v0.1.0 基础包不分发这些环境或权重。部署时重新创建虚拟环境、安装依赖并调整配置路径，不应直接搬运带开发机绝对路径的 venv。缺少依赖时能力页显示未就绪。模型和音源遵循各自的许可及平台规则。

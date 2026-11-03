@@ -157,5 +157,5 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     } catch(error) {if(error.status)throw error;throw fault(requestSignal.aborted?'语音试听已取消或超时。':'无法连接肥鱼本地语音服务，请先启动服务。',502);}
     finally{controller.abort();controllers.delete(controller);}
   }
-  return {snapshot,save,catalog,checkVoice,preview,close(){closed=true;for(const controller of controllers)controller.abort();}};
+  return {snapshot,save,catalog,checkVoice,preview,isBusy:()=>controllers.size>0,close(){closed=true;for(const controller of controllers)controller.abort();}};
 }

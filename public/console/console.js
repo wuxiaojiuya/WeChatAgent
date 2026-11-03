@@ -1,6 +1,7 @@
 import {sessionUsage} from './session-usage.js';
 import {consoleRoute,routeKey,SETTINGS_SECTIONS} from './layout-model.mjs';
 import {createWorkspaceLayout} from './workspace-layout.js';
+import {createAudioRuntimeUI} from './audio-runtime.js';
 import {createMemoryUI} from './memory-view.js';
 import {createFishNotebookUI} from './fish-notebook.js';
 import {createAssistantFeedbackUI} from './assistant-feedback.js';
@@ -31,7 +32,8 @@ const deletePersona=createPersonaDeletion({state,roleSaves,api,modal,closeModal,
 installExternalLinks({report:message=>toast(message)});
 const extensionUI = createExtensionUI({api,modal,closeModal,confirmAction,escapeHtml,icon,state,renderPage,toast,onDshSave:(result,key)=>{state.draft=mergeConversationSave(state.config,state.draft,result.config,key,result.administratorIdentity);state.config=result.config;state.revision=result.revision;updateDraftUI();refreshStatus();},onProjectSave:syncExtensionProject});
 const stickerManagerUI=createStickerManagerUI({api,modal,closeModal,escapeHtml,icon,state,renderPage,toast});
-const workspaceLayout=createWorkspaceLayout({api,state,escapeHtml,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage:typeof sessionUsage==='function'?sessionUsage:()=>'',getCards:settingsCards,contextSettingsCard,feedbackCard:()=>assistantFeedbackUI.card(),connectionsPage,logsPage,toolsPage,dshPage:()=>extensionUI.dshPage(),stickerPage:()=>stickerManagerUI.page()});
+const audioRuntimeUI=createAudioRuntimeUI({api,escapeHtml,toast});
+const workspaceLayout=createWorkspaceLayout({api,state,escapeHtml,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage:typeof sessionUsage==='function'?sessionUsage:()=>'',getCards:settingsCards,contextSettingsCard,feedbackCard:()=>assistantFeedbackUI.card(),connectionsPage,audioRuntimePage:()=>audioRuntimeUI.page(),logsPage,toolsPage,dshPage:()=>extensionUI.dshPage(),stickerPage:()=>stickerManagerUI.page()});
 const pageScroll=new Map();let currentRoute={page:'overview'};
 function selectRoute(hash){currentRoute=consoleRoute(hash);state.page=currentRoute.page;if(currentRoute.page==="memory")state.memorySection=currentRoute.section;state.settingsSection=currentRoute.page==='settings'?currentRoute.section:state.settingsSection;state.stickerSection=currentRoute.page==='stickers'?currentRoute.section:state.stickerSection;state.capabilitySection=currentRoute.page==='extensions'?currentRoute.section:state.capabilitySection;if(currentRoute.detail)state.chatDetailTab=currentRoute.detail;}
 const pages = {
@@ -425,6 +427,7 @@ async function logsPage() {
 }
 let renderSequence = 0;
 async function renderPage() {
+  audioRuntimeUI.unmount();
   if (!state.config) return;
   const sequence = ++renderSequence; const page = state.page;
   const title=page==='settings'?'设置 · '+SETTINGS_SECTIONS[state.settingsSection??'chat']:pages[page][0];
@@ -449,6 +452,7 @@ async function renderPage() {
   if (sequence !== renderSequence || state.page !== page) return;
   if(page==='setup')markup+=`<section class="card process-recovery-card">${header('端口与进程排查','遇到端口占用、其他微信实例或连接失败时，先检查正在运行的进程。','','tool')}<p class="card-description">检查不会停止程序。只有选中具体进程并再次确认后才会停止；随后可重新打开微信或 DSH，再重试配置。</p><button class="button" data-process-recovery>${icon('search')}检查端口与进程</button></section>`;
   $('#page-body').innerHTML = markup; updateDraftUI(); paintStatus(); paintReaderSetup();
+  if(page==='settings'&&state.settingsSection==='audio')audioRuntimeUI.mount();
   if(page==='memory'){if(state.memorySection==='notebook')fishNotebookUI.mount();else memoryUI.mount();}
   if(page==='stickers'&&state.stickerSection==='library')stickerManagerUI.mount();
   if(page==='stickers'&&state.stickerSection==='collection')api('/api/sticker-pool').then(pool=>{if(sequence!==renderSequence||!$('#sticker-pool-status'))return;const labels={selected:'DS 已完成评选',waiting_retry:'等待 DS 重试'};$('#sticker-pool-status').textContent='已入池 '+pool.count+'/50 · 待评选 '+(pool.waiting+pool.legacyWaiting)+' · '+(pool.review==='reviewing'?'DS 正在评选':labels[pool.lastReview?.status]??(pool.waiting?'等待 DS 评选':'未满池或没有新候选'));}).catch(()=>{});

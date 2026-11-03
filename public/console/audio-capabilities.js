@@ -38,6 +38,7 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       </div><div class="audio-footer"><p id="audio-config-error" class="extension-error" role="alert" hidden></p><div class="modal-actions"><button type="button" class="button" data-close>关闭</button><button type="submit" class="button primary">保存配置</button></div></div></form>`,
       {className:'audio-modal',onClose(){closed=true;controller.abort();music?.close();document.querySelector('#audio-preview-player')?.pause();if(audioUrl)URL.revokeObjectURL(audioUrl);}});
     const form=document.querySelector('#audio-capability-form'),field=id=>form.querySelector('#'+id);
+    const environmentLink=document.createElement('a');environmentLink.className='text-link';environmentLink.href='#settings/audio';environmentLink.textContent='安装或修复语音与翻唱环境';environmentLink.addEventListener('click',()=>closeModal());form.querySelector('.audio-status-note').append(document.createElement('br'),environmentLink);
     const managed=()=>field('audio-connection').value==='managed';
     if(voice){
       const updateConnection=()=>{

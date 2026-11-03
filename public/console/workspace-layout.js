@@ -1,6 +1,6 @@
 import {SETTINGS_SECTIONS,STICKER_SECTIONS,CAPABILITY_SECTIONS,chatRows,filterChats,effectiveChatFeature} from './layout-model.mjs';
 
-export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage,getCards,contextSettingsCard,feedbackCard,connectionsPage,logsPage,toolsPage,dshPage,stickerPage}){
+export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage,getCards,contextSettingsCard,feedbackCard,connectionsPage,audioRuntimePage,logsPage,toolsPage,dshPage,stickerPage}){
  const tabs=(base,sections,active)=>`<nav class="workspace-tabs" aria-label="${base==='settings'?'应用设置':base==='stickers'?'表情包分类':'能力分类'}">${Object.entries(sections).map(([id,name])=>`<a href="#${base}/${id}" ${id===active?'aria-current="page"':''}>${esc(name)}</a>`).join('')}</nav>`;
  const scope=message=>`<p class="scope-note">${icon('info')}${esc(message)}</p>`;
  const recovery=()=>`<section class="card">${header('端口与进程排查','连接失败或端口占用时，先查看实际进程。','','tool')}<p class="card-description">检查不会停止程序；停止选中的进程仍需再次确认。</p><button class="button" data-process-recovery>检查端口与进程</button></section>`;
@@ -49,6 +49,7 @@ export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,fiel
   if(section==='chat')body=cards.participation+`<section class="card">${header('分条发送','设置聊天与助手普通回复的文字条数。')}<div class="form-grid">${field('单次回复最多分条数','wechat.replyLayout.maxMessages',{type:'number',min:0,max:20,step:1,required:true,help:'默认 2。0 表示不限制条数，由模型根据内容分段；1 表示整条发送，其他数字是最多条数。保留原文字长度和发送频率设置。保存后用于新轮次，无需重启。'})}</div><p class="subtle">代码、完整列表和连续说明保持完整。提醒、进度与审批消息按原格式发送。私聊可发送“停止分段”，群聊请 @ 助手再发送，停止尚未发出的分段；执行中的 DSH 任务不受影响。</p></section>`+cards.rhythm+cards.proactive;
   else if(section==='assistant')body=cards.admins+feedbackCard();
   else if(section==='context')body=contextSettingsCard();
+  else if(section==='audio')body=await audioRuntimePage();
   else if(section==='connections')body=connectionsPage()+`<div class="button-row"><a class="button" href="#setup">重新打开配置向导</a><a class="button" href="#settings/diagnostics">连接诊断与修复</a></div>`;
   else if(section==='diagnostics'){try{state.status=await api('/api/status');}catch{}body=diagnostics()+recovery();}
   else if(section==='logs')body=await logsPage();

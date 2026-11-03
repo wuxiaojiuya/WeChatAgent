@@ -1,5 +1,5 @@
 export const MAIN_PAGES=['overview','chats','roles','extensions','stickers','memory','settings'];
-export const SETTINGS_SECTIONS={chat:'聊天默认值',assistant:'助手设置',context:'上下文',connections:'微信与 DSH',diagnostics:'诊断',logs:'运行日志',advanced:'开发者选项',appearance:'外观与数据'};
+export const SETTINGS_SECTIONS={chat:'聊天默认值',assistant:'助手设置',context:'上下文',connections:'微信与 DSH',audio:'语音与翻唱环境',diagnostics:'诊断',logs:'运行日志',advanced:'开发者选项',appearance:'外观与数据'};
 export const STICKER_SECTIONS={library:'我的表情',collection:'自动收集',sources:'来源与搜索',sending:'发送设置'};
 export const CAPABILITY_SECTIONS={catalog:'能力目录',network:'联网与阅读',dsh:'DSH 能力'};
 const aliases={sessions:{page:'chats',detail:'usage'},behavior:{page:'settings',section:'chat'},connections:{page:'settings',section:'connections'},tools:{page:'settings',section:'diagnostics'},logs:{page:'settings',section:'logs'}};
