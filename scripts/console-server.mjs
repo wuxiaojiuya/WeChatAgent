@@ -594,15 +594,16 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         try{return reply(200,await musicCapabilities.search(body,{signal:controller.signal}));}finally{res.removeListener('close',cancel);}
       }
       if(route==='/api/audio-capabilities/music/cache')return reply(200,await musicCapabilities.cache(body));
-      if(route==='/api/audio-capabilities/music/request'){
+      if(route==='/api/audio-capabilities/music/request'||route==='/api/audio-capabilities/music/video-request'){
         const {conversationKey,...request}=body;
         const isAllowed=()=>{if(conversationKey===undefined)return true;const value=audioCapabilities.snapshot().settings.singing;
           return typeof conversationKey==='string'&&value.enabled&&value.chats.includes(conversationKey)&&allowedConversation(snapshot().config.wechat,conversationKey);};
         if(!isAllowed())throw fault('当前聊天的唱歌能力未开启。',403);
+        if(route.endsWith('/video-request')&&conversationKey===undefined)throw fault('视频翻唱必须绑定当前微信聊天。',403);
         const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort();};res.once('close',cancel);
         try{
           const context=conversationKey===undefined?null:await nativeVoice.capture(conversationKey,'singing',controller.signal);
-          const job=await musicCapabilities.requestSong(request,{signal:controller.signal,isAllowed});
+          const job=await (route.endsWith('/video-request')?musicCapabilities.requestVideo({...request,conversationKey},{signal:controller.signal,isAllowed}):musicCapabilities.requestSong(request,{signal:controller.signal,isAllowed}));
           if(context&&job.id){
             while(musicDeliveries.size>=30)musicDeliveries.delete(musicDeliveries.keys().next().value);
             const entry={key:conversationKey};musicDeliveries.set(job.id,entry);

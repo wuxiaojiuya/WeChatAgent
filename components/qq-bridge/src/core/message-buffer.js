@@ -99,6 +99,7 @@ export class MessageBuffer {
       ...(message.assistant_chat_only===true?{assistant_chat_only:true}:{}),
       text: String(message.text ?? '').slice(0, 4000), timestamp: Number(message.timestamp) || Date.now() / 1000,
       images: outgoing ? [] : (message.images ?? []).filter(image => /^[a-f0-9]{64}$/.test(image?.id ?? '')).slice(0,4),
+      ...(!outgoing&&/^[a-f0-9]{64}$/.test(message.video?.id??'')?{video:{id:message.video.id,context:message.video.context==='quote'?'quote':'message'}}:{}),
       files:outgoing?[]:(message.files??[]).filter(file=>/^[a-f0-9]{64}$/.test(file?.id??'')&&typeof file.name==='string'&&file.name.length<=180&&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=50*1024*1024).slice(0,3),
       direct_mention: Boolean(message.direct_mention), outgoing, processed: outgoing };
     if(!outgoing && message.interaction==='pat')row.interaction='pat';

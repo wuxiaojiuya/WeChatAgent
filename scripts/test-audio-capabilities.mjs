@@ -35,6 +35,16 @@ test('configuration validates local endpoints, source choices, scopes and model 
     {endpoint:'https:'+'/'+ '/'+['u:password','example.com'].join('@')},{endpoint:'http://remote.example.com'},{endpoint:'https://example.com?key=secret'},{endpoint:'https://example.com/path'}])assert.throws(()=>save('voice',value),error=>error.status===400);
   for(const value of [{musicSource:'invalid'},{pitch:13},{clipSeconds:31},{accompaniment:'yes'},{provider:'rvc'}])assert.throws(()=>save('singing',value),error=>error.status===400);
 });
+
+test('Douyin cookie stays local and masked, preserves blank edits and supports explicit clearing',t=>{
+  const {service,save}=fixture(t),cookie='fixture_cookie=local-test-value';
+  save('singing',{douyinCookie:cookie});
+  assert.equal(service.snapshot().settings.singing.hasDouyinCookie,true);assert.equal(service.snapshot().settings.singing.douyinCookie,'');
+  assert(!JSON.stringify(service.snapshot()).includes(cookie));assert(!JSON.stringify(service.catalog(config)).includes(cookie));
+  save('singing',{});assert.equal(service.snapshot().settings.singing.hasDouyinCookie,true);
+  assert.throws(()=>save('singing',{douyinCookie:'invalid\r\nheader'}));
+  save('singing',{}, {clearDouyinCookie:true});assert.equal(service.snapshot().settings.singing.hasDouyinCookie,false);
+});
 test('Feiyu preview submits a real service job, polls completion, then fetches WAV',async t=>{
   const calls=[];let pending=0;const wav=Buffer.alloc(48);wav.write('RIFF');wav.write('WAVE',8);
   const {service,save}=fixture(t,async(url,options)=>{

@@ -10,6 +10,7 @@
 | scripts/wechat_sticker.py | 本项目新增绑定和下载逻辑；缓存布局及 CBC 约定参考同一 MIT 上游，保留来源说明 |
 | packages/voice-codec/silk-wasm | [idranme/silk-wasm](https://github.com/idranme/silk-wasm)，固定 npm 3.7.1 最小运行载荷；MIT，保留 LICENSE、版本来源和逐文件 SHA-256（PROVENANCE.json） |
 | imageio-ffmpeg | 独立安装的 Python 包，BSD-2-Clause；其 FFmpeg 程序按构建自带许可使用，本源码副本不分发二进制，见 [包元数据](https://pypi.org/project/imageio-ffmpeg/0.6.0/) |
+| yt-dlp | [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)，固定 2026.10.26；解析抖音视频元数据。PyPI 源码按 Unlicense；可选依赖适用各自许可，源代码及包保留其许可证。项目不分发平台视频内容 |
 | 有权独立授权的本项目新增代码、桌面界面及已授权人格预设 | 依根目录许可的适用范围，不扩大到维护者无权授权的内容 |
 | 安装时获取的 SDK 和 Python 包 | 各自原许可与依赖声明；副本不包含 node_modules 或解释器环境 |
 

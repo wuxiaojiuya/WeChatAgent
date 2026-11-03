@@ -21,10 +21,12 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       `${select('唱歌音色 / RVC 模型','audio-model',settings.modelId,models.map(model=>[model.id,model.name]))}
       ${input('变调（半音）','audio-pitch',settings.pitch,'type="number" min="-12" max="12" step="1"','0 保留原调，正数升调，负数降调。')}
       ${input('试听时长（秒）','audio-clip',settings.clipSeconds,'type="number" min="10" max="30" step="1"')}
-      <label class="extension-option audio-mix"><input id="audio-accompaniment" type="checkbox" ${settings.accompaniment?'checked':''}>保留原曲伴奏并混音</label>`;
+      <label class="extension-option audio-mix"><input id="audio-accompaniment" type="checkbox" ${settings.accompaniment?'checked':''}>保留原曲伴奏并混音</label>
+      ${input('抖音访问 Cookie（可选）','audio-douyin-cookie','','type="password" autocomplete="new-password" maxlength="32768"',(settings.hasDouyinCookie?'已保存，留空保留。':'')+'链接提示需要访问凭据时，可在本机填写抖音网站 Cookie。仅保存在本机，只用于抖音解析；直接发微信视频无需填写。不要通过聊天发送 Cookie。')}
+      <label class="extension-option"><input id="audio-clear-douyin-cookie" type="checkbox" ${settings.hasDouyinCookie?'':'disabled'}>清除已保存的抖音 Cookie</label>`;
     modal(item.name,`<form id="audio-capability-form" class="audio-capability-form"><div class="audio-scroll">
       <div class="audio-intro"><span class="audio-feature-icon" aria-hidden="true">♪</span><div><strong>${voice?'肥鱼本地语音回复':'用自己的音色翻唱'}</strong><p>${voice?'由本地肥鱼语音服务生成，可爱与温柔两种声线。':'人声分离 → RVC 换声 → 伴奏混音'}</p></div></div>
-      <div class="audio-status-note">${voice?'语音合成后通过微信原生语音条发送；试听需要肥鱼 TTS 服务运行。':'对话中由 AI 自动找歌和选择版本，翻唱完成后通过微信原生语音条发送。页面试听只在本机播放。'}<br>${esc(saved.nativeTransport?.message??'请启动并登录连接设置中匹配的微信，连接原生语音发送通道。')}</div>
+      <div class="audio-status-note">${voice?'语音合成后通过微信原生语音条发送；试听需要肥鱼 TTS 服务运行。':'支持对话点歌，也可直接发微信视频或抖音分享链接，说“这段唱给我听”。AI 使用视频原音轨分离、RVC 换声并混音，最长30秒。抖音链接无法公开访问时可改发视频。完成后发送微信原生语音；页面试听只在本机播放。'}<br>${esc(saved.nativeTransport?.message??'请启动并登录连接设置中匹配的微信，连接原生语音发送通道。')}</div>
       <label class="switch-row audio-enable"><div><strong>启用${item.name}</strong><p>聊天接入后按所选范围使用；本地试听可独立操作。</p></div><span class="switch-control"><input id="audio-enabled" type="checkbox" role="switch" aria-label="启用${item.name}" ${settings.enabled?'checked':''}><span class="switch-track"></span></span></label>
       <section class="audio-section"><h3>${voice?'服务与声线':'唱歌音色'}</h3><div class="form-grid">${fields}</div>${voice?'<button type="button" class="button" id="audio-check-button">保存并检测服务</button><p id="audio-check-status" role="status" class="subtle"></p>':''}</section>
       ${voice?`<section class="audio-section audio-preview-section"><h3>语音试听</h3>${select('试听情绪','audio-preview-emotion','neutral',[['neutral','平静'],['happy','开心'],['sad','难过'],['angry','不满'],['comforting','安慰'],['worried','担忧'],['surprised','惊讶']])}<label class="sr-only" for="audio-preview-text">试听文字</label><textarea id="audio-preview-text" rows="2" maxlength="500">你好，很高兴认识你。</textarea><div class="audio-preview-actions"><button type="button" class="button" id="audio-preview-button">保存并生成试听</button></div><p id="audio-preview-status" role="status" class="subtle"></p><audio id="audio-preview-player" controls hidden></audio></section>`:musicMarkup({settings,esc})}
@@ -36,12 +38,13 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       const common={enabled:field('audio-enabled').checked,chats:[...form.querySelectorAll('[name="audio-chat"]:checked')].map(input=>input.value)};
       return voice?{...common,provider:'feiyu',endpoint:field('audio-endpoint').value.trim(),style:field('audio-style').value,mode:field('audio-mode').value,emotionMode:field('audio-emotion-mode').value,emotionStrength:field('audio-emotion-strength').value,apiKey:field('audio-api-key').value}:
         {...common,provider:'feiyu-rvc',modelId:field('audio-model').value,pitch:Number(field('audio-pitch').value),clipSeconds:Number(field('audio-clip').value),
-          accompaniment:field('audio-accompaniment').checked,musicSource:field('music-source').value};
+          accompaniment:field('audio-accompaniment').checked,musicSource:field('music-source').value,douyinCookie:field('audio-douyin-cookie').value};
     }
     function error(value){if(closed)return;field('audio-config-error').textContent=value.message;field('audio-config-error').hidden=false;}
     async function save() {
-      saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:field('audio-clear-key').checked}:{})},true,{signal:controller.signal});
+      saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:field('audio-clear-key').checked}:{clearDouyinCookie:field('audio-clear-douyin-cookie').checked})},true,{signal:controller.signal});
       if(!closed&&voice){field('audio-api-key').value='';field('audio-clear-key').checked=false;field('audio-clear-key').disabled=!saved.settings.voice.hasApiKey;}
+      if(!closed&&!voice){field('audio-douyin-cookie').value='';field('audio-clear-douyin-cookie').checked=false;field('audio-clear-douyin-cookie').disabled=!saved.settings.singing.hasDouyinCookie;}
       return saved;
     }
     if(!voice)music=bindMusic({form,api,save,esc,state,signal:controller.signal,showError:error});

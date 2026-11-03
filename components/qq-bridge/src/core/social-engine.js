@@ -3,6 +3,7 @@ import {parseAssistantCommand} from '../../../../packages/dsh-social-bridge-plug
 import { incomingWebUrls } from '../../../../packages/dsh-social-bridge-plugin/web-reader-policy.mjs';
 import { buildConversationKey } from './conversation-key.js';
 import { replyDeliveryParts } from './message-buffer.js';
+import {turnVideos} from './video-ingress.js';
 import {MediaOutbox} from './media-outbox.js';
 import {boundedTask} from '../../../../packages/dsh-social-bridge-plugin/deadline.mjs';
 import {memberObservations} from '../../../../packages/dsh-social-bridge-plugin/member-memory.mjs';
@@ -351,6 +352,7 @@ export class SocialEngine {
         historyExcludeIds:rows.map(row=>row.id),
         conversationName: message.conversation_name ?? rows.at(-1)?.conversation_name ?? '',
         pluginSender:(()=>{const ids=[...new Set(rows.filter(row=>!row.outgoing).map(row=>row.sender_wxid).filter(Boolean))];return ids.length===1?ids[0]:'';})(),
+        videos:turnVideos(chatRows,this.buffer.recent(key,20),{now}),
         images: decisionImages,webReaderUrls: incomingWebUrls(chatRows),memberObservations:memberObservations(key,chatRows),
         searchOptOut:this.assistantChatOnly||/(?:不要|不用|别)(?:联网|搜索|查)/.test([...chatRows].reverse().find(row=>!row.outgoing&&!row.forwardedRecord&&row.interaction!=='pat')?.text??''),
         searchPrivateNames:[...new Set(chatRows.filter(row=>!row.outgoing&&!row.forwardedRecord).map(row=>row.sender_name).filter(name=>typeof name==='string'&&name.length>=2&&name.length<=80))].slice(0,50),

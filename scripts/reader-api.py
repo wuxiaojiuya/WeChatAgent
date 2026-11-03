@@ -1163,6 +1163,12 @@ def serve(reader, port, token):
                     self.respond(reader.resolve_image(url.path.rsplit('/', 1)[1]))
                 elif re.fullmatch(r'/api/v1/videos/[a-f0-9]{64}', url.path):
                     self.respond(reader.videos.prepare(url.path.rsplit('/', 1)[1], query.get('conversationKey', [''])[0]))
+                elif re.fullmatch(r'/api/v1/videos/[a-f0-9]{64}/singing-audio', url.path):
+                    self.respond(reader.videos.singing_audio(url.path.split('/')[-2],query.get('conversationKey',[''])[0],float(query.get('startSeconds',['0'])[0]),int(query.get('seconds',['30'])[0]),query.get('localOnly',['false'])[0]=='true'))
+                elif url.path == '/api/v1/video-link':
+                    key = query.get('conversationKey',[''])[0]
+                    identity = reader.videos.remember_link(query.get('url',[''])[0],key)
+                    self.respond(reader.videos.prepare(identity,key))
                 elif re.fullmatch(r'/api/v1/quoted-files/[a-f0-9]{64}',url.path):
                     self.respond(reader.quoted_file_text(url.path.rsplit('/',1)[1],query.get('conversationKey',[''])[0],query.get('senderWxid',[''])[0]))
                 elif re.fullmatch(r'/api/v1/stickers/pool-review/[a-f0-9]{64}',url.path):

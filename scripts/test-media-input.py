@@ -91,6 +91,18 @@ class MediaInput(unittest.TestCase):
         frame=reader.resolve_image(prepared['images'][0]['id'])
         self.assertEqual(frame['conversationKey'],key)
         self.assertEqual(hashlib.sha256(base64.b64decode(frame['b64'])).hexdigest(),frame['sha256'])
+        self.write('state/voice-output/capabilities.json',{'singing':{'provider':'feiyu-rvc','enabled':True,'chats':[key]}})
+        clip=reader.videos.singing_audio(reference['id'],key,.2,10)
+        self.assertEqual(clip['videoId'],reference['id'])
+        self.assertEqual(clip['startSeconds'],.2)
+        self.assertAlmostEqual(clip['seconds'],1.016,delta=.08)
+        self.assertEqual(hashlib.sha256(base64.b64decode(clip['b64'])).hexdigest(),clip['sha256'])
+        with wave.open(io.BytesIO(base64.b64decode(clip['b64']))) as wav:
+            self.assertEqual(wav.getframerate(),44100)
+            self.assertEqual(wav.getnchannels(),2)
+        with self.assertRaises(PermissionError):reader.videos.singing_audio(reference['id'],'wechat:private:88')
+        self.write('state/voice-output/capabilities.json',{'singing':{'enabled':False}})
+        with self.assertRaises(PermissionError):reader.videos.singing_audio(reference['id'],key)
         audio=reader.resolve_voice(prepared['voice']['id'],key,'speech-recognition','wav')
         with wave.open(io.BytesIO(base64.b64decode(audio['b64']))) as wav:
             self.assertEqual(wav.getframerate(),16000)
@@ -107,6 +119,35 @@ class MediaInput(unittest.TestCase):
         ref=reader.videos.remember('wxid_friend',original)
         with self.assertRaisesRegex(RuntimeError,'VIDEO_CALLBACK_METADATA_REQUIRED'):
             reader.videos.prepare(ref['id'],'wechat:private:'+reader.conversation_id('wxid_friend'))
+
+    def test_douyin_link_frames_and_audio_are_scoped_cached_and_fail_without_public_access(self):
+        from douyin_video import douyin_url
+        valid='https://www.douyin.com/video/1234567890123456789'
+        self.assertEqual(douyin_url(valid+'?share=example'),valid)
+        self.assertEqual(douyin_url('https://v.douyin.com/ABCDE123/'),'https://v.douyin.com/ABCDE123/')
+        for value in ('https://127.0.0.1/video/1234567890','https://douyin.com.evil.test/video/1234567890','file:///private','https://www.douyin.com/live/123'):
+            with self.assertRaises(RuntimeError):douyin_url(value)
+        reader=self.reader()
+        key='wechat:private:'+reader.conversation_id('wxid_friend')
+        self.write('config/plugins.json',{'version':1,'plugins':{'speech-recognition':{'enabled':True,'permissions':['audio_read'],'chats':[key]}}})
+        ref=reader.videos.remember_link(valid,key)
+        with self.assertRaises(PermissionError):reader.videos.remember_link(valid,'wechat:private:99')
+        with self.assertRaisesRegex(RuntimeError,'VIDEO_NETWORK_DISABLED'):reader.videos.source(ref,*reader.videos.record(ref,key),local_only=True)
+        with patch('douyin_video.download_douyin') as download:
+            def source(url,target,max_bytes,cookie=''):
+                self.assertEqual(url,valid)
+                run_tool('ffmpeg',['-f','lavfi','-i','color=c=blue:s=128x96:r=8','-f','lavfi','-i','sine=frequency=500:sample_rate=44100','-t','1.2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-y',str(target)])
+            download.side_effect=source
+            prepared=reader.videos.prepare(ref,key)
+            self.assertTrue(prepared['images'])
+            self.assertIsNotNone(prepared['voice'])
+            reader.videos.prepare(ref,key)
+            self.assertEqual(download.call_count,1)
+            self.assertEqual(reader.resolve_image(prepared['images'][0]['id'])['conversationKey'],key)
+        self.write('state/voice-output/capabilities.json',{'singing':{'provider':'feiyu-rvc','enabled':True,'chats':[key]}})
+        self.assertGreater(reader.videos.singing_audio(ref,key,0,10,local_only=True)['seconds'],1)
+        self.fake.wxid='wxid_other'
+        with self.assertRaises((PermissionError,RuntimeError)):reader.videos.record(ref,key)
 
 
 class EmotionTests(unittest.TestCase):

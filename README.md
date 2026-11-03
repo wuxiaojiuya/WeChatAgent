@@ -16,6 +16,7 @@
 | 对话点歌 | 直接说「你会唱朋友的酒 DJ 版吗」，AI 选择歌曲、版本并发起翻唱 |
 | RVC 翻唱 | 人声/伴奏分离 → 上传的 RVC 模型换声 → 混音；支持移调与质量优化 |
 | 歌曲来源 | QQ 音乐、网易云、酷狗或本地音源；下载缓存默认七天清理 |
+| 视频点唱 | 发微信视频或抖音分享链接，说「这段唱给我听」；直接使用视频音轨和伴奏，最长 30 秒 |
 | 消息理解 | 语音转写、图片、引用内容与附件、视频抽帧和音轨转写 |
 | 能力与插件 | 能力页面按需配置，保留插件 API、记事本和扩展入口 |
 
@@ -41,6 +42,7 @@ Hook 随 Windows 安装包提供，无需填写 DLL 路径或自定义 HTTP 接�
 
 - [4.1.8.27 Hook](docs/SUPPLIER_HOOK_41827.md)
 - [多模态消息理解](docs/MEDIA_UNDERSTANDING.md)
+- [微信视频与抖音链接翻唱](docs/VIDEO_SINGING.md)
 - [语音输入](docs/VOICE_INPUT.md) · [引用消息](docs/QUOTE_MESSAGES.md)
 - [插件开发](docs/PLUGIN_DEVELOPMENT.md)
 - [数据存储](docs/DATA_STORAGE.md) · [发布流程](docs/GITHUB_PUBLISHING.md)

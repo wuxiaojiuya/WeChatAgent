@@ -6,11 +6,11 @@ import {speechEmotion,EMOTION_STRENGTHS} from './voice-emotion.mjs';
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 export const AUDIO_FEATURES = Object.freeze([
   {id:'native-voice-output', audioKind:'voice', name:'语音回复', description:'通过肥鱼本地语音服务生成回复，可选择可爱或温柔声线，由 AI 自然选择回复方式。'},
-  {id:'native-singing', audioKind:'singing', name:'唱歌', description:'对话点歌，AI 自动找歌并用 RVC 翻唱。支持上传专属模型，从 QQ 音乐、网易云或酷狗选择音源，并复用本地歌曲。'},
+  {id:'native-singing', audioKind:'singing', name:'唱歌', description:'对话点歌，或发送微信视频/抖音分享链接让 AI 翻唱片段。支持上传 RVC 模型，选择 QQ 音乐、网易云、酷狗或视频音轨，保留旋律和伴奏。'},
 ]);
 export const audioDefaults = () => ({
   voice:{enabled:false, provider:'feiyu', endpoint:'http://127.0.0.1:9880', style:'cute', mode:'ai-choice', emotionMode:'auto', emotionStrength:'natural', chats:[], apiKey:''},
-  singing:{enabled:false, provider:'feiyu-rvc', modelId:'FeiyuVoice-RVC-v1', pitch:0, accompaniment:true, clipSeconds:30, musicSource:'kugou', chats:[]},
+  singing:{enabled:false, provider:'feiyu-rvc', modelId:'FeiyuVoice-RVC-v1', pitch:0, accompaniment:true, clipSeconds:30, musicSource:'kugou', chats:[],douyinCookie:''},
 });
 export const audioChatKeys = config => ['private','groups'].flatMap(kind => (config.wechat?.whitelist?.[kind] ?? [])
   .map(id => 'wechat:' + (kind === 'groups' ? 'group' : 'private') + ':' + id));
@@ -34,15 +34,15 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
   }
   function snapshot() {
     const saved=read(); return {revision:saved.revision,nativeTransport:nativeStatus(),settings:{
-      voice:{...saved.settings.voice,apiKey:'',hasApiKey:!!saved.settings.voice.apiKey}, singing:saved.settings.singing}};
+      voice:{...saved.settings.voice,apiKey:'',hasApiKey:!!saved.settings.voice.apiKey}, singing:{...saved.settings.singing,douyinCookie:'',hasDouyinCookie:!!saved.settings.singing.douyinCookie}}};
   }
   function save(kind,body,config) {
     const saved=read(), defaults=audioDefaults()[kind];
     if (!body || !defaults || body.revision !== saved.revision) throw fault('音频设置已变化，请重新打开配置。',409);
     const value=body.settings;
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key=>!Object.hasOwn(defaults,key)) ||
-        Object.keys(body).some(key=>!['revision','settings','clearApiKey'].includes(key)) ||
-        body.clearApiKey !== undefined && typeof body.clearApiKey !== 'boolean') throw fault('音频能力设置格式无效。');
+        Object.keys(body).some(key=>!['revision','settings','clearApiKey','clearDouyinCookie'].includes(key)) ||
+        body.clearApiKey !== undefined && typeof body.clearApiKey !== 'boolean'||body.clearDouyinCookie!==undefined&&typeof body.clearDouyinCookie!=='boolean') throw fault('音频能力设置格式无效。');
     const next={...defaults,...value}, allowed=audioChatKeys(config);
     if(typeof next.enabled!=='boolean'||!Array.isArray(next.chats)||next.chats.length>1000||next.chats.some(key=>!allowed.includes(key)))throw fault('聊天范围已变化，请重新打开配置。');
     next.chats=[...new Set(next.chats)];
@@ -54,6 +54,9 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
       next.apiKey=next.apiKey.trim()||(!body.clearApiKey?saved.settings.voice.apiKey:'');
       if(body.clearApiKey)next.apiKey='';
     } else {
+      if(typeof next.douyinCookie!=='string'||next.douyinCookie.length>32768||/[\r\n\0]/.test(next.douyinCookie))throw fault('抖音 Cookie 请填写单行内容，或留空保留。');
+      next.douyinCookie=next.douyinCookie.trim()||(!body.clearDouyinCookie?saved.settings.singing.douyinCookie:'');
+      if(body.clearDouyinCookie)next.douyinCookie='';
       if(next.provider!=='feiyu-rvc'||typeof next.modelId!=='string'||!modelExists(next.modelId)||
         !['kugou','qq','netease','local'].includes(next.musicSource)||!Number.isInteger(next.pitch)||next.pitch < -12||next.pitch > 12||
         typeof next.accompaniment!=='boolean'||!Number.isInteger(next.clipSeconds)||next.clipSeconds<10||next.clipSeconds>30)throw fault('请选择已安装的 RVC 模型、歌曲来源和 10～30 秒的试听时长，变调范围为 -12～12。');

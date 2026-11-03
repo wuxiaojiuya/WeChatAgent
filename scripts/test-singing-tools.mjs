@@ -49,6 +49,27 @@ test('a different local project cannot receive song requests or the console toke
   assert.ok(!result.content.includes('must-not-use'));
 });
 
+test('video requests use only current-turn references, reuse submissions and share real delivery status',async t=>{
+  const videoId='b'.repeat(64),calls=[];let f;
+  f=fixture(t,{fetchImpl:async(url,options)=>{
+    if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+    calls.push({url,body:options.body&&JSON.parse(options.body)});
+    return Response.json({id:'11111111-1111-1111-1111-111111111111',state:'running'});
+  }});
+  const tool=f.tools.get('wechat_sing_video');
+  assert(!f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
+  f.setTurn({videos:[{id:videoId}],networkOptOut:true});
+  assert(f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
+  assert.match(f.binding.instructions(),/直接使用对应视频音轨/);
+  assert.equal((await tool.execute({videoId:'a'.repeat(64)})).isError,true);assert.equal(calls.length,0);
+  const result=JSON.parse((await tool.execute({videoId,startSeconds:4})).content);
+  await tool.execute({videoId,startSeconds:4});assert.equal(calls.length,1);assert.equal(result.sent,false);
+  assert(calls[0].url.endsWith('/music/video-request'));
+  assert.deepEqual(calls[0].body,{videoId,startSeconds:4,conversationKey:key,localOnly:true});
+  f.setTurn();assert(!f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
+  assert.equal(JSON.parse((await tool.execute({videoId})).content).state,'failed');
+});
+
 test('voice-only scope exposes AI voice tools, preserves one request per turn and reports real delivery status',async t=>{
   const calls=[];let f;
   f=fixture(t,{fetchImpl:async(url,options)=>{

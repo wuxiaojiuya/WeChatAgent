@@ -24,7 +24,7 @@ function unpack(file, target) {
 const archive = path.join(cache, 'python-3.13.16-embed-amd64.zip');
 await download('https://www.python.org/ftp/python/3.13.16/python-3.13.16-embed-amd64.zip', archive, '97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297');
 unpack(archive, runtime);
-const packages = [['sqlcipher3','0.6.2'],['cryptography','50.0.2'],['zstandard','0.25.0'],['pycryptodome','3.23.0'],['Pillow','12.3.0'],['imageio-ffmpeg','0.6.0'],['cffi','2.0.0'],['pycparser','2.23']];
+const packages = [['sqlcipher3','0.6.2'],['cryptography','50.0.2'],['zstandard','0.25.0'],['pycryptodome','3.23.0'],['Pillow','12.3.0'],['imageio-ffmpeg','0.6.0'],['cffi','2.0.0'],['pycparser','2.23'],['yt-dlp','2026.10.26']];
 const site = path.join(runtime, 'Lib', 'site-packages'); fs.mkdirSync(site, { recursive: true });
 const locked = [];
 for (const [name, version] of packages) {

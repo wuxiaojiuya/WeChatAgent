@@ -1,5 +1,5 @@
 import {buildConversationKey} from './conversation-key.js';
-import {appendMediaText} from './video-ingress.js';
+import {appendMediaText,douyinLink} from './video-ingress.js';
 
 /** Per-chat ordering, bounded API concurrency, and no automatic upload retries. */
 export class VoiceIngress {
@@ -13,7 +13,7 @@ export class VoiceIngress {
   push(message) {
     if(this.closed)return Promise.resolve();
     const key=buildConversationKey(message.platform,message.kind,message.conversation_id),identity=key+'\0'+message.message_id;
-    if(!message.voice&&!message.video&&!message.quotedFiles?.length&&!this.queues.has(key))return Promise.resolve().then(()=>{if(!this.closed)return this.deliver(message);});
+    if(!message.voice&&!message.video&&!message.quotedFiles?.length&&!douyinLink(message)&&!this.queues.has(key))return Promise.resolve().then(()=>{if(!this.closed)return this.deliver(message);});
     if(this.ids.has(identity))return Promise.resolve();
     if(this.pending>=64){this.log('[Voice] inbound_queue_full');return Promise.resolve();}
     this.ids.add(identity);this.pending++;
