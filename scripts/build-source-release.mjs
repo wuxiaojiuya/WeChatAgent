@@ -17,8 +17,6 @@ assertSourceHostCoverage(root,source.files);
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const {version,packageVersion,tag}=releaseIdentity(JSON.parse(fs.readFileSync(path.join(root,'package.json'))));
 const output=path.join(root,'release/installer/WeChatAgent-'+version+'-source.zip');
-const stageManifest=path.join(root,'state/installer-stage/project/deployment.json');
-const deployment=fs.existsSync(stageManifest)?JSON.parse(fs.readFileSync(stageManifest)):{};
 const profileFile=path.join(root,'release-profile.json');
 if(fs.existsSync(profileFile)){
   const profile=JSON.parse(fs.readFileSync(profileFile,'utf8'));
@@ -26,7 +24,9 @@ if(fs.existsSync(profileFile)){
   profile.sourceFileHashes=Object.fromEntries(source.files.filter(file=>!(profile.hashesExclude??['release-profile.json']).includes(file)).map(file=>[file,hash(fs.readFileSync(path.join(root,file)))]));
   profile.sourcePluginPackages=BUNDLED_PLUGINS.filter(item=>item.zip).map(item=>item.zip);
   profile.pluginHostContract=checked.contract;
-  if(deployment.buildId){profile.buildId=deployment.buildId;profile.runtimeRevision=deployment.runtimeRevision;}
+  // Artifact identity lives in deployment.json / VERIFICATION.json. Keeping it
+  // out of the source profile avoids stale or circular installer build hashes.
+  delete profile.buildId;delete profile.runtimeRevision;
   fs.writeFileSync(profileFile,JSON.stringify(profile,null,2)+'\n');
 }
 const entries=source.files.map(name=>({name,data:fs.readFileSync(path.join(root,name))}));

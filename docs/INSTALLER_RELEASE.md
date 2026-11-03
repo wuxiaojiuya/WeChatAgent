@@ -1,6 +1,6 @@
-# Windows 安装发行版 0.4.2
+# Windows 安装发行版 0.2.0
 
-安装器为 WeChatAgent-Setup-0.4.2-x64.exe，适用 Windows 10/11 x64。包含桌面应用、Node.js、Python、读取依赖，以及维护者已授权的匹配微信与原生发送/自动连接组件。全新安装匹配微信 4.1.15.13，并保留旧版适配，桥接插件 SDK 为 0.2.0-rc.2；DSH 桌面程序独立安装，不包含在安装包中。公开发布标识为 0.4.2，npm/Electron 内部版本为 0.4.2。
+安装器为 WeChatAgent-Setup-0.2.0-x64.exe，适用 Windows 10/11 x64。包含桌面应用、Node.js、Python、读取依赖和微信 4.1.8.27 的 supplier-http Hook；微信客户端与 DSH 独立安装。公开版本与 npm/Electron 内部版本均为 0.2.0。大型音频环境和模型由设置页单独下载。
 
 ## 安装与升级
 
@@ -10,20 +10,21 @@
 
 窗口“×”仍收起到托盘；“退出应用”先停止本实例后台服务，停止失败保留窗口供重试。微信和外部 DSH 保持运行。卸载默认保留独立数据目录。详见[数据位置与迁移](DATA_STORAGE.md)、[退出与后台服务](EXIT_SHUTDOWN.md)。
 
-## 0.4.2 功能入口
+## 0.2.0 功能入口
 
 六项主导航为概览、聊天、人格、能力、表情包、设置。单聊任务、授权和工作区集中在聊天详情；管理员和反馈语录位于助手设置，搜索与网页阅读位于能力，诊断与日志位于设置。详见[界面导航](UI_LAYOUT.md)、[远程助手](ASSISTANT_REMOTE.md)、[文件收发](FILE_TRANSFER.md)、[语录管理](ASSISTANT_FEEDBACK.md)。
 
+「设置 → 语音与翻唱环境」提供 TTS / RVC 安装、修复和检查，操作说明见[一键安装](AUDIO_INSTALLER.md)。默认本机语音服务自动读取访问凭据。安装包包含微信视频、抖音分享链接点唱入口和解析依赖。
+
 ## 构建
 
-维护者准备已授权的匹配微信、Hook 编译产物、wx_key.dll 和锁定依赖后，按根 package.json 的版本构建。无需准备 DSH 桌面程序或设置 WECHATAGENT_DSH_SOURCE；发行清单标记 dshBundled=false。
+维护者准备与清单匹配的 4.1.8.27 Hook DLL、加载器和锁定依赖后，按根 package.json 的版本构建。当前构建不打包微信客户端或旧版 native/vendor 文件；发行清单标记 dshBundled=false。
 
 ```powershell
-npm run desktop:build
 npm run installer:runtime
-npm run installer:build
 npm run source:build
-node scripts/verify-plugin-release.mjs
+npm run installer:build
+node scripts/finalize-release.mjs
 npm run privacy:check
 ```
 
@@ -33,8 +34,8 @@ npm run privacy:check
 
 本次构建的资源哈希、回归、归档完整性、干净部署及升级保留检查以 VERIFICATION.json 为准。验证使用隔离目录与虚构账号，不向真实微信聊天发送测试消息。安装包未商业代码签名；未在另一台物理设备安装验证时，不将其表述为已完成的验收。
 
-## 新版微信与升级保留
+## 微信版本与升级保留
 
-0.4.2 全新安装使用独立微信 4.1.15.13 和外置原生发送组件。打开匹配微信会自动开启程序目录保护。旧安装升级保留已有的微信版本选择、账号、凭据、人格和允许的聊天；新版客户端同时准备就绪，可在连接设置中切换。维护程序文件前通过客户端维护入口解除保护。
+本发行版继续使用微信 4.1.8.27，升级保留账号、凭据、人格、允许的聊天和用户音色。组件与版本要求见 [4.1.8.27 适配](SUPPLIER_HOOK_41827.md)。
 
-图片和真实 @ 为新增底层原生 API，尚未提供完整的默认 OneBot/模型工具发送链路。具体范围见 [4.1.15.13 适配](WECHAT_4_1_15_13.md)和[客户端保护](CLIENT_PROTECTION.md)。
+本次打包验证不启动微信、不向联系人发送消息。

@@ -18,4 +18,4 @@
 
 当前 CPU 适配需要在数据工作区的 state/maintenance/audio-capabilities/feiyu-cover/ 准备 venv/Scripts/python.exe、runtime.cpu.json，以及相关依赖、固定源码与基础模型。一键安装器会准备这些文件和兼容入口 cover_demo.py；正式调用入口为 scripts/music-cover.py 和 scripts/music-rvc-worker.py，rvc_worker_cpu.py 是早期实验脚本，不是当前正式链路的前置文件。
 
-v0.1.0 基础包不分发这些环境或权重。部署时重新创建虚拟环境、安装依赖并调整配置路径，不应直接搬运带开发机绝对路径的 venv。缺少依赖时能力页显示未就绪。模型和音源遵循各自的许可及平台规则。
+基础安装包不分发大型音频环境或权重。从 v0.2.0 起可在设置页单独下载安装。手动部署时重新创建虚拟环境、安装依赖并调整配置路径，不应直接搬运带开发机绝对路径的 venv。缺少依赖时能力页显示未就绪。模型和音源遵循各自的许可及平台规则。

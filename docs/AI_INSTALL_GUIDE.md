@@ -241,7 +241,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Local cover validation failed' }
 
 接收语音还需要 ASR，见 [语音输入](VOICE_INPUT.md)。本地路径为 `state/media-runtime/venv` 和 `state/media-runtime/models/whisper-small`，依赖见 `scripts/media-runtime-requirements.txt`；不应把 ASR 模型混入 TTS 模型目录。`scripts/setup-local-speech.mjs` 会安装并启用插件、授权当前白名单聊天，执行前需明确告知用户这些配置变更。
 
-视频/抖音点唱还需要解码和解析依赖，见 [视频点唱](VIDEO_SINGING.md)。视频理解采用采样帧和音轨转写，并非完整连续观看。v0.1.0 已发布安装包不包含其后的所有源码功能，先核对实际版本。
+视频/抖音点唱还需要解码和解析依赖，见 [视频点唱](VIDEO_SINGING.md)。视频理解采用采样帧和音轨转写，并非完整连续观看。v0.2.0 安装包已包含对应入口和链接解析依赖；v0.1.0 用户先更新。
 
 ## 7. 常见失败
 
