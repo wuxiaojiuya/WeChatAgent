@@ -14,13 +14,14 @@ p.add_argument("--input", required=True, type=Path)
 p.add_argument("--output-dir", required=True, type=Path)
 p.add_argument("--pitch", type=int, default=0)
 p.add_argument("--quality", choices=["standard", "enhanced"], default="enhanced")
+p.add_argument("--runtime-root", type=Path)
 a = p.parse_args()
 if not -12 <= a.pitch <= 12:
     p.error("Pitch must be between -12 and 12")
 model_dir = a.model.resolve(strict=True)
 profile = json.loads(a.profile.read_text(encoding="utf-8"))
 source, output = a.input.resolve(strict=True), a.output_dir.resolve()
-ROOT = Path(__file__).resolve().parents[1] / "state/maintenance/audio-capabilities/feiyu-cover"
+ROOT = (a.runtime_root or Path(__file__).resolve().parents[1] / "state/maintenance/audio-capabilities/feiyu-cover").resolve(strict=True)
 SERVER = ROOT / "source/astrbot_plugin_feiyu_voice-76774b499f7d306454562d56348dd63399b6d7e8/server"
 sys.path.insert(0, str(SERVER))
 

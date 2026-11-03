@@ -112,7 +112,7 @@ function updateDraftUI() {
   if($('#delete-role'))$('#delete-role').disabled=state.savingAll||roleSaves.size>0||!!state.deletingRole||state.job?.state==='running';
 }
 async function api(route, body, retry = true, options = {}) {
-  const timeout=AbortSignal.timeout(route === '/api/browse' ? 180000 : route === '/api/audio-capabilities/music/request' ? 90000 : route === '/api/audio-capabilities/voice/preview' ? 195000 : route === '/api/audio-capabilities/music/cache' ? 60000 : route === '/api/fish-notebook/write' ? 45000 : route === '/api/plugins/speech-recognition/check' ? 40000 : 20000);
+  const timeout=AbortSignal.timeout(route === '/api/browse' ? 180000 : route === '/api/audio-capabilities/music/request' ? 90000 : route === '/api/audio-capabilities/voice/preview' ? 300000 : route === '/api/audio-capabilities/music/cache' ? 60000 : route === '/api/fish-notebook/write' ? 45000 : route === '/api/plugins/speech-recognition/check' ? 40000 : 20000);
   const response = await fetch(route, { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Console-Token': state.token, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: options.signal?AbortSignal.any([timeout,options.signal]):timeout });
   const result = await response.json();
   if (response.status === 401 && retry) {

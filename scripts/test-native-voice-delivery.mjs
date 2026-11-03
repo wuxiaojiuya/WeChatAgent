@@ -119,8 +119,8 @@ test('console voice endpoint generates, converts and confirms a scoped reply, wh
   fs.writeFileSync(path.join(runtime,'voice-service.json'),JSON.stringify({schema:'feiyu-voice-service-v1',data_dir:data}));
   fs.writeFileSync(path.join(data,'api_key.txt'),'managed-tts-fixture');
   const pcm=Buffer.alloc(48000),wav=Buffer.alloc(48044);wav.write('RIFF');wav.writeUInt32LE(48036,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(24000,24);wav.writeUInt32LE(48000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(pcm.length,40);
-  let generated=0;
-  const app=createConsole({root:f.root,port:0,fetchImpl:async(url,options)=>{
+  let generated=0,converted=0;
+  const app=createConsole({root:f.root,port:0,speechRvc:{available:()=>true,convert:async({audio,modelId})=>{converted++;assert.deepEqual(audio,wav);assert.equal(modelId,'FeiyuVoice-RVC-v1');return {audio:audio.toString('base64'),mime:'audio/wav',runtimeRvc:true};}},fetchImpl:async(url,options)=>{
     const u=new URL(url);
     if(u.port==='9880'){
       assert.equal(options.headers.Authorization,'Bearer managed-tts-fixture');
@@ -142,7 +142,7 @@ test('console voice endpoint generates, converts and confirms a scoped reply, wh
     if(status.sent)break;await delay(5);
   }
   assert.equal(status.sent,true);assert.equal(f.state.posts,1);
-  assert.equal((await (await post('/api/audio-capabilities/voice/request',body)).json()).sent,true);assert.equal(f.state.posts,1);assert.equal(generated,1);
+  assert.equal((await (await post('/api/audio-capabilities/voice/request',body)).json()).sent,true);assert.equal(f.state.posts,1);assert.equal(generated,1);assert.equal(converted,1);
   const saved=await fetch(origin+'/api/audio-capabilities',{headers:{'X-Console-Token':token}}).then(r=>r.json());
-  const preview=await post('/api/audio-capabilities/voice/preview',{revision:saved.revision,text:'Preview'});assert.equal(preview.status,200);assert.equal((await preview.json()).sent,false);assert.equal(f.state.posts,1);
+  const preview=await post('/api/audio-capabilities/voice/preview',{revision:saved.revision,text:'Preview'});assert.equal(preview.status,200);assert.equal((await preview.json()).sent,false);assert.equal(f.state.posts,1);assert.equal(converted,2);
 });

@@ -7,7 +7,7 @@ import {createAudioRuntimeInstaller} from './audio-runtime-installer.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {createRvcModels} from './rvc-models.mjs';
 import {createVoiceProfiles} from './voice-profiles.mjs';
-import {createDirectTts} from './direct-tts.mjs';
+import {createSpeechRvc} from './speech-rvc.mjs';
 import {createPersonaApprovals} from './persona-approvals.mjs';
 import {administratorForChat,administratorFriend,privateChatId} from './chat-administrators.mjs';
 import fs from 'node:fs';
@@ -100,7 +100,7 @@ export function validateConsoleConfig(config, root) {
 
 import {allowedConversation,validateConversationSettings,conversationWorkMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {createNativeVoiceDelivery} from './native-voice-delivery.mjs';
-export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions } = {}) {
+export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions, speechRvc } = {}) {
   const updates=createUpdateChecker({root,fetchImpl});
   const publicDir = path.join(projectRoot, 'public', 'console');
   const pluginInstaller=new PluginInstaller(root);
@@ -109,7 +109,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const voiceProfiles=createVoiceProfiles({root,models:rvcModels});
   const audioInstaller=createAudioRuntimeInstaller({root,nodeExecutable,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
-  const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles,directTts:createDirectTts({root})});
+  const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles,speechRvc:speechRvc??createSpeechRvc({root,models:rvcModels})});
   const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels});
   const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
   const voiceRequests=new Map(),musicDeliveries=new Map();

@@ -40,7 +40,7 @@ export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
       const turn=turnFor();if(!active(def.kind))throw Error('当前聊天的音频能力未开启或已取消。');
       if(++turn.calls>4)throw Error('本轮唱歌操作次数已用完，请勿重复轮询。');
       if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(name=>!Object.hasOwn(def.parameters.properties,name)))throw Error('唱歌参数无效。');
-      const signal=AbortSignal.any([turn.controller.signal,AbortSignal.timeout(def.kind==='voice'?110000:100000),...(exec?.signal?[exec.signal]:[])]);
+      const signal=AbortSignal.any([turn.controller.signal,AbortSignal.timeout(def.kind==='voice'?300000:100000),...(exec?.signal?[exec.signal]:[])]);
       try{
         let value;
         if(def.name==='wechat_voice_reply'){

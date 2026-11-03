@@ -32,26 +32,46 @@ test('a speech-only voice can gain a paired RVC model while retaining its refere
   const pth=await model(),updated=voices.add({existingVoiceId:added.id,name:'说话与唱歌',modelUploadId:pth.uploadId});
   assert.equal(updated.id,added.id);assert(updated.rvcModelId);assert.equal(updated.referenceSha256,added.referenceSha256);
 });
-test('legacy RVC voices require a reference, and one selection controls both direct speech and singing',async t=>{
-  const {root,models,voices,upload,model}=fixture(t),pth=await model(),legacy=models.add({name:'旧音色',modelUploadId:pth.uploadId});
+test('RVC-only voices synthesize first then convert with the same model used for singing',async t=>{
+  const {root,models,voices,model}=fixture(t),pth=await model(),legacy=models.add({name:'旧音色',modelUploadId:pth.uploadId});
   assert.equal(voices.get(legacy.id).ttsReady,false);
-  const calls=[],service=createAudioCapabilities({root,voices,modelExists:id=>!!models.get(id),directTts:{available:()=>true,generate:async value=>{calls.push(value);return {audio:'fixture',mime:'audio/wav',runtimeRvc:false};}},fetchImpl:async()=>assert.fail('Custom direct speech must not call the Feiyu/RVC service')});t.after(()=>service.close());
+  const calls=[],tts=[],wav=Buffer.alloc(48);wav.write('RIFF');wav.write('WAVE',8);let conversionError;
+  const service=createAudioCapabilities({root,voices,modelExists:id=>!!models.get(id),speechRvc:{available:()=>true,convert:async value=>{calls.push(value);if(conversionError)throw conversionError;return {audio:'converted',mime:'audio/wav',runtimeRvc:true};}},fetchImpl:async(url,options)=>{
+    if(url.endsWith('/health'))return Response.json({status:'ok',version:'fixture'});
+    if(url.endsWith('/v1/capabilities'))return Response.json({tts:[{voice:'feiyu',available:true,styles:['cute']}]});
+    if(url.endsWith('/v1/speech')){tts.push(JSON.parse(options.body));return Response.json({id:'tts-fixture'});}
+    return url.endsWith('/audio')?new Response(wav):Response.json({status:'success'});
+  }});t.after(()=>service.close());
   const config={wechat:{whitelist:{private:[],groups:[]}}};
   const save=(kind,value)=>service.save(kind,{revision:service.snapshot().revision,settings:{...audioDefaults()[kind],...value}},config);
-  assert.throws(()=>save('voice',{voiceId:legacy.id}),/参考录音/);
-  const ref=await upload();voices.add({existingVoiceId:legacy.id,name:'统一音色',referenceUploadId:ref.uploadId,referenceText:'参考文字。'});
-  save('voice',{voiceId:legacy.id,emotionMode:'auto'});
+  save('voice',{voiceId:legacy.id,endpoint:'http://127.0.0.1:9882',apiKey:'fixture-credential'});
   assert.equal(service.snapshot().settings.singing.modelId,legacy.id);
-  save('singing',{modelId:DEFAULT_VOICE,enabled:true});assert.equal(service.snapshot().settings.singing.modelId,legacy.id);
-  const result=await service.preview({revision:service.snapshot().revision,text:'直接说话。',emotion:'happy'});
-  assert.equal(calls[0].voiceId,legacy.id);assert.equal(calls[0].text,'直接说话。');assert.equal(calls[0].emotion,'happy');assert.equal(result.runtimeRvc,false);
+  save('singing',{enabled:true});
   assert.equal((await service.checkVoice({revision:service.snapshot().revision})).code,'TTS_CONFIGURED');
+  const result=await service.preview({revision:service.snapshot().revision,text:'先合成再换声。',emotion:'happy'});
+  assert.equal(calls[0].modelId,legacy.id);assert.deepEqual(calls[0].audio,wav);
+  assert.equal(tts[0].text,'先合成再换声。');assert.equal(tts[0].emotion,'happy');assert.equal(result.runtimeRvc,true);assert.equal(result.audio,'converted');
+  conversionError=Object.assign(Error('换声失败'),{status:502});
+  await assert.rejects(service.preview({revision:service.snapshot().revision,text:'不应退回基础音色'}),/换声失败/);
+  assert.equal(service.isBusy(),false);
+  assert.throws(()=>save('voice',{voiceId:'missing-voice'}),/不存在/);
 });
-test('RVC-only migration preserves the chosen voice and never silently speaks in the default voice',async t=>{
+test('RVC-only migration preserves the chosen voice and fails clearly when conversion is unavailable',async t=>{
   const {root,models,voices,model}=fixture(t),pth=await model(),legacy=models.add({name:'旧音色',modelUploadId:pth.uploadId});
   const voice=audioDefaults().voice;delete voice.voiceId;
   fs.mkdirSync(path.join(root,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(root,'state/voice-output/capabilities.json'),JSON.stringify({voice,singing:{...audioDefaults().singing,modelId:legacy.id}}));
-  const service=createAudioCapabilities({root,voices,modelExists:id=>!!models.get(id),fetchImpl:async()=>assert.fail('Missing reference must not infer')});t.after(()=>service.close());
+  const service=createAudioCapabilities({root,voices,modelExists:id=>!!models.get(id),fetchImpl:async()=>assert.fail('Missing RVC runtime must not start TTS')});t.after(()=>service.close());
   assert.equal(service.snapshot().settings.voice.voiceId,legacy.id);
-  await assert.rejects(service.preview({revision:service.snapshot().revision,text:'你好'}),/参考录音/);
+  await assert.rejects(service.preview({revision:service.snapshot().revision,text:'你好'}),/RVC 换声环境/);
+  assert.equal((await service.checkVoice({revision:service.snapshot().revision})).code,'RVC_NOT_CONFIGURED');
+});
+
+test('voice upload accepts and updates an RVC-only model without reference recordings',async t=>{
+  const {voices,model}=fixture(t),pth=await model();
+  const voice=voices.add({name:'只上传模型',modelUploadId:pth.uploadId});
+  assert.equal(voice.ttsReady,false);assert.equal(voice.rvcModelId,voice.id);
+  assert.equal(voices.get(voice.id).name,'只上传模型');
+  const updated=voices.add({name:'更新名称',existingVoiceId:voice.id});
+  assert.equal(updated.id,voice.id);assert.equal(updated.rvcModelId,voice.rvcModelId);
+  assert.throws(()=>voices.add({name:'没有模型'}),/RVC/);
 });

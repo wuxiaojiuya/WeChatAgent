@@ -7,7 +7,7 @@ import {DEFAULT_VOICE,GENTLE_VOICE} from './voice-profiles.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 export const AUDIO_FEATURES = Object.freeze([
-  {id:'native-voice-output', audioKind:'voice', name:'语音回复', description:'选择或上传统一音色，直接合成语音回复，翻唱自动使用配套音色。由 AI 自然选择回复方式。'},
+  {id:'native-voice-output', audioKind:'voice', name:'语音回复', description:'先合成带情绪的语音，再用所选 RVC 音色换声。语音与翻唱共用音色，由 AI 自然选择回复方式。'},
   {id:'native-singing', audioKind:'singing', name:'唱歌', description:'对话点歌，支持 QQ 音乐、网易云、酷狗、微信视频及抖音片段。自动沿用语音回复中音色的 RVC 模型，保留旋律和伴奏。'},
 ]);
 export const audioDefaults = () => ({
@@ -23,7 +23,7 @@ function endpoint(value) {
       !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw fault('服务地址请使用 HTTPS 或本机 HTTP 地址，不要包含路径、密钥或查询参数。');
   return url.origin;
 }
-export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = () => true,nativeStatus=()=>({ready:false}),voices,directTts} = {}) {
+export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = () => true,nativeStatus=()=>({ready:false}),voices,speechRvc} = {}) {
   const file = path.join(root,'state','voice-output','capabilities.json'), controllers = new Set(); let closed = false,inferenceRevision='';
   function read() {
     const raw = fs.existsSync(file) ? fs.readFileSync(file,'utf8') : '', saved = raw ? JSON.parse(raw) : {}, defaults = audioDefaults();
@@ -57,7 +57,7 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     if(kind==='voice') {
       if(!['auto','neutral'].includes(next.emotionMode)||!EMOTION_STRENGTHS.includes(next.emotionStrength))throw fault('请选择有效的情绪表达方式和强度。');
       if(next.provider!=='feiyu'||!['cute','gentle'].includes(next.style)||!['ai-choice','on-request','prefer-voice'].includes(next.mode))throw fault('请选择有效的肥鱼声线和回复方式。');
-      if(typeof next.voiceId!=='string'||voices&&!voices.get(next.voiceId)?.ttsReady)throw fault('请选择可说话的音色；已有 RVC 音色请先补充参考录音和对应文字。');
+      if(typeof next.voiceId!=='string'||voices&&!voices.get(next.voiceId))throw fault('所选音色不存在，请重新选择音色。');
       if(voices?.get(next.voiceId)?.builtin)next.style=voices.get(next.voiceId).style;
       next.endpoint=endpoint(next.endpoint);
       if(typeof next.apiKey!=='string'||next.apiKey.length>4096||/[\r\n\0]/.test(next.apiKey))throw fault('API Key 格式无效。');
@@ -85,7 +85,7 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     return AUDIO_FEATURES.map(feature=>{
       const value=saved.settings[feature.audioKind],count=value.chats.filter(key=>keys.includes(key)).length;
       const selected=voices?.get(saved.settings.voice.voiceId);
-      const configured=feature.audioKind==='voice'?(selected&&!selected.builtin?selected.ttsReady&&directTts?.available():!!value.hasApiKey):!!value.modelId&&modelExists(value.modelId);
+      const configured=feature.audioKind==='voice'?!!value.hasApiKey&&(!voices||!!selected?.rvcModelId&&modelExists(selected.rvcModelId)&&speechRvc?.available()):!!value.modelId&&modelExists(value.modelId);
       const transportReady=nativeStatus().ready===true,ttsVerified=feature.audioKind!=='voice'||inferenceRevision===inferenceKey(read());
       const ready=configured&&transportReady&&ttsVerified;
       return {...feature,management:'audio',builtin:true,host:'console',category:'语音与音乐',enabled:value.enabled,ready,
@@ -105,11 +105,12 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     const result={serviceReachable:false,authenticated:false,ttsConfigured:false,styleConfigured:false,
       keyConfigured:!!credential.key,credentialMode:credential.mode,nativeVoiceSend:nativeStatus().ready===true,nativeReason:nativeStatus().ready?'CONNECTED':'WECHAT_VOICE_NOT_READY',sent:false};
     const finish=(code,message)=>({...result,code,message});
-    if(voices&&!voices.get(value.voiceId)?.builtin){
-      controllers.delete(controller);controller.abort();
-      if(!voices.get(value.voiceId)?.ttsReady)return finish('VOICE_REFERENCE_REQUIRED','请在语音回复中为所选音色补充参考录音与对应文字。');
-      if(!directTts?.available())return finish('TTS_NOT_CONFIGURED','请先在设置中安装 TTS 环境。');
-      return {...result,serviceReachable:true,authenticated:true,ttsConfigured:true,styleConfigured:true,code:'TTS_CONFIGURED',message:'本机直接合成已配置；使用所选音色参考录音，不经过 RVC 换声。请生成试听验证效果。'};
+    if(voices){
+      const model=voices.get(value.voiceId)?.rvcModelId;
+      if(!model||!modelExists(model)||!speechRvc?.available()){
+        controllers.delete(controller);controller.abort();
+        return !model||!modelExists(model)?finish('RVC_MODEL_REQUIRED','设置已保存，请在“上传音色”中补充 RVC 模型，语音与翻唱共用此模型。'):finish('RVC_NOT_CONFIGURED','请先在设置中安装或修复 RVC 换声环境。');
+      }
     }
     async function json(response){
       let size=0;const chunks=[];
@@ -135,7 +136,7 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
       result.styleConfigured=result.ttsConfigured&&Array.isArray(tts.styles)&&tts.styles.includes(value.style);
       if(!result.ttsConfigured)return finish('TTS_NOT_CONFIGURED','密钥有效，但肥鱼 TTS 模型或运行环境未配置完成。');
       if(!result.styleConfigured)return finish('STYLE_NOT_CONFIGURED','TTS 已配置，但当前声线不可用，请核对模型包。');
-      return finish('TTS_CONFIGURED','密钥有效，TTS 配置检查通过。请生成试听验证推理；'+(result.nativeVoiceSend?'微信原生语音通道已连接。':'微信原生语音通道尚未就绪，请登录匹配微信。'));
+      return finish('TTS_CONFIGURED',(voices?'TTS 服务与所选 RVC 音色检查通过。试听会先合成语音，再换成此音色。':'TTS 配置检查通过。')+'请生成试听验证推理；'+(result.nativeVoiceSend?'微信原生语音通道已连接。':'微信原生语音通道尚未就绪，请登录匹配微信。'));
     }catch{
       return finish(requestSignal.aborted?'CHECK_TIMEOUT':'SERVICE_UNAVAILABLE',requestSignal.aborted?'服务检测已取消或超时。':'无法连接肥鱼语音服务，或服务返回格式无效。请先启动服务并核对地址。');
     }finally{controller.abort();controllers.delete(controller);}
@@ -147,20 +148,14 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     if(body?.revision!==saved.revision)throw fault('音频设置已变化，请重新打开配置。',409);
     if(typeof body.text!=='string'||!body.text.trim()||body.text.length>500)throw fault('试听文字需要 1～500 个字符。');
     const value=saved.settings.voice,credential=feiyuCredential(root,value),verifiedKey=inferenceKey(saved);
-    if(voices&&!voices.get(value.voiceId)?.builtin){
-      if(!voices.get(value.voiceId)?.ttsReady)throw fault('所选音色缺少参考录音，请在语音回复中补充；RVC 模型不能直接合成文字。');
-      if(!directTts)throw fault('本机直接合成环境不可用。',503);
-      const controller=new AbortController();controllers.add(controller);
-      try{
-        const expression=speechEmotion(value,body.emotion??'neutral');
-        const result=await directTts.generate({text:body.text.trim(),voiceId:value.voiceId,referenceSha256:voices.get(value.voiceId).referenceSha256,...expression,signal:AbortSignal.any([controller.signal,...(signal?[signal]:[])])});
-        if(inferenceKey(read())!==verifiedKey)throw fault('音色设置已变化，请重新生成试听。',409);
-        inferenceRevision=verifiedKey;return {...result,emotion:expression.emotion,sent:false};
-      }finally{controller.abort();controllers.delete(controller);}
+    const rvcModelId=voices?.get(value.voiceId)?.rvcModelId;
+    if(voices){
+      if(!rvcModelId||!modelExists(rvcModelId))throw fault('所选音色缺少 RVC 模型，请在语音回复中上传模型。');
+      if(!speechRvc?.available())throw fault('本机 RVC 换声环境不可用，请在设置中安装或修复。',503);
     }
     if(!credential.key)throw fault(credential.mode==='managed'?'本机肥鱼服务尚未生成访问凭据，请完成环境安装并启动服务，无需填写 API Key。':'请先保存自定义语音服务的 API Key。');
     const controller=new AbortController();controllers.add(controller);
-    const requestSignal=AbortSignal.any([controller.signal,AbortSignal.timeout(95000),...(signal?[signal]:[])]);
+    const requestSignal=AbortSignal.any([controller.signal,AbortSignal.timeout(voices?285000:95000),...(signal?[signal]:[])]);
     async function request(route, body) {
       const response=await fetchImpl(endpoint(value.endpoint)+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+credential.key,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:requestSignal,redirect:'error'});
       if(!response.ok)throw fault([401,403].includes(response.status)?credential.mode==='managed'?'本机肥鱼服务鉴权失败，请通过项目重启肥鱼服务。':'自定义语音服务鉴权失败，请核对 API Key。':'肥鱼语音服务无法完成试听，请检查 TTS 是否已配置。',502);
@@ -180,8 +175,10 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
       const response=await request('/v1/jobs/'+id+'/audio'),chunks=[];let size=0;
       for await(const chunk of response.body){size+=chunk.length;if(size>16*1024*1024)throw fault('试听文件过大，请缩短文字。',502);chunks.push(chunk);}
       const audio=Buffer.concat(chunks);if(audio.toString('ascii',0,4)!=='RIFF')throw fault('肥鱼服务未返回可播放的 WAV。',502);
+      const converted=voices?await speechRvc.convert({audio,modelId:rvcModelId,signal:requestSignal}):{audio:audio.toString('base64'),mime:'audio/wav'};
+      if(inferenceKey(read())!==verifiedKey)throw fault('音色设置已变化，请重新生成试听。',409);
       inferenceRevision=verifiedKey;
-      return {audio:audio.toString('base64'),mime:'audio/wav',emotion:expression.emotion,sent:false};
+      return {...converted,voiceId:value.voiceId,emotion:expression.emotion,sent:false};
     } catch(error) {if(error.status)throw error;throw fault(requestSignal.aborted?'语音试听已取消或超时。':'无法连接肥鱼本地语音服务，请先启动服务。',502);}
     finally{controller.abort();controllers.delete(controller);}
   }

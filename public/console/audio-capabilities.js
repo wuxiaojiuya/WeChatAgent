@@ -12,8 +12,9 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
     const controller=new AbortController();
     const input=(label,id,value,attrs='',help='')=>`<div class="field"><label for="${id}">${label}</label><input id="${id}" value="${esc(value)}" ${attrs}>${help?`<small>${help}</small>`:''}</div>`;
     const select=(label,id,value,options)=>`<div class="field"><label for="${id}">${label}</label><select id="${id}">${options.map(([key,name])=>`<option value="${esc(key)}" ${key===value?'selected':''}>${esc(name)}</option>`).join('')}</select></div>`;
-    const fields=voice?`${select('音色','audio-voice',settings.voiceId,voices.map(value=>[value.id,value.name+(value.ttsReady?'':'（待补充参考录音）')]))}
-      <p class="subtle">语音和翻唱共用此音色。语音直接合成，翻唱自动使用配套模型。</p>
+    const fields=voice?`${select('音色','audio-voice',settings.voiceId,voices.map(value=>[value.id,value.name+(value.rvcModelId?'':'（待上传 RVC 模型）')]))}
+      <p id="audio-voice-readiness" role="status" class="subtle"></p><button type="button" class="button" id="audio-complete-voice" hidden>补充此音色的 RVC 模型</button>
+      <p class="subtle">先合成语音，再换成所选音色。说话和翻唱共用同一 RVC 模型。</p>
       ${select('回复方式','audio-mode',settings.mode,[['ai-choice','由 AI 自然选择'],['on-request','用户要求时使用语音'],['prefer-voice','优先使用语音回复']])}
       ${select('情绪表达','audio-emotion-mode',settings.emotionMode??'auto',[['auto','AI 根据对话与人格自行判断'],['neutral','始终平静自然']])}
       ${select('情绪强度','audio-emotion-strength',settings.emotionStrength??'natural',[['gentle','轻微含蓄'],['natural','自然适度'],['strong','明显表达']])}
@@ -25,8 +26,8 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       ${input('抖音访问 Cookie（可选）','audio-douyin-cookie','','type="password" autocomplete="new-password" maxlength="32768"',(settings.hasDouyinCookie?'已保存，留空保留。':'')+'链接提示需要访问凭据时，可在本机填写抖音网站 Cookie。仅保存在本机，只用于抖音解析；直接发微信视频无需填写。不要通过聊天发送 Cookie。')}
       <label class="extension-option"><input id="audio-clear-douyin-cookie" type="checkbox" ${settings.hasDouyinCookie?'':'disabled'}>清除已保存的抖音 Cookie</label>`;
     modal(item.name,`<form id="audio-capability-form" class="audio-capability-form"><div class="audio-scroll">
-      <div class="audio-intro"><span class="audio-feature-icon" aria-hidden="true">♪</span><div><strong>${voice?'本机语音回复':'用自己的音色翻唱'}</strong><p>${voice?'直接使用所选音色合成，语音与翻唱共用音色档案。':'人声分离 → RVC 换声 → 伴奏混音'}</p></div></div>
-      <div class="audio-status-note">${voice?'语音合成后通过微信原生语音条发送；试听需要本机 TTS 环境就绪。':'支持对话点歌，也可直接发微信视频或抖音分享链接，说“这段唱给我听”。AI 使用视频原音轨分离、RVC 换声并混音，最长30秒。抖音链接无法公开访问时可改发视频。完成后发送微信原生语音；页面试听只在本机播放。'}<br>${esc(saved.nativeTransport?.message??'请启动并登录连接设置中匹配的微信，连接原生语音发送通道。')}</div>
+      <div class="audio-intro"><span class="audio-feature-icon" aria-hidden="true">♪</span><div><strong>${voice?'本机语音回复':'用自己的音色翻唱'}</strong><p>${voice?'语音合成 → 所选 RVC 音色换声，语音与翻唱共用音色。':'人声分离 → RVC 换声 → 伴奏混音'}</p></div></div>
+      <div class="audio-status-note">${voice?'语音合成并换声后通过微信原生语音条发送；试听需要本机 TTS 与 RVC 环境就绪，无需上传说话录音。':'支持对话点歌，也可直接发微信视频或抖音分享链接，说“这段唱给我听”。AI 使用视频原音轨分离、RVC 换声并混音，最长30秒。抖音链接无法公开访问时可改发视频。完成后发送微信原生语音；页面试听只在本机播放。'}<br>${esc(saved.nativeTransport?.message??'请启动并登录连接设置中匹配的微信，连接原生语音发送通道。')}</div>
       <label class="switch-row audio-enable"><div><strong>启用${item.name}</strong><p>聊天接入后按所选范围使用；本地试听可独立操作。</p></div><span class="switch-control"><input id="audio-enabled" type="checkbox" role="switch" aria-label="启用${item.name}" ${settings.enabled?'checked':''}><span class="switch-track"></span></span></label>
       <section class="audio-section"><h3>${voice?'音色与表达':'翻唱设置'}</h3><div class="form-grid">${fields}</div>${voice?'<button type="button" class="button" id="audio-check-button">保存并检测音色</button><p id="audio-check-status" role="status" class="subtle"></p>':''}</section>
       ${voice?voiceUploadMarkup({voices,esc}):''}
@@ -43,29 +44,47 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
           accompaniment:field('audio-accompaniment').checked,musicSource:field('music-source').value,douyinCookie:field('audio-douyin-cookie').value};
     }
     function error(value){if(closed)return;field('audio-config-error').textContent=value.message;field('audio-config-error').hidden=false;}
+    function showVoiceReadiness(){
+      if(!voice)return;
+      const selected=voices.find(value=>value.id===field('audio-voice').value),missing=selected&&!selected.rvcModelId;
+      field('audio-voice-readiness').textContent=missing?'此音色缺少 RVC 模型，请上传 .pth 和可选 .index 后使用。':selected?'此音色可用于说话换声和翻唱，无需参考录音。生成试听可验证效果。':'请选择音色。';
+      field('audio-complete-voice').hidden=!missing;
+    }
+    if(voice){
+      field('audio-voice').addEventListener('change',showVoiceReadiness);
+      field('audio-complete-voice').addEventListener('click',()=>{
+        field('voice-upload-target').value=field('audio-voice').value;
+        field('voice-upload-target').dispatchEvent(new Event('change'));
+        field('voice-upload-target').closest('details').open=true;
+        field('voice-model').focus();
+      });
+      showVoiceReadiness();
+    }
     async function save() {
       saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:true}:{clearDouyinCookie:field('audio-clear-douyin-cookie').checked})},true,{signal:controller.signal});
       if(!closed&&!voice){field('audio-douyin-cookie').value='';field('audio-clear-douyin-cookie').checked=false;field('audio-clear-douyin-cookie').disabled=!saved.settings.singing.hasDouyinCookie;}
       return saved;
     }
-    if(voice)bindVoiceUpload({form,api,state,signal:controller.signal,getVoices:()=>voices,setVoices(values){voices=values;field('audio-voice').innerHTML=voices.map(value=>`<option value="${esc(value.id)}">${esc(value.name)}</option>`).join('');field('voice-upload-target').innerHTML='<option value="">新建音色</option>'+voices.filter(value=>!value.builtin).map(value=>`<option value="${esc(value.id)}">更新：${esc(value.name)}</option>`).join('');},save,showError:error,setBusy:value=>{busy=value;},isBusy:()=>busy});
+    if(voice)bindVoiceUpload({form,api,state,signal:controller.signal,getVoices:()=>voices,setVoices(values){const current=field('audio-voice').value;voices=values;field('audio-voice').innerHTML=voices.map(value=>`<option value="${esc(value.id)}">${esc(value.name)}${value.rvcModelId?'':'（待上传 RVC 模型）'}</option>`).join('');field('audio-voice').value=current;field('voice-upload-target').innerHTML='<option value="">新建音色</option>'+voices.filter(value=>!value.builtin).map(value=>`<option value="${esc(value.id)}">更新：${esc(value.name)}</option>`).join('');},save:async()=>{const result=await save();showVoiceReadiness();return result;},showError:error,setBusy:value=>{busy=value;},isBusy:()=>busy});
     if(!voice)music=bindMusic({form,api,save,esc,state,signal:controller.signal,showError:error});
     form.addEventListener('submit',async event=>{event.preventDefault();if(busy)return;busy=true;field('audio-config-error').hidden=true;
       try{await save();if(closed)return;closeModal();await renderPage();toast(item.name+'配置已保存。');}catch(value){error(value);}finally{busy=false;}});
     field('audio-preview-button')?.addEventListener('click',async()=>{
       if(busy||!form.reportValidity())return;busy=true;field('audio-preview-button').disabled=true;field('audio-config-error').hidden=true;
-      field('audio-preview-status').textContent='正在使用所选音色直接合成…';
-      try{await save();const result=await api('/api/audio-capabilities/voice/preview',{revision:saved.revision,text:field('audio-preview-text').value,emotion:field('audio-preview-emotion').value},true,{signal:controller.signal});
+      field('audio-preview-status').textContent='正在合成语音并换成所选音色，首次生成需要加载模型…';
+      try{await save();const selected=voices.find(value=>value.id===field('audio-voice').value);
+        if(selected&&!selected.rvcModelId)throw Error('设置已保存，请补充此音色的 RVC 模型后生成试听。');
+        const result=await api('/api/audio-capabilities/voice/preview',{revision:saved.revision,text:field('audio-preview-text').value,emotion:field('audio-preview-emotion').value},true,{signal:controller.signal});
         if(closed)return;const player=field('audio-preview-player');player.pause();if(audioUrl)URL.revokeObjectURL(audioUrl);
         audioUrl=URL.createObjectURL(new Blob([Uint8Array.from(atob(result.audio),char=>char.charCodeAt(0))],{type:result.mime}));player.src=audioUrl;player.hidden=false;field('audio-preview-status').textContent='试听已生成，点击播放器收听。';
-      }catch(value){error(value);if(!closed)field('audio-preview-status').textContent='未生成试听。';}finally{busy=false;if(!closed)field('audio-preview-button').disabled=false;}
+      }catch(value){error(value);if(!closed)field('audio-preview-status').textContent=value.message||'试听生成失败，请重试。';}finally{busy=false;if(!closed)field('audio-preview-button').disabled=false;}
     });
     field('audio-check-button')?.addEventListener('click',async()=>{
       if(busy||!form.reportValidity())return;busy=true;field('audio-check-button').disabled=true;field('audio-config-error').hidden=true;
-      field('audio-check-status').textContent='正在检测所选音色与本机 TTS 环境…';
+      field('audio-check-status').textContent='正在检测 TTS 服务、所选 RVC 音色与换声环境…';
       try{await save();const result=await api('/api/audio-capabilities/voice/check',{revision:saved.revision},true,{signal:controller.signal});
         if(!closed)field('audio-check-status').textContent=result.message;
-      }catch(value){error(value);if(!closed)field('audio-check-status').textContent='检测未完成。';}
+      }catch(value){error(value);if(!closed)field('audio-check-status').textContent=value.message||'音色检测失败，请重试。';}
       finally{busy=false;if(!closed)field('audio-check-button').disabled=false;}
     });
   }

@@ -21,7 +21,8 @@ export function createVoiceProfiles({root,models,prepareReference}={}) {
   function list(){
     const profiles=fs.existsSync(directory)?fs.readdirSync(directory).filter(uuid).flatMap(key=>{
       try{const value=JSON.parse(fs.readFileSync(path.join(directory,key,'voice.json'),'utf8'));
-        return value.id===key&&fs.existsSync(path.join(directory,key,'reference.wav'))?[{...value,directory:path.join(directory,key),ttsReady:true}]:[];
+        const ttsReady=fs.existsSync(path.join(directory,key,'reference.wav'));
+        return value.id===key&&(ttsReady||value.rvcModelId&&models.get(value.rvcModelId))?[{...value,directory:path.join(directory,key),ttsReady}]:[];
       }catch{return [];}
     }):[];
     return [{id:DEFAULT_VOICE,name:'肥鱼 · 可爱',builtin:true,style:'cute',ttsReady:true,rvcModelId:DEFAULT_VOICE},
@@ -44,17 +45,18 @@ export function createVoiceProfiles({root,models,prepareReference}={}) {
     const existing=body?.existingVoiceId?get(body.existingVoiceId):null;
     if(body?.existingVoiceId&&(!existing||existing.builtin))throw fault('请选择已有的自定义音色。');
     const ticket=tickets.get(body?.referenceUploadId),text=body?.referenceText?.trim()||(ticket?'':existing?.referenceText),name=body?.name?.trim();
-    if((!ticket&&!existing?.ttsReady)||body?.referenceUploadId&&!ticket||typeof text!=='string'||!text||text.length>500||/[\0<>]/.test(text)||typeof name!=='string'||!name||name.length>80||/[\r\n\0]/.test(name))throw fault('请上传参考录音，填写音色名称及录音中准确的文字。');
+    if(body?.referenceUploadId&&!ticket||ticket&&(typeof text!=='string'||!text||text.length>500||/[\0<>]/.test(text))||typeof name!=='string'||!name||name.length>80||/[\r\n\0]/.test(name))throw fault('请填写音色名称；上传参考录音时需填写对应文字。');
     if(body.indexUploadId&&!body.modelUploadId)throw fault('索引需要配套的 RVC 模型。');
     let model=existing?.rvcModelId?models.get(existing.rvcModelId):null;
+    if(!ticket&&!existing?.ttsReady&&!model&&!body.modelUploadId)throw fault('请上传 RVC 音色模型。');
     if(body.modelUploadId)model=models.add(body);
     const key=existing?.id??model?.id??crypto.randomUUID(),target=path.join(directory,key);
     fs.mkdirSync(target,{recursive:true});
-    const value={id:key,name,builtin:false,rvcModelId:model?.id??'',referenceText:text,referenceSha256:ticket?crypto.createHash('sha256').update(fs.readFileSync(ticket.file)).digest('hex'):existing.referenceSha256,seconds:ticket?.info.seconds??existing.seconds};
+    const value={id:key,name,builtin:false,rvcModelId:model?.id??'',...(ticket||existing?.ttsReady?{referenceText:text,referenceSha256:ticket?crypto.createHash('sha256').update(fs.readFileSync(ticket.file)).digest('hex'):existing.referenceSha256,seconds:ticket?.info.seconds??existing.seconds}:{})};
     // The metadata is the commit point; an interrupted update fails its hash check.
     if(ticket)fs.copyFileSync(ticket.file,path.join(target,'reference.wav'));
     const temporary=path.join(target,crypto.randomUUID()+'.tmp');fs.writeFileSync(temporary,JSON.stringify(value,null,2),{flag:'wx',mode:0o600});fs.renameSync(temporary,path.join(target,'voice.json'));
-    if(ticket){fs.unlinkSync(ticket.file);tickets.delete(body.referenceUploadId);}return {...value,ttsReady:true};
+    if(ticket){fs.unlinkSync(ticket.file);tickets.delete(body.referenceUploadId);}return {...value,ttsReady:!!ticket||!!existing?.ttsReady};
   }
   return {list,get,upload,add,publicList:()=>list().map(({directory,referenceText,referenceSha256,...value})=>value),close(){for(const ticket of tickets.values())fs.rmSync(ticket.file,{force:true});tickets.clear();}};
 }
