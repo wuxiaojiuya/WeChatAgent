@@ -9,7 +9,7 @@ export async function downloadAudioAsset(url,target,sha,expected,{fetchImpl=fetc
   let offset=fs.existsSync(partial)?fs.statSync(partial).size:0;
   if(expected&&offset>=expected){fs.rmSync(partial);offset=0;}
   const response=await fetchImpl(url,{headers:offset?{Range:`bytes=${offset}-`}:{},signal:AbortSignal.timeout(3600000)});
-  if(!response.ok)throw Object.assign(Error('AUDIO_DOWNLOAD_FAILED'),{status:response.status});
+  if(!response.ok)throw Object.assign(Error(response.status===403||response.status===429?'AUDIO_DOWNLOAD_ACCESS_DENIED':'AUDIO_DOWNLOAD_FAILED'),{status:response.status});
   if(offset&&(response.status!==206||!response.headers.get('content-range')?.startsWith(`bytes ${offset}-`)))offset=0;
   const total=expected||Number(response.headers.get('content-length'))+offset;
   let received=offset,last=0;const fd=fs.openSync(partial,offset?'a':'w');
@@ -22,5 +22,5 @@ export async function downloadAudioAsset(url,target,sha,expected,{fetchImpl=fetc
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
   const [url,target,sha,size]=process.argv.slice(2);
   try{await downloadAudioAsset(url,target,sha,Number(size)||undefined,{notify:e=>console.log(JSON.stringify(e))});}
-  catch(error){console.log(JSON.stringify({phase:'failed',message:'下载未完成',...(Number.isSafeInteger(error.status)?{httpStatus:error.status}:{}),code:/^AUDIO_[A-Z_]+$/.test(error.message)?error.message:'AUDIO_DOWNLOAD_FAILED'}));process.exitCode=1;}
+  catch(error){let host;try{host=new URL(url).hostname;}catch{}console.log(JSON.stringify({phase:'failed',message:'下载未完成',...(host?{sourceHost:host}:{}),...(Number.isSafeInteger(error.status)?{httpStatus:error.status}:{}),code:/^AUDIO_[A-Z_]+$/.test(error.message)?error.message:'AUDIO_DOWNLOAD_FAILED'}));process.exitCode=1;}
 }

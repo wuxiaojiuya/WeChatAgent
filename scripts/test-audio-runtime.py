@@ -9,6 +9,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import unittest
+from unittest.mock import patch
 import zipfile
 
 spec=importlib.util.spec_from_file_location('installer',Path(__file__).with_name('install-audio-runtime.py'))
@@ -16,6 +17,27 @@ installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installe
 
 
 class InstallerTests(unittest.TestCase):
+    def test_verified_model_cache_survives_staging_and_is_reused(self):
+        with tempfile.TemporaryDirectory() as temp,contextlib.redirect_stdout(io.StringIO()):
+            root=Path(temp);config=installer.MANIFEST['models']['tts']
+            def valid(_server,folder):return (folder/'verified.bin').is_file() and (folder/'verified.bin').read_bytes()==b'official fixture'
+            calls=[]
+            def download(command,**_kwargs):
+                calls.append(command);cache=Path(command[-1]);cache.mkdir(parents=True);(cache/'verified.bin').write_bytes(b'official fixture')
+            with patch.object(installer,'package_valid',side_effect=valid),patch.object(installer,'run',side_effect=download):
+                for i in range(2):
+                    stage=root/'state/audio-install/staging'/str(i);stage.mkdir(parents=True)
+                    target,model_stage=installer.model(root,'tts',root/'server',root/'python.exe',{},stage,None)
+                    self.assertEqual((model_stage/'verified.bin').read_bytes(),b'official fixture')
+                    installer.remove_tree(stage)
+                self.assertEqual(len(calls),1)
+                cache=root/'state/audio-install/model-cache/tts'/config['revision']
+                self.assertTrue((cache/'verified.bin').exists())
+                cache.joinpath('verified.bin').write_bytes(b'corrupt')
+                with patch.object(installer,'run'):
+                    with self.assertRaisesRegex(RuntimeError,'AUDIO_MODEL_HASH_MISMATCH'):
+                        installer.model(root,'tts',root/'server',root/'python.exe',{},root/'stage',None)
+
     def test_uninstalled_check_has_specific_error(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(RuntimeError,'AUDIO_ENVIRONMENT_NOT_INSTALLED'):

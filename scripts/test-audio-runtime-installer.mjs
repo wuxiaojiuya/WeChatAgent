@@ -29,6 +29,21 @@ test('asset downloader resumes interrupted downloads and rejects a corrupted pac
   await assert.rejects(downloadAudioAsset(url,target,'0'.repeat(64),bytes.length),/HASH_MISMATCH/);assert(!fs.existsSync(target));assert(!fs.existsSync(target+'.partial'));
 });
 
+test('official HTTP rejection is distinct from connection failure and preserves partial downloads',async t=>{
+  const root=fixture(t),target=path.join(root,'official.fst');fs.writeFileSync(target+'.partial','partial');
+  for(const status of [403,429])await assert.rejects(downloadAudioAsset('https://modelscope.cn/test',target,'0'.repeat(64),100,{fetchImpl:async()=>new Response('limited',{status})}),error=>error.message==='AUDIO_DOWNLOAD_ACCESS_DENIED'&&error.status===status);
+  assert.equal(fs.readFileSync(target+'.partial','utf8'),'partial');assert(!fs.existsSync(target));
+});
+
+test('official download denial reports the source and HTTP status in the console job',async t=>{
+  const root=fixture(t),c=worker();const service=createAudioRuntimeInstaller({...options(root),launch:()=>c});
+  await service.start({kind:'tts',action:'install'});await waitUntil(()=>service.status().job.state==='running'&&fs.existsSync(path.join(root,'state/audio-install/operation.lock')));
+  await new Promise(resolve=>setImmediate(resolve));
+  c.stdout.write(JSON.stringify({phase:'diagnostic',message:'download denied',httpStatus:403,sourceHost:'modelscope.cn'})+'\n');
+  c.stdout.write(JSON.stringify({phase:'failed',message:'failed',code:'AUDIO_DOWNLOAD_ACCESS_DENIED'})+'\n');c.emit('close',1);
+  assert.equal(service.status().job.code,'AUDIO_DOWNLOAD_ACCESS_DENIED');assert.match(service.status().job.message,/modelscope\.cn.*HTTP 403/);
+});
+
 test('bootstrap verifies downloaded bytes before any extraction or execution',async t=>{
   const root=fixture(t);fs.mkdirSync(path.join(root,'scripts'));const bytes=Buffer.from('trusted archive');
   fs.writeFileSync(path.join(root,'scripts/audio-runtime-manifest.json'),JSON.stringify({baseUrl:'http://packages.invalid/',bootstrap:{file:'bootstrap.zip',bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')}}));

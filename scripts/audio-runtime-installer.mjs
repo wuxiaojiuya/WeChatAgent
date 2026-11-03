@@ -28,6 +28,8 @@ export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPat
     if(!busy||typeof e.phase!=='string'||typeof e.message!=='string')return;
     job.phase=e.phase;job.message=e.message.slice(0,300);
     if(/^AUDIO_[A-Z_]+$/.test(e.code??''))job.code=e.code;
+    if(Number.isSafeInteger(e.httpStatus)&&e.httpStatus>=100&&e.httpStatus<=599)job.httpStatus=e.httpStatus;
+    if(typeof e.sourceHost==='string'&&/^[a-z0-9.-]{1,253}$/.test(e.sourceHost))job.sourceHost=e.sourceHost;
     if(Number.isSafeInteger(e.downloaded)&&Number.isSafeInteger(e.total)){job.downloaded=e.downloaded;job.total=e.total;}else{delete job.downloaded;delete job.total;}
     if(e.preview&&typeof e.preview==='string'&&path.resolve(e.preview).startsWith(path.join(root,'state/audio-install/previews')+path.sep))job.preview=e.preview;
     if(e.phase!=='download'&&e.phase!=='bootstrap'||job.events.at(-1)?.phase!==e.phase)job.events=[...job.events,{phase:job.phase,message:job.message,at:Date.now()}].slice(-15);
@@ -37,7 +39,7 @@ export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPat
     if(!busy)return;child=null;busy=false;
     if(/^AUDIO_[A-Z_]+$/.test(error?.message??''))job.code=error.message;
     job.state=code===0?'success':'failed';job.finishedAt=Date.now();
-    const downloadMessages={AUDIO_DOWNLOAD_FAILED:'安装资源下载失败，请检查网络后重试；已有下载进度会保留。',AUDIO_DOWNLOAD_TOOL_FAILED:'下载工具未正常启动，请从托盘完整退出助手并重新打开；仍失败请升级修复版。',AUDIO_ENVIRONMENT_NOT_INSTALLED:'所选音频环境尚未安装，请先点击“一键安装 TTS / RVC”。'};
+    const downloadMessages={AUDIO_DOWNLOAD_ACCESS_DENIED:'资源下载站暂时拒绝访问或限制请求（'+(job.sourceHost??'官方来源')+'，HTTP '+(job.httpStatus??403)+'）。请稍后重试；已下载的模型和资源会保留。',AUDIO_DOWNLOAD_FAILED:'安装资源下载失败，请检查网络后重试；已有下载进度会保留。',AUDIO_DOWNLOAD_TOOL_FAILED:'下载工具未正常启动，请从托盘完整退出助手并重新打开；仍失败请升级修复版。',AUDIO_ENVIRONMENT_NOT_INSTALLED:'所选音频环境尚未安装，请先点击“一键安装 TTS / RVC”。'};
     job.message=code===0?(job.action==='check'?'环境检查通过。':'音频环境及本地音频验证完成。'):messages[job.code]??downloadMessages[job.code]??'操作未完成，请查看 state/audio-install 中的本机日志后重试。';
     save();try{fs.unlinkSync(lock);}catch{}
   }

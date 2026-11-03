@@ -73,6 +73,8 @@ def download(url,target,sha,expected=None):
                     event=json.loads(line.decode('utf-8'))
                     if event.get('phase')=='failed':
                         code=event.get('code')
+                        values={k:event[k] for k in ('httpStatus','sourceHost') if k in event}
+                        emit('diagnostic','安装资源下载未完成',**values)
                         if CURRENT_LOG:
                             with CURRENT_LOG.open('a',encoding='utf-8') as log:log.write(json.dumps(event,ensure_ascii=False)+'\n')
                     else:emit(event['phase'],event['message'],**{k:v for k,v in event.items() if k not in ('phase','message')})
@@ -155,9 +157,18 @@ def model(root,kind,server,python,env,staging,log):
     if target.is_dir() and package_valid(server,target):
         emit('models','已验证并保留现有音色模型');return target,None
     emit('models','正在从原作者下载音色模型，首次下载可能需要较长时间')
+    # Keep resumable official downloads outside disposable staging. A later
+    # resource failure must not discard several GB of already verified models.
+    cache=root/'state/audio-install/model-cache'/kind/config['revision']
+    if cache.is_symlink():raise RuntimeError('AUDIO_TARGET_INVALID')
+    cache.parent.mkdir(parents=True,exist_ok=True)
+    if not cache.is_dir() or not package_valid(server,cache):
+        script='from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1],revision=sys.argv[2],local_dir=sys.argv[3],max_workers=3)'
+        run([python,'-c',script,config['repo'],config['revision'],cache],env=env,timeout=10800,log=log)
+    else:emit('models','复用已校验的官方音色模型缓存，无需重新下载')
+    if not package_valid(server,cache):raise RuntimeError('AUDIO_MODEL_HASH_MISMATCH')
     staged=staging/'model'
-    script='from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1],revision=sys.argv[2],local_dir=sys.argv[3],max_workers=3)'
-    run([python,'-c',script,config['repo'],config['revision'],staged],env=env,timeout=10800,log=log)
+    shutil.copytree(cache,staged,ignore=shutil.ignore_patterns('.cache','.git'))
     if not package_valid(server,staged):raise RuntimeError('AUDIO_MODEL_HASH_MISMATCH')
     return target,staged
 
@@ -299,7 +310,6 @@ def install_environment(root,kind,action,log,staging):
                 cached.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(existing,cached)
             download(asset['url'],cached,asset['sha256'])
             destination=repo/asset['destination'];destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(cached,destination)
-    model_target,model_stage=model(root,kind,server,python,env,staging,log)
     staged_profile=profile(server,kind,python,repo,env)
     final_python=target/'venv/Scripts/python.exe';final_repo=target/repo.name
     staged_profile.update(python=str(final_python),repo=str(final_repo));write_json(staging/'runtime.cpu.json',staged_profile)
@@ -307,15 +317,16 @@ def install_environment(root,kind,action,log,staging):
     venv_config=venv/'pyvenv.cfg'
     venv_config.write_text(venv_config.read_text('utf-8').replace(str(staging/'python'),str(target/'python')),encoding='utf-8')
     changes=[(staging/name,target/name) for name in ['python','venv','git',repo.name,'runtime.cpu.json']]
-    if model_stage:changes.append((model_stage,model_target))
+    model_target=target/'models'/MANIFEST['models'][kind]['folder']
     if kind=='tts':
         wetext=staging/'wetext'
+        emit('resources','正在准备并校验官方文本规范化资源',kind=kind)
         normalizer=target/'normalizer.json'
         try:existing=Path(json.loads(normalizer.read_text('utf-8'))['directory'])
         except (OSError,ValueError,KeyError,TypeError):existing=target/'wetext'
         cache=root/'state/audio-install/official-assets/wetext'
         for name,sha in MANIFEST['wetext'].items():
-            url='https://modelscope.cn/api/v1/models/pengzhendong/wetext/repo?Revision=master&FilePath='+urllib.parse.quote(name)
+            url='https://www.modelscope.cn/models/pengzhendong/wetext/resolve/master/'+urllib.parse.quote(name)
             cached=cache/name;cached.parent.mkdir(parents=True,exist_ok=True)
             if existing and (existing/name).is_file() and digest(existing/name)==sha:shutil.copyfile(existing/name,cached)
             download(url,cached,sha)
@@ -343,6 +354,8 @@ def install_environment(root,kind,action,log,staging):
         write_json(file.parent/'download.json',{'url':demucs_model['url'],'sha256':demucs_model['sha256'],'size':demucs_model['bytes']});changes.append((file.parent,target/'models/demucs'))
         (staging/'cover_demo.py').write_text('from pathlib import Path\nimport runpy\nrunpy.run_path(str(Path(__file__).resolve().parents[4]/"scripts/music-cover.py"),run_name="__main__")\n',encoding='utf-8')
         changes.append((staging/'cover_demo.py',target/'cover_demo.py'))
+    model_target,model_stage=model(root,kind,server,python,env,staging,log)
+    if model_stage:changes.append((model_stage,model_target))
     emit('activate','正在启用新环境并验证；失败时恢复原环境',kind=kind)
     activate(root,changes,lambda:verify(root,kind,log,smoke=True),log)
     write_json(target/'installed.json',{'schema':1,'version':MANIFEST['version'],'verifiedAt':time.time(),'kind':kind,'modelSource':'official','localAudioVerified':True})
