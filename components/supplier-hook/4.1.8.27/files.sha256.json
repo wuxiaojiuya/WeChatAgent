@@ -1,0 +1,12 @@
+[
+    {
+        "file":  "libGLESv1.dll",
+        "sha256":  "0f66f21d86d8d273e6da0fb8d0fbeae59fa0a501e633504aed52f77b79c7a528",
+        "bytes":  11469312
+    },
+    {
+        "file":  "x64 inject.exe",
+        "sha256":  "f839265d1d986bd072135038a27ddb242f39165c572bcb16609a9030a304734e",
+        "bytes":  26112
+    }
+]

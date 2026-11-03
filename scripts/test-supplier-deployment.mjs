@@ -1,0 +1,29 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import deployment from '../apps/console-desktop/deployment.cjs';
+import {validateConfig} from './project-config.mjs';
+
+test('supplier installation starts with clean config and deploys packaged components without old native vendor files',async t=>{
+  const base=fs.mkdtempSync(path.join(os.tmpdir(),'supplier-deploy-'));t.after(()=>fs.rmSync(base,{recursive:true,force:true}));
+  const resources=path.join(base,'resources'),home=path.join(base,'data');
+  const write=(relative,value)=>{const target=path.join(resources,relative);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,typeof value==='object'?JSON.stringify(value):value);};
+  const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url)));
+  validateConfig(config);
+  const files=['config/wechatagent.example.json','roles/示例助手.md','components/supplier-hook/4.1.8.27/libGLESv1.dll'];
+  write('project/deployment.json',{version:'0.1.0',wechatVersion:'4.1.8.27',hookBackend:'supplier-http',dshBundled:false,files});
+  write('project/'+files[0],config);write('project/'+files[1],'Example role');write('project/'+files[2],'fixture-only');
+  write('runtime/python/python.exe','fixture-python');write('runtime/node.exe','fixture-node');
+  await deployment.bootstrapDeployment(resources,home);
+  const cfg=JSON.parse(fs.readFileSync(path.join(home,'workspace/config/wechatagent.json')));
+  assert.equal(cfg.hook.backend,'supplier-http');assert.equal(cfg.hook.expectedVersion,'4.1.8.27');
+  assert.deepEqual(cfg.wechat.whitelist,{groups:[],private:[]});assert.equal(cfg.persona.default,'示例助手');
+  assert(fs.existsSync(path.join(home,'workspace',files[2])));
+  assert(!fs.existsSync(path.join(home,'workspace/state/hook/native')));
+  assert(!fs.existsSync(path.join(home,'workspace/state/hook/wechat-4.1.8.27')));
+  cfg.wechat.whitelist.private=['123'];fs.writeFileSync(path.join(home,'workspace/config/wechatagent.json'),JSON.stringify(cfg));
+  await deployment.bootstrapDeployment(resources,home);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home,'workspace/config/wechatagent.json'))).wechat.whitelist.private,['123']);
+});

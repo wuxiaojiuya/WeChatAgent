@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "runtime": {
+    "python": "python",
+    "dshDesktop": "",
+    "weflowMode": "nt",
+    "sender": "wechat-hook"
+  },
+  "hook": {
+    "baseUrl": "http://127.0.0.1:30001",
+    "expectedVersion": "4.1.8.27",
+    "wechatExecutable": "state/hook/wechat-4.1.8.27/Weixin.exe",
+    "requestTimeoutMs": 5000,
+    "receiptTimeoutMs": 18000,
+    "maxConcurrentSends": 4,
+    "backend": "supplier-http",
+    "sourceDirectory": "components/supplier-hook/4.1.8.27",
+    "upstreamUrl": "http://127.0.0.1:19088",
+    "voiceBaseUrl": "http://127.0.0.1:30001"
+  },
+  "ports": {
+    "weflow": 5031,
+    "onebot": 11229,
+    "adapter": 8766,
+    "dshPlugin": 11230
+  },
+  "account": {
+    "nicknames": [
+      "小助手"
+    ]
+  },
+  "wechat": {
+    "whitelist": {
+      "groups": [],
+      "private": []
+    },
+    "wake_mode": "hybrid",
+    "wake_words": [
+      "小助手"
+    ],
+    "media": {
+      "allowStickerCdn": false,
+      "allowStickerCdnAlias": false
+    },
+    "stickers": {
+      "enabled": true,
+      "labelCache": true,
+      "chats": {},
+      "collectEnabled": true,
+      "shareEnabled": true,
+      "candidateLimit": 8
+    },
+    "search": {
+      "enabled": false,
+      "cache": true,
+      "maxResults": 3,
+      "maxSnippetChars": 1200,
+      "maxSearchesPerTurn": 1,
+      "timeoutMs": 20000,
+      "cacheTtlSeconds": 900,
+      "chats": {}
+    },
+    "proactive": {
+      "enabled": false,
+      "mode": "mixed",
+      "intervalMinutes": 240,
+      "idleMinutes": 120,
+      "startTime": "09:00",
+      "endTime": "22:00",
+      "jitterMinutes": 15,
+      "useSearch": true,
+      "chats": {}
+    },
+    "context": {
+      "enabled": false,
+      "maxTokens": 100000,
+      "idleSeconds": 60,
+      "chats": {}
+    },
+    "webReader": {
+      "enabled": true
+    },
+    "chatModes": {},
+    "dshAccess": {
+      "chats": {}
+    },
+    "memberMemory": {
+      "enabled": true,
+      "chats": {}
+    },
+    "history": {
+      "enabled": true,
+      "recentMessages": 8,
+      "recentChars": 4000,
+      "coldWakeMinutes": 30,
+      "summaryChars": 3200,
+      "summaryInputChars": 24000,
+      "maxSessionTurns": 32,
+      "maxSessionEvents": 1500,
+      "maxContextTokens": 20000,
+      "maxContextChars": 64000,
+      "maxAgeHours": 168,
+      "chats": {},
+      "mode": "window",
+      "restoreHistory": true,
+      "windowStrategy": "append"
+    },
+    "replyLayout": {
+      "maxMessages": 2
+    },
+    "fishNotebook": {
+      "enabled": false,
+      "writeTime": "21:30",
+      "chats": {}
+    }
+  },
+  "persona": {
+    "default": "示例助手",
+    "chats": {}
+  },
+  "social": {
+    "batch_ms": 3000,
+    "min_interval_ms": 15000,
+    "private_min_interval_ms": 1000,
+    "max_per_minute": 3,
+    "max_per_ten_minutes": 10
+  },
+  "dsh": {
+    "provider": "deepseek-account",
+    "model": "deepseek-flash"
+  }
+}

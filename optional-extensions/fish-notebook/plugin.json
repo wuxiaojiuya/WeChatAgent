@@ -1,0 +1,18 @@
+{
+  "id": "fish-notebook",
+  "name": "鱼的记事本",
+  "version": "1.0.0",
+  "apiVersion": 2,
+  "host": "wechatagent",
+  "author": "WeChatAgent",
+  "description": "按当前人设写日记，晚间自动整理；前两次害羞回应，第三次分享当天日记。兼容原有日记与询问计数。",
+  "permissions": ["documents", "history_read", "persona_read", "model_generate", "schedule", "reply"],
+  "requiresHostFeatures": ["actions-v1", "documents-v1", "persona-read-v1", "model-utility-v1", "daily-schedule-v1"],
+  "requiresAccount": true,
+  "dataNamespace": "fish-notebook-v1",
+  "schedule": {"timeSetting": "writeTime", "personaScoped": true},
+  "settings": {"writeTime": "21:30"},
+  "configSchema": {
+    "writeTime": {"type": "string", "title": "晚间整理时间（北京时间）", "description": "HH:MM，例如 21:30。没有当天聊天时不自动写；模型生成会使用额度。", "minLength": 5, "maxLength": 5}
+  }
+}

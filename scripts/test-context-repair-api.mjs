@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createConsole} from './console-server.mjs';
+const project=path.resolve(import.meta.dirname,'..');
+test('context repair API authenticates, confirms, checks saved chat scope and forwards only a guarded local repair',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechatagent-prefix-console-'));
+  const config=JSON.parse(fs.readFileSync(path.join(project,'config/wechatagent.example.json'),'utf8'));
+  config.wechat.whitelist={private:['123'],groups:[]};
+  for(const folder of ['config','roles','state'])fs.mkdirSync(path.join(root,folder),{recursive:true});
+  fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));
+  fs.writeFileSync(path.join(root,'roles',config.persona.default+'.md'),'Fixture persona');
+  fs.writeFileSync(path.join(root,'state/social-dsh-token.txt'),'fixture-prefix-token');
+  const sid='social-'+('f'.repeat(32)),calls=[];let busy=false;
+  const app=createConsole({root,port:0,fetchImpl:async(input,options={})=>{
+    const url=new URL(input);assert.equal(options.headers.Authorization,'Bearer fixture-prefix-token');
+    if(url.pathname==='/health')return Response.json({ok:true,project:'WeChatAgent',projectRoot:root});
+    assert.equal(url.pathname,'/repair-context');assert.equal(options.method,'POST');calls.push(JSON.parse(options.body));
+    return busy?Response.json({error:'agent_unavailable',detail:'session_busy'},{status:503}):Response.json({ok:true,repaired:true,sessionId:sid,historyRetained:true});
+  }});
+  t.after(async()=>{app.server.closeAllConnections();if(app.server.listening)await new Promise(resolve=>app.server.close(resolve));fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  const address=await app.start(),base='http://127.0.0.1:'+address.port,info=await (await fetch(base+'/api/info')).json();
+  const body={key:'wechat:private:123',expectedSessionId:sid,confirmed:true};
+  const send=(value,token=info.token)=>fetch(base+'/api/sessions/repair-context',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':token},body:JSON.stringify(value)});
+  assert.equal((await send(body,'wrong-token')).status,401);
+  assert.equal((await send({...body,confirmed:false})).status,400);
+  assert.equal((await send({...body,key:'wechat:private:999'})).status,403);
+  assert.equal((await send({...body,expectedSessionId:'invalid'})).status,409);assert.equal(calls.length,0);
+  const result=await send({...body,persona:'cannot override owner',tools:['pwsh']});assert.equal(result.status,200);assert((await result.json()).historyRetained);
+  assert.deepEqual(calls,[{conversationKey:body.key,expectedSessionId:sid,confirmed:true}]);
+  busy=true;const blocked=await send(body);assert.equal(blocked.status,503);assert.match(JSON.stringify(await blocked.json()),/正在回复/);
+});
