@@ -41,11 +41,14 @@ if(desktop.version!==version)throw Error('DESKTOP_VERSION_MISMATCH');
 const runtimeProbe=spawnSync(path.join(output,'win-unpacked/resources/runtime/python/python.exe'),['-B','-c',
   'import yt_dlp,imageio_ffmpeg,subprocess,sqlcipher3,PIL; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("PACKAGED_MEDIA_RUNTIME_OK")'],{windowsHide:true,encoding:'utf8',timeout:30000});
 if(runtimeProbe.status!==0)throw Error('PACKAGED_MEDIA_RUNTIME_INVALID');
+const installationProbe=spawnSync(process.execPath,[path.join(root,'scripts/verify-supplier-installation.mjs')],{cwd:root,windowsHide:true,encoding:'utf8',timeout:120000});
+if(installationProbe.status!==0)throw Error('INSTALLED_FIRST_RUN_CHECK_FAILED: '+installationProbe.stdout+'\n'+installationProbe.stderr);
+const installedChecks=JSON.parse(installationProbe.stdout.trim());
 const binary=fs.readFileSync(path.join(output,assets[0])),pe=binary.readUInt32LE(0x3c);
 if(binary.toString('ascii',0,2)!=='MZ'||binary.readUInt32LE(pe)!==0x4550)throw Error('INSTALLER_PE_INVALID');
 const identity=spawnSync('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true,encoding:'utf8'});
 if(identity.status!==0)throw Error('SOURCE_REVISION_UNAVAILABLE');
-Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,
+Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,installedChecks,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),
   validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC pipeline checks were performed separately with verified cached official models; full first-time model downloads require access to official sources.','Video singing was tested using synthetic media; the supplied live Douyin link requires fresh cookies and has not completed real download/cover validation.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
 fs.writeFileSync(path.join(output,'VERIFICATION.json'),JSON.stringify(manifest,null,2)+'\n');
