@@ -10,7 +10,7 @@ const kinds={tts:'feiyu-tts',rvc:'feiyu-cover'};
 const messages={AUDIO_DISK_SPACE_LOW:'可用磁盘空间不足，请至少保留 20 GB 后重试。',AUDIO_DOWNLOAD_HASH_MISMATCH:'下载文件校验失败，请重试。',AUDIO_REPAIR_REQUIRED:'现有环境未通过检查，请点击一键修复。',AUDIO_SERVICES_RUNNING:'请先停止助手及本地音频服务，再安装或修复。',AUDIO_SUBPROCESS_FAILED:'官方源码、模型下载或推理验证失败，请查看本机安装日志。',AUDIO_MODEL_HASH_MISMATCH:'模型未通过官方摘要校验，请重试修复。'};
 const listening=port=>new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port});const finish=value=>{s.destroy();resolve(value);};s.once('connect',()=>finish(true));s.once('error',()=>finish(false));s.setTimeout(500,()=>finish(false));});
 
-export function createAudioRuntimeInstaller({root,launch=spawn,platform=process.platform,arch=process.arch,portProbe=listening,bootstrap=prepareAudioBootstrap,processCheck=assertAudioProcessesStopped}={}){
+export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPath,launch=spawn,platform=process.platform,arch=process.arch,portProbe=listening,bootstrap=prepareAudioBootstrap,processCheck=assertAudioProcessesStopped}={}){
   const folder=path.join(root,'state/audio-install'),lock=path.join(folder,'operation.lock'),stateFile=path.join(folder,'last-job.json');
   let job=null,child=null,busy=false,closed=false;
   try{job=JSON.parse(fs.readFileSync(stateFile,'utf8'));if(job.state==='running')job={...job,state:'interrupted',message:'上次操作中断。重新安装或修复可继续下载，并恢复未完成的启用操作。'};}catch{}
@@ -37,7 +37,8 @@ export function createAudioRuntimeInstaller({root,launch=spawn,platform=process.
     if(!busy)return;child=null;busy=false;
     if(/^AUDIO_[A-Z_]+$/.test(error?.message??''))job.code=error.message;
     job.state=code===0?'success':'failed';job.finishedAt=Date.now();
-    job.message=code===0?(job.action==='check'?'环境检查通过。':'音频环境及本地音频验证完成。'):messages[job.code]??'操作未完成，请查看 state/audio-install 中的本机日志后重试。';
+    const downloadMessages={AUDIO_DOWNLOAD_FAILED:'安装资源下载失败，请检查网络后重试；已有下载进度会保留。',AUDIO_DOWNLOAD_TOOL_FAILED:'下载工具未正常启动，请从托盘完整退出助手并重新打开；仍失败请升级修复版。',AUDIO_ENVIRONMENT_NOT_INSTALLED:'所选音频环境尚未安装，请先点击“一键安装 TTS / RVC”。'};
+    job.message=code===0?(job.action==='check'?'环境检查通过。':'音频环境及本地音频验证完成。'):messages[job.code]??downloadMessages[job.code]??'操作未完成，请查看 state/audio-install 中的本机日志后重试。';
     save();try{fs.unlinkSync(lock);}catch{}
   }
   async function work(body){
@@ -48,7 +49,7 @@ export function createAudioRuntimeInstaller({root,launch=spawn,platform=process.
       }
       const python=await bootstrap(root,notify);if(closed)throw Error('AUDIO_INSTALL_INTERRUPTED');
       let buffer='';
-      child=launch(python,['-B',path.join(root,'scripts/install-audio-runtime.py'),'--root',root,'--kind',body.kind,'--action',body.action],{cwd:root,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',PYTHONUNBUFFERED:'1',WECHATAGENT_INSTALL_NODE:process.execPath}});
+      child=launch(python,['-B',path.join(root,'scripts/install-audio-runtime.py'),'--root',root,'--kind',body.kind,'--action',body.action],{cwd:root,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',PYTHONUNBUFFERED:'1',WECHATAGENT_INSTALL_NODE:nodeExecutable}});
       if(Number.isSafeInteger(child.pid))fs.writeFileSync(lock,JSON.stringify({pid:process.pid,workerPid:child.pid,root}),{mode:0o600});
       child.stdout.setEncoding('utf8');child.stdout.on('data',data=>{
         buffer=(buffer+data).slice(-65536);let end;

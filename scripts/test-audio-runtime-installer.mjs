@@ -72,7 +72,8 @@ test('settings expose install, repair, progress and failure without claiming an 
 test('console API authenticates, validates enums, has read-only GETs and blocks starts during installation',async t=>{
   const root=fixture(t);fs.mkdirSync(path.join(root,'config'));fs.copyFileSync(new URL('../config/wechatagent.example.json',import.meta.url),path.join(root,'config/wechatagent.json'));
   const c=worker();let launches=0;
-  const app=createConsole({root,port:0,audioInstallerOptions:{...options(root),launch:()=>{launches++;return c;}},runner:()=>{assert.fail('must not start project services');}});
+  const nodeExecutable=path.join(root,'bundled-node.exe');
+  const app=createConsole({root,port:0,nodeExecutable,audioInstallerOptions:{...options(root),launch:(_python,_args,launchOptions)=>{assert.equal(launchOptions.env.WECHATAGENT_INSTALL_NODE,nodeExecutable);launches++;return c;}},runner:()=>{assert.fail('must not start project services');}});
   t.after(()=>app.close());const address=await app.start(),base='http://127.0.0.1:'+address.port;
   assert.equal((await fetch(base+'/api/audio-runtime/status')).status,401);
   const info=await fetch(base+'/api/info').then(r=>r.json());
@@ -84,4 +85,22 @@ test('console API authenticates, validates enums, has read-only GETs and blocks 
   assert.equal((await request('/api/jobs',{action:'start'})).status,409);
   assert.equal((await request('/api/audio-runtime/start',{kind:'tts',action:'repair'})).status,409);
   c.emit('close',0);assert(!app.isBusy());
+});
+
+test('installed Electron host passes its bundled Node through Python to the real downloader',async t=>{
+  const root=fixture(t),source=path.resolve(import.meta.dirname,'..'),scripts=path.join(root,'scripts');fs.mkdirSync(scripts);
+  const runtime=path.join(source,'state/installer-stage/runtime');
+  const python=path.join(runtime,'python/python.exe'),nodeExecutable=path.join(runtime,'node.exe');
+  assert(fs.existsSync(python));assert(fs.existsSync(nodeExecutable));assert.notEqual(nodeExecutable,process.execPath);
+  const bytes=Buffer.alloc(256*1024,42),sha=crypto.createHash('sha256').update(bytes).digest('hex');let requests=0;
+  const server=http.createServer((_req,res)=>{requests++;res.writeHead(200,{'Content-Length':bytes.length});res.end(bytes);});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  for(const name of ['audio-runtime-manifest.json','download-audio-asset.mjs'])fs.copyFileSync(path.join(source,'scripts',name),path.join(scripts,name));
+  fs.copyFileSync(path.join(source,'scripts/install-audio-runtime.py'),path.join(scripts,'installer-lib.py'));
+  fs.writeFileSync(path.join(scripts,'fixture.json'),JSON.stringify({url:'http://127.0.0.1:'+server.address().port+'/test.zip',sha,size:bytes.length}));
+  fs.writeFileSync(path.join(scripts,'install-audio-runtime.py'),`import json,runpy\nfrom pathlib import Path\nfolder=Path(__file__).parent\nfixture=json.loads((folder/'fixture.json').read_text())\ninstaller=runpy.run_path(str(folder/'installer-lib.py'))\ninstaller['download'](fixture['url'],folder/'verified.zip',fixture['sha'],fixture['size'])\nprint(json.dumps({'phase':'complete','message':'verified real download'}),flush=True)\n`);
+  const service=createAudioRuntimeInstaller({...options(root),nodeExecutable,bootstrap:async()=>python});t.after(()=>service.close());
+  await service.start({kind:'tts',action:'install'});
+  for(let i=0;i<200&&service.isBusy();i++)await new Promise(resolve=>setTimeout(resolve,25));
+  assert.equal(service.status().job.state,'success',JSON.stringify(service.status().job));assert.equal(requests,1);assert.deepEqual(fs.readFileSync(path.join(scripts,'verified.zip')),bytes);
 });

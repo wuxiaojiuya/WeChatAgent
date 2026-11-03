@@ -16,6 +16,11 @@ installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installe
 
 
 class InstallerTests(unittest.TestCase):
+    def test_uninstalled_check_has_specific_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError,'AUDIO_ENVIRONMENT_NOT_INSTALLED'):
+                installer.verify(Path(temp),'tts',None)
+
     def test_invalid_archives_never_extract_any_members(self):
         for name in ['../outside','C:/outside','/absolute','a/../b','a:stream','NUL.txt','dir./file']:
             with self.subTest(name=name),tempfile.TemporaryDirectory() as temp:

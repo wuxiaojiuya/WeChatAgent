@@ -1,6 +1,6 @@
-# Windows 安装发行版 0.2.2
+# Windows 安装发行版 0.2.3
 
-安装器为 WeChatAgent-Setup-0.2.2-x64.exe，适用 Windows 10/11 x64。包含桌面应用、Node.js、Python、读取依赖和微信 4.1.8.27 的 supplier-http Hook；微信客户端与 DSH 独立安装。公开版本与 npm/Electron 内部版本均为 0.2.2。大型音频环境和模型由设置页单独下载。
+安装器为 WeChatAgent-Setup-0.2.3-x64.exe，适用 Windows 10/11 x64。包含桌面应用、Node.js、Python、读取依赖和微信 4.1.8.27 的 supplier-http Hook；微信客户端与 DSH 独立安装。公开版本与 npm/Electron 内部版本均为 0.2.3。大型音频环境和模型由设置页单独下载。
 
 ## 安装与升级
 
@@ -10,7 +10,7 @@
 
 窗口“×”仍收起到托盘；“退出应用”先停止本实例后台服务，停止失败保留窗口供重试。微信和外部 DSH 保持运行。卸载默认保留独立数据目录。详见[数据位置与迁移](DATA_STORAGE.md)、[退出与后台服务](EXIT_SHUTDOWN.md)。
 
-## 0.2.2 功能入口
+## 0.2.3 功能入口
 
 六项主导航为概览、聊天、人格、能力、表情包、设置。单聊任务、授权和工作区集中在聊天详情；管理员和反馈语录位于助手设置，搜索与网页阅读位于能力，诊断与日志位于设置。详见[界面导航](UI_LAYOUT.md)、[远程助手](ASSISTANT_REMOTE.md)、[文件收发](FILE_TRANSFER.md)、[语录管理](ASSISTANT_FEEDBACK.md)。
 

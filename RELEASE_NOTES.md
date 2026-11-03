@@ -1,5 +1,12 @@
 # 更新记录
 
+## v0.2.3 · 2026-11-03
+
+- 修复桌面安装版的一键音频安装器误用 `WeChatAgent.exe` 启动下载工具，导致 `AUDIO_DOWNLOAD_FAILED` 的问题；改为传递内置 Node.js 路径。
+- 区分下载工具启动失败、网络失败与环境尚未安装，并增加 Python → Node → 真实下载及摘要验证测试。
+
+完整说明见 [v0.2.3](docs/releases/0.2.3.md)。
+
 ## v0.2.2 · 2026-11-03
 
 - 修复独立 Python 启动连接脚本找不到 `supplier_api`，导致“连接并验证”显示 `HOOK_PROBE_FAILED` 的问题。

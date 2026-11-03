@@ -104,7 +104,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const pluginInstaller=new PluginInstaller(root);
   const speechChecks=createSpeechPluginConsole({root,fetchImpl,...(speechCapabilities?{readCapabilities:speechCapabilities}:{})});
   const rvcModels=createRvcModels({root});
-  const audioInstaller=createAudioRuntimeInstaller({root,...audioInstallerOptions});
+  const audioInstaller=createAudioRuntimeInstaller({root,nodeExecutable,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
   const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport});
   const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels});

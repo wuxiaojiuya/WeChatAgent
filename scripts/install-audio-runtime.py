@@ -77,7 +77,7 @@ def download(url,target,sha,expected=None):
                             with CURRENT_LOG.open('a',encoding='utf-8') as log:log.write(json.dumps(event,ensure_ascii=False)+'\n')
                     else:emit(event['phase'],event['message'],**{k:v for k,v in event.items() if k not in ('phase','message')})
                 except (ValueError,KeyError):pass
-            if process.wait():raise RuntimeError(code or 'AUDIO_DOWNLOAD_FAILED')
+            if process.wait():raise RuntimeError(code or 'AUDIO_DOWNLOAD_TOOL_FAILED')
         if not target.exists() or digest(target)!=sha:raise RuntimeError('AUDIO_DOWNLOAD_HASH_MISMATCH')
         return target
     part=target.with_name(target.name+'.partial')
@@ -183,6 +183,8 @@ def local_env(git,root):
 
 def verify(root,kind,log,smoke=False):
     folder=root/'state/maintenance/audio-capabilities'/RUNTIME_NAMES[kind]
+    if not (folder/'venv/Scripts/python.exe').is_file() or not (folder/'runtime.cpu.json').is_file():
+        raise RuntimeError('AUDIO_ENVIRONMENT_NOT_INSTALLED')
     python=folder/'venv/Scripts/python.exe';git=folder/'git/cmd/git.exe';env=local_env(git,root)
     server=root/'state/maintenance/audio-capabilities/feiyu-cover/source'/('astrbot_plugin_feiyu_voice-'+MANIFEST['adapter']['commit'])/'server'
     script='import sys,json;sys.path.insert(0,sys.argv[1]);from feiyu_runtime.common import load,verify_repo,verify_package,prepare,verify_audio_library;import torch; p=load(sys.argv[2]);verify_repo(p);verify_package(sys.argv[3]);prepare(torch,p);verify_audio_library(p)'
