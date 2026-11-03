@@ -6,6 +6,8 @@ import {createAudioCapabilities} from './audio-capabilities.mjs';
 import {createAudioRuntimeInstaller} from './audio-runtime-installer.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {createRvcModels} from './rvc-models.mjs';
+import {createVoiceProfiles} from './voice-profiles.mjs';
+import {createDirectTts} from './direct-tts.mjs';
 import {createPersonaApprovals} from './persona-approvals.mjs';
 import {administratorForChat,administratorFriend,privateChatId} from './chat-administrators.mjs';
 import fs from 'node:fs';
@@ -104,9 +106,10 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const pluginInstaller=new PluginInstaller(root);
   const speechChecks=createSpeechPluginConsole({root,fetchImpl,...(speechCapabilities?{readCapabilities:speechCapabilities}:{})});
   const rvcModels=createRvcModels({root});
+  const voiceProfiles=createVoiceProfiles({root,models:rvcModels});
   const audioInstaller=createAudioRuntimeInstaller({root,nodeExecutable,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
-  const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport});
+  const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles,directTts:createDirectTts({root})});
   const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels});
   const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
   const voiceRequests=new Map(),musicDeliveries=new Map();
@@ -444,6 +447,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         assets['/audio-capabilities.js']=['audio-capabilities.js','text/javascript; charset=utf-8'];
         assets['/audio-runtime.js']=['audio-runtime.js','text/javascript; charset=utf-8'];
         assets['/music-source.js']=['music-source.js','text/javascript; charset=utf-8'];
+        assets['/voice-profiles.js']=['voice-profiles.js','text/javascript; charset=utf-8'];
         assets['/voice-emotion.mjs']=['voice-emotion.mjs','text/javascript; charset=utf-8'];
         assets['/singing-voice.mjs']=['singing-voice.mjs','text/javascript; charset=utf-8'];
         assets['/audio-capabilities.css']=['audio-capabilities.css','text/css; charset=utf-8'];
@@ -469,14 +473,16 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       const musicBase='/api/audio-capabilities/music';
       if(req.method==='GET'&&route===musicBase+'/status')return reply(200,musicCapabilities.status());
       if(req.method==='GET'&&route===musicBase+'/models')return reply(200,{models:rvcModels.publicList()});
+      if(req.method==='GET'&&route==='/api/audio-capabilities/voice/models')return reply(200,{voices:voiceProfiles.publicList()});
       const musicJobRoute=/^\/api\/audio-capabilities\/music\/jobs\/([a-f0-9-]{36})$/.exec(route);
       if(req.method==='GET'&&musicJobRoute){const job=musicCapabilities.getJob(musicJobRoute[1]),entry=musicDeliveries.get(job.id);
         if(entry?.delivery?.state==='unconfirmed'&&entry.delivery.id&&allowedConversation(snapshot().config.wechat,entry.key))entry.delivery=await nativeVoice.refresh(entry.delivery.id,entry.key);
         return reply(200,{...job,sent:entry?.delivery?.sent===true,...(entry?{delivery:entry.delivery??{state:'waiting',sent:false}}:{})});}
-      if(req.method==='POST'&&route===musicBase+'/models/upload'){
+      if(req.method==='POST'&&[musicBase+'/models/upload','/api/audio-capabilities/voice/models/upload'].includes(route)){
         assertIdle();
         if(req.headers['content-type']!=='application/octet-stream')throw fault('请使用模型上传表单。',415);
-        return reply(200,await rvcModels.upload(req,{kind:url.searchParams.get('kind'),name:url.searchParams.get('name')}));
+        const options={kind:url.searchParams.get('kind'),name:url.searchParams.get('name')};
+        return reply(200,options.kind==='reference'&&route.includes('/voice/')?await voiceProfiles.upload(req,options):await rvcModels.upload(req,options));
       }
       if(req.method==='GET'&&route==='/api/sticker-pool')return reply(200,await reader('/api/v1/stickers/pool-status'));
       if(req.method==='GET'&&route==='/api/sticker-manager')return reply(200,await stickerManager(''));
@@ -629,6 +635,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if(route==='/api/audio-capabilities/music/jobs')return reply(202,musicCapabilities.start(body));
       if(route==='/api/audio-capabilities/music/preview')return reply(200,musicCapabilities.preview(body));
       if(route==='/api/audio-capabilities/music/models')return reply(200,rvcModels.add(body));
+      if(route==='/api/audio-capabilities/voice/models')return reply(200,voiceProfiles.add(body));
       if(route==='/api/audio-capabilities/voice/check'){
         const controller=new AbortController(),cancel=()=>controller.abort();res.once('close',cancel);
         try{voiceTransport=await nativeVoice.check({signal:controller.signal});return reply(200,await audioCapabilities.checkVoice(body,{signal:controller.signal}));}
@@ -838,7 +845,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     };
     listen();
   });
-  server.on('close',()=>{audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();rvcModels.close();});
+  server.on('close',()=>{audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();voiceProfiles.close();rvcModels.close();});
   return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
 }
 

@@ -211,7 +211,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     if (!source && !findCached(body.songId) && !tickets.has(body.songId)) throw fault('请重新搜索并选择歌曲。', 409);
     while (jobs.size >= 30) jobs.delete(jobs.keys().next().value);
     const config=structuredClone(settings()),model=models?.get(config.modelId);
-    if(models&&!model)throw fault('所选 RVC 模型已变化，请重新选择。',409);
+    if(models&&!model)throw fault('当前音色没有可用的翻唱模型，请在“语音回复”中补充配套 RVC 模型。',409);
     const id = crypto.randomUUID(), output = path.join(root, 'state', 'music-jobs', id);
     const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,...(source?{sourceKind:'video',conversationKey:source.conversationKey,sourceStartSeconds:source.sourceStartSeconds}:{})};
     jobs.set(id, job); active = true;

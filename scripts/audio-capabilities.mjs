@@ -3,14 +3,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {speechEmotion,EMOTION_STRENGTHS} from './voice-emotion.mjs';
 import {feiyuCredential,managedFeiyuEndpoint} from './feiyu-credentials.mjs';
+import {DEFAULT_VOICE,GENTLE_VOICE} from './voice-profiles.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 export const AUDIO_FEATURES = Object.freeze([
-  {id:'native-voice-output', audioKind:'voice', name:'语音回复', description:'通过肥鱼本地语音服务生成回复，可选择可爱或温柔声线，由 AI 自然选择回复方式。'},
-  {id:'native-singing', audioKind:'singing', name:'唱歌', description:'对话点歌，或发送微信视频/抖音分享链接让 AI 翻唱片段。支持上传 RVC 模型，选择 QQ 音乐、网易云、酷狗或视频音轨，保留旋律和伴奏。'},
+  {id:'native-voice-output', audioKind:'voice', name:'语音回复', description:'选择或上传统一音色，直接合成语音回复，翻唱自动使用配套音色。由 AI 自然选择回复方式。'},
+  {id:'native-singing', audioKind:'singing', name:'唱歌', description:'对话点歌，支持 QQ 音乐、网易云、酷狗、微信视频及抖音片段。自动沿用语音回复中音色的 RVC 模型，保留旋律和伴奏。'},
 ]);
 export const audioDefaults = () => ({
-  voice:{enabled:false, provider:'feiyu', endpoint:'http://127.0.0.1:9880', style:'cute', mode:'ai-choice', emotionMode:'auto', emotionStrength:'natural', chats:[], apiKey:''},
+  voice:{enabled:false, provider:'feiyu', endpoint:'http://127.0.0.1:9880', style:'cute', voiceId:DEFAULT_VOICE, mode:'ai-choice', emotionMode:'auto', emotionStrength:'natural', chats:[], apiKey:''},
   singing:{enabled:false, provider:'feiyu-rvc', modelId:'FeiyuVoice-RVC-v1', pitch:0, accompaniment:true, clipSeconds:30, musicSource:'kugou', chats:[],douyinCookie:''},
 });
 export const audioChatKeys = config => ['private','groups'].flatMap(kind => (config.wechat?.whitelist?.[kind] ?? [])
@@ -22,7 +23,7 @@ function endpoint(value) {
       !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw fault('服务地址请使用 HTTPS 或本机 HTTP 地址，不要包含路径、密钥或查询参数。');
   return url.origin;
 }
-export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = () => true,nativeStatus=()=>({ready:false})} = {}) {
+export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = () => true,nativeStatus=()=>({ready:false}),voices,directTts} = {}) {
   const file = path.join(root,'state','voice-output','capabilities.json'), controllers = new Set(); let closed = false,inferenceRevision='';
   function read() {
     const raw = fs.existsSync(file) ? fs.readFileSync(file,'utf8') : '', saved = raw ? JSON.parse(raw) : {}, defaults = audioDefaults();
@@ -32,6 +33,11 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     if(managedFeiyuEndpoint(voice.endpoint))voice.apiKey='';
     const singing = saved.singing?.provider === 'feiyu-rvc' ? {...defaults.singing,...saved.singing} :
       {...defaults.singing, chats:saved.singing?.chats ?? []};
+    if(voices){
+      if(!saved.voice?.voiceId)voice.voiceId=saved.singing?.provider==='feiyu-rvc'&&singing.modelId!==DEFAULT_VOICE?singing.modelId:voice.style==='gentle'?GENTLE_VOICE:DEFAULT_VOICE;
+      if(voices.get(voice.voiceId)?.builtin)voice.style=voices.get(voice.voiceId).style;
+      singing.modelId=voices.get(voice.voiceId)?.rvcModelId??'';
+    }
     return {settings:{voice,singing},revision:crypto.createHash('sha256').update(raw).digest('hex')};
   }
   function snapshot() {
@@ -51,20 +57,24 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     if(kind==='voice') {
       if(!['auto','neutral'].includes(next.emotionMode)||!EMOTION_STRENGTHS.includes(next.emotionStrength))throw fault('请选择有效的情绪表达方式和强度。');
       if(next.provider!=='feiyu'||!['cute','gentle'].includes(next.style)||!['ai-choice','on-request','prefer-voice'].includes(next.mode))throw fault('请选择有效的肥鱼声线和回复方式。');
+      if(typeof next.voiceId!=='string'||voices&&!voices.get(next.voiceId)?.ttsReady)throw fault('请选择可说话的音色；已有 RVC 音色请先补充参考录音和对应文字。');
+      if(voices?.get(next.voiceId)?.builtin)next.style=voices.get(next.voiceId).style;
       next.endpoint=endpoint(next.endpoint);
       if(typeof next.apiKey!=='string'||next.apiKey.length>4096||/[\r\n\0]/.test(next.apiKey))throw fault('API Key 格式无效。');
       next.apiKey=next.apiKey.trim()||(!body.clearApiKey&&next.endpoint===saved.settings.voice.endpoint?saved.settings.voice.apiKey:'');
       if(body.clearApiKey)next.apiKey='';
       if(managedFeiyuEndpoint(next.endpoint))next.apiKey='';
     } else {
+      if(voices)next.modelId=voices.get(saved.settings.voice.voiceId)?.rvcModelId??'';
+      if(voices&&!next.modelId&&next.enabled)throw fault('所选音色还没有配套翻唱模型，请在“语音回复”中补充，无需另选音色。');
       if(typeof next.douyinCookie!=='string'||next.douyinCookie.length>32768||/[\r\n\0]/.test(next.douyinCookie))throw fault('抖音 Cookie 请填写单行内容，或留空保留。');
       next.douyinCookie=next.douyinCookie.trim()||(!body.clearDouyinCookie?saved.settings.singing.douyinCookie:'');
       if(body.clearDouyinCookie)next.douyinCookie='';
-      if(next.provider!=='feiyu-rvc'||typeof next.modelId!=='string'||!modelExists(next.modelId)||
+      if(next.provider!=='feiyu-rvc'||typeof next.modelId!=='string'||(next.modelId?!modelExists(next.modelId):!voices||next.enabled)||
         !['kugou','qq','netease','local'].includes(next.musicSource)||!Number.isInteger(next.pitch)||next.pitch < -12||next.pitch > 12||
         typeof next.accompaniment!=='boolean'||!Number.isInteger(next.clipSeconds)||next.clipSeconds<10||next.clipSeconds>30)throw fault('请选择已安装的 RVC 模型、歌曲来源和 10～30 秒的试听时长，变调范围为 -12～12。');
     }
-    saved.settings[kind]=next;fs.mkdirSync(path.dirname(file),{recursive:true});
+    saved.settings[kind]=next;if(voices&&kind==='voice')saved.settings.singing.modelId=voices.get(next.voiceId)?.rvcModelId??'';fs.mkdirSync(path.dirname(file),{recursive:true});
     const temporary=file+'.'+crypto.randomUUID()+'.tmp';
     try{fs.writeFileSync(temporary,JSON.stringify(saved.settings,null,2)+'\n',{flag:'wx',mode:0o600});fs.renameSync(temporary,file);}
     finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}
@@ -74,7 +84,8 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     const saved=snapshot(),keys=audioChatKeys(config);
     return AUDIO_FEATURES.map(feature=>{
       const value=saved.settings[feature.audioKind],count=value.chats.filter(key=>keys.includes(key)).length;
-      const configured=feature.audioKind==='voice'?!!value.hasApiKey:!!value.modelId&&modelExists(value.modelId);
+      const selected=voices?.get(saved.settings.voice.voiceId);
+      const configured=feature.audioKind==='voice'?(selected&&!selected.builtin?selected.ttsReady&&directTts?.available():!!value.hasApiKey):!!value.modelId&&modelExists(value.modelId);
       const transportReady=nativeStatus().ready===true,ttsVerified=feature.audioKind!=='voice'||inferenceRevision===inferenceKey(read());
       const ready=configured&&transportReady&&ttsVerified;
       return {...feature,management:'audio',builtin:true,host:'console',category:'语音与音乐',enabled:value.enabled,ready,
@@ -83,7 +94,7 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     });
   }
   function inferenceKey(saved){
-    return crypto.createHash('sha256').update(saved.revision+'\0'+feiyuCredential(root,saved.settings.voice).key).digest('hex');
+    return crypto.createHash('sha256').update(saved.revision+'\0'+feiyuCredential(root,saved.settings.voice).key+'\0'+JSON.stringify(voices?.get(saved.settings.voice.voiceId)??null)).digest('hex');
   }
   async function checkVoice(body,{signal}={}) {
     if(closed)throw fault('语音服务检测已关闭。',503);
@@ -94,6 +105,12 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     const result={serviceReachable:false,authenticated:false,ttsConfigured:false,styleConfigured:false,
       keyConfigured:!!credential.key,credentialMode:credential.mode,nativeVoiceSend:nativeStatus().ready===true,nativeReason:nativeStatus().ready?'CONNECTED':'WECHAT_VOICE_NOT_READY',sent:false};
     const finish=(code,message)=>({...result,code,message});
+    if(voices&&!voices.get(value.voiceId)?.builtin){
+      controllers.delete(controller);controller.abort();
+      if(!voices.get(value.voiceId)?.ttsReady)return finish('VOICE_REFERENCE_REQUIRED','请在语音回复中为所选音色补充参考录音与对应文字。');
+      if(!directTts?.available())return finish('TTS_NOT_CONFIGURED','请先在设置中安装 TTS 环境。');
+      return {...result,serviceReachable:true,authenticated:true,ttsConfigured:true,styleConfigured:true,code:'TTS_CONFIGURED',message:'本机直接合成已配置；使用所选音色参考录音，不经过 RVC 换声。请生成试听验证效果。'};
+    }
     async function json(response){
       let size=0;const chunks=[];
       for await(const chunk of response.body){size+=chunk.length;if(size>65536)throw Error('INVALID_RESPONSE');chunks.push(chunk);}
@@ -130,6 +147,17 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     if(body?.revision!==saved.revision)throw fault('音频设置已变化，请重新打开配置。',409);
     if(typeof body.text!=='string'||!body.text.trim()||body.text.length>500)throw fault('试听文字需要 1～500 个字符。');
     const value=saved.settings.voice,credential=feiyuCredential(root,value),verifiedKey=inferenceKey(saved);
+    if(voices&&!voices.get(value.voiceId)?.builtin){
+      if(!voices.get(value.voiceId)?.ttsReady)throw fault('所选音色缺少参考录音，请在语音回复中补充；RVC 模型不能直接合成文字。');
+      if(!directTts)throw fault('本机直接合成环境不可用。',503);
+      const controller=new AbortController();controllers.add(controller);
+      try{
+        const expression=speechEmotion(value,body.emotion??'neutral');
+        const result=await directTts.generate({text:body.text.trim(),voiceId:value.voiceId,referenceSha256:voices.get(value.voiceId).referenceSha256,...expression,signal:AbortSignal.any([controller.signal,...(signal?[signal]:[])])});
+        if(inferenceKey(read())!==verifiedKey)throw fault('音色设置已变化，请重新生成试听。',409);
+        inferenceRevision=verifiedKey;return {...result,emotion:expression.emotion,sent:false};
+      }finally{controller.abort();controllers.delete(controller);}
+    }
     if(!credential.key)throw fault(credential.mode==='managed'?'本机肥鱼服务尚未生成访问凭据，请完成环境安装并启动服务，无需填写 API Key。':'请先保存自定义语音服务的 API Key。');
     const controller=new AbortController();controllers.add(controller);
     const requestSignal=AbortSignal.any([controller.signal,AbortSignal.timeout(95000),...(signal?[signal]:[])]);

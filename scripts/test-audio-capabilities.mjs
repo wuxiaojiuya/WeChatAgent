@@ -144,7 +144,7 @@ test('emotional preview passes only validated expression and forced neutral supp
 });
 test('catalog describes Feiyu and local RVC without claiming WeChat delivery',t=>{
   const {service}=fixture(t),cards=service.catalog(config);assert.equal(cards.length,2);assert.ok(cards.every(card=>!card.ready));
-  assert.ok(!JSON.stringify(cards).includes('火山'));assert.match(cards[1].description,/QQ 音乐/);assert.match(cards[1].description,/上传/);
+  assert.ok(!JSON.stringify(cards).includes('火山'));assert.match(cards[1].description,/QQ 音乐/);assert.match(cards[1].description,/语音回复/);
 });
 test('voice check distinguishes service, credential and TTS readiness without generating or sending audio',async t=>{
   let status=200,capabilities={tts:[{voice:'feiyu',available:false}]};const calls=[];

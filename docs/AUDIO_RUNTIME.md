@@ -14,7 +14,11 @@
 
 参考 [astrbot_plugin_feiyu_voice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice)：歌曲检索/本地音源 → 分离人声与伴奏 → RVC 换声 → 混音与限幅 → 微信发送。
 
-使用上传的 RVC 模型，不直接使用 TTS 音色 ID。QQ/网易云/酷狗音源受服务及账号权限限制。聊天中可直接点歌，由 AI 判断歌曲与版本。
+在「能力 → 语音回复」统一选择和上传音色，翻唱自动沿用同一份音色档案的配套 RVC 模型。QQ/网易云/酷狗音源受服务及账号权限限制。聊天中可直接点歌，由 AI 判断歌曲与版本。
+
+自定义音色的说话使用 CosyVoice3 根据参考录音直接合成，不经过 RVC 转换。新建音色需上传 3～30 秒清晰无伴奏录音，并准确填写录音文字；要同时翻唱，再在同一处上传同一音色的 `.pth` 推理模型及可选 `.index`。仅有 RVC 模型不能直接合成文字，已有 RVC 音色可在此补充参考录音。只有参考录音时可说话，翻唱需补齐配套模型，不会自动改用其他人的声音。
+
+上传文件只保存在本机 `state/voice-profiles` 和 `state/rvc-models`，不会发布到代码仓库。上传参考录音不等于训练 RVC 模型，录音与翻唱模型是否属于同一音色需由上传者确认，效果以实际试听为准。
 
 当前 CPU 适配需要在数据工作区的 state/maintenance/audio-capabilities/feiyu-cover/ 准备 venv/Scripts/python.exe、runtime.cpu.json，以及相关依赖、固定源码与基础模型。一键安装器会准备这些文件和兼容入口 cover_demo.py；正式调用入口为 scripts/music-cover.py 和 scripts/music-rvc-worker.py，rvc_worker_cpu.py 是早期实验脚本，不是当前正式链路的前置文件。
 

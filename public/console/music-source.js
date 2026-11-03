@@ -5,11 +5,6 @@ export function musicMarkup({settings}) {
     <div class="music-example">你会唱歌吗？<span>会呀，想听哪首？</span></div><div class="music-example">你会唱朋友的酒 DJ 版吗？<span>按 DJ 版找歌，用已选音色翻唱。</span></div></div>
     <div class="field"><label for="music-source">歌曲来源</label><select id="music-source">${[['kugou','酷狗音乐'],['netease','网易云音乐'],['qq','QQ 音乐'],['local','仅本地曲库']].map(([id,name])=>`<option value="${id}" ${settings.musicSource===id?'selected':''}>${name}</option>`).join('')}</select><small>优先复用匹配的本地歌曲。找不到可用音源时会说明，不会用其他版本替代你指定的版本。</small></div>
     <p class="music-retention">下载缓存保存 7 天，到期自动删除。手动导入的歌曲和上传的模型会保留。</p><span id="music-cache-info" class="subtle"></span></section>
-    <section class="audio-section music-section"><details class="music-import"><summary>上传专属 RVC 音色（可选）</summary><div class="form-grid">
-      <div class="field"><label for="music-model-name">音色名称</label><input id="music-model-name" maxlength="80" placeholder="例如：我的唱歌音色"></div>
-      <div class="field"><label for="music-model-file">RVC 模型（.pth）</label><input id="music-model-file" type="file" accept=".pth"><small>上传导出的 RVC v1 / v2 推理模型，最大 512 MB。</small></div>
-      <div class="field"><label for="music-index-file">配套索引（.index，可选）</label><input id="music-index-file" type="file" accept=".index"><small>应与模型来自同一音色，最大 256 MB。</small></div>
-    </div><button type="button" class="button" id="music-model-upload">上传并添加音色</button><p id="music-model-status" class="subtle" role="status"></p></details></section>
     <section class="audio-section music-section audio-preview-section"><details class="music-import" id="music-test"><summary>本机点歌测试与歌曲导入（可选）</summary>
       <p class="subtle">这里可以用一句话测试自动找歌和翻唱；聊天中由 AI 结合上下文理解你的话。</p>
       <div class="field"><label for="music-request">想听什么</label><input id="music-request" maxlength="180" placeholder="你会唱朋友的酒 DJ 版吗"></div>
@@ -42,19 +37,6 @@ export function bindMusic({form,api,save,state,signal,showError}) {
   field('music-import-button').addEventListener('click',()=>action(async()=>{
     await request('/import',{path:field('music-import-path').value.trim().replace(/^"|"$/g,''),title:field('music-import-title').value,artist:''});
     if(closed)return;field('music-import-status').textContent='已加入本地曲库，点歌时会自动匹配使用。';await refresh();
-  }));
-  async function upload(file,kind) {
-    const response=await fetch(base+'/models/upload?'+new URLSearchParams({kind,name:file.name}),{method:'POST',headers:{'X-Console-Token':state.token,'Content-Type':'application/octet-stream'},body:file,signal:AbortSignal.any([signal,AbortSignal.timeout(180000)])});
-    const value=await response.json();if(!response.ok)throw new Error(value.error??'模型上传失败。');return value.uploadId;
-  }
-  field('music-model-upload').addEventListener('click',()=>action(async()=>{
-    const model=field('music-model-file').files[0],index=field('music-index-file').files[0],name=field('music-model-name').value.trim();
-    if(!model||!name)throw new Error('请选择 .pth 模型并填写音色名称。');
-    field('music-model-status').textContent='正在上传并检查模型…';
-    const modelUploadId=await upload(model,'pth'),indexUploadId=index?await upload(index,'index'):null;
-    const added=await request('/models',{name,modelUploadId,indexUploadId});if(closed)return;
-    const option=document.createElement('option');option.value=added.id;option.textContent=added.name;field('audio-model').append(option);field('audio-model').value=added.id;
-    await save();field('music-model-status').textContent='音色已添加并选中，下次翻唱将使用这个模型。';field('music-model-file').value='';field('music-index-file').value='';
   }));
   async function poll(id) {
     while(!closed){
