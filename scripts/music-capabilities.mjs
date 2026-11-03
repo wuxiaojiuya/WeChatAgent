@@ -5,6 +5,7 @@ import {spawn} from 'node:child_process';
 import {validateMusicQuery} from '../packages/music-source/kugou.mjs';
 import {searchMusic,resolveMusic,fetchMusicAudio} from '../packages/music-source/providers.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
+import {mediaFfmpeg,probeMedia} from './media-tools.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 const LIMIT = 64 * 1024 * 1024;
@@ -39,13 +40,11 @@ function execute(executable, args, {signal, cwd, timeoutMs = 120000, onData = ()
 export function createMusicCapabilities({root, fetchImpl = fetch, settings = () => ({musicSource: 'kugou'}), probeAudio, runCover, models, now = Date.now} = {}) {
   const directory = path.join(root, 'state', 'music-library');
   const runtime = path.join(root, 'state', 'maintenance', 'audio-capabilities', 'feiyu-cover');
-  const ffmpeg = fs.existsSync('C:/ffmpeg-tools/bin/ffmpeg.exe') ? 'C:/ffmpeg-tools/bin/ffmpeg.exe' : 'ffmpeg';
-  const ffprobe = fs.existsSync('C:/ffmpeg-tools/bin/ffprobe.exe') ? 'C:/ffmpeg-tools/bin/ffprobe.exe' : 'ffprobe';
   const python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
   const tickets = new Map(), jobs = new Map(), controllers = new Set();
   let active = false, closed = false, preparing = false;
   const probe = probeAudio ?? (async file => {
-    const value = JSON.parse(await execute(ffprobe, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', file], {timeoutMs:15000}));
+    const value = await probeMedia(file, {root});
     if (!value.streams?.some(stream => stream.codec_type === 'audio')) throw fault('文件中没有可解码的音频。');
     return Number(value.format?.duration);
   });
@@ -237,7 +236,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
         if (receipt.status !== 'success' || Math.abs(receipt.seconds - duration) > 0.05) throw fault('翻唱结果校验失败。', 502);
         const wav = path.join(output, 'feiyu-cover-' + Number(duration).toString() + 's.wav');
         job.stage = '正在准备试听文件';
-        await execute(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '256k', path.join(output, 'preview.mp3')], {signal:controller.signal});
+        await execute(mediaFfmpeg(root), ['-hide_banner', '-loglevel', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '256k', path.join(output, 'preview.mp3')], {signal:controller.signal});
         Object.assign(job, {state:'success', stage:'试听已生成', seconds:receipt.seconds, completedAt:new Date().toISOString()});
       } catch (error) {
         if(processLog){fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output+'.log',processLog,{mode:0o600});}

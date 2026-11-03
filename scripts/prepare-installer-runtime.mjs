@@ -40,7 +40,7 @@ for (const [name, version] of packages) {
 }
 fs.writeFileSync(path.join(runtime, 'python313._pth'), 'python313.zip\n.\nLib/site-packages\nimport site\n');
 fs.writeFileSync(path.join(runtime, 'DEPENDENCIES.json'), JSON.stringify(locked, null, 2));
-const probe = spawnSync(path.join(runtime, 'python.exe'), ['-c', 'import sys,sqlcipher3,cryptography,zstandard,Crypto,PIL,imageio_ffmpeg; from sqlcipher3 import dbapi2; db=dbapi2.connect(":memory:"); db.execute("select 1").fetchone(); print("READER_RUNTIME_OK",sys.version.split()[0])'], { windowsHide: true, encoding: 'utf8', timeout: 30000 });
+const probe = spawnSync(path.join(runtime, 'python.exe'), ['-c', 'import sys,sqlcipher3,cryptography,zstandard,Crypto,PIL,imageio_ffmpeg,yt_dlp,subprocess; from sqlcipher3 import dbapi2; db=dbapi2.connect(":memory:"); db.execute("select 1").fetchone(); subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("READER_RUNTIME_OK",sys.version.split()[0])'], { windowsHide: true, encoding: 'utf8', timeout: 30000 });
 if (probe.status !== 0) throw new Error(probe.stderr || 'Bundled Python runtime failed');
 console.log(probe.stdout.trim());
 const nodeLicense=spawnSync('curl.exe',['-fLsS','--connect-timeout','15','--max-time','45','-o',path.join(runtime,'..','NODE-LICENSE.txt'),'https://raw.githubusercontent.com/nodejs/node/'+process.version+'/LICENSE'],{windowsHide:true,encoding:'utf8',timeout:60000});

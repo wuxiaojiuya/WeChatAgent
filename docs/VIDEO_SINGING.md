@@ -20,7 +20,7 @@
 
 支持 v.douyin.com 分享短链、www.douyin.com/video/ 视频链接及官方 iesdouyin 分享链接。仅识别官方域名，不接收任意下载地址。
 
-解析依赖 `scripts/reader-requirements.txt` 中固定版本的 yt-dlp。当前开发机已安装；源码新部署需重新安装读取器依赖，正在运行的读取器和 Bridge/DSH 需重启才能加载新代码。
+v0.2.0 安装包已内置固定版本的 yt-dlp 和 FFmpeg，支持抖音链接解析及视频音轨处理，无需另装 FFmpeg/ffprobe。源码部署需安装 `scripts/reader-requirements.txt` 中的读取器依赖；升级后需重启读取器和 Bridge/DSH 才能加载新代码。
 
 抖音可能要求新 Cookie、登录或拒绝自动访问。可在本机「能力 → 唱歌 → 抖音访问 Cookie」填写网站访问 Cookie；密码框留空保留，支持单独清除。它仅存在本机 state 配置中，不回显至页面、不交给模型、不放进日志，只加入官方抖音域的 Cookie Jar。不要通过微信聊天发送 Cookie。
 

@@ -12,6 +12,7 @@ import threading
 import time
 import wave
 import xml.etree.ElementTree as ET
+from media_tools import ffmpeg_path, probe_media
 
 MAX_VIDEO_BYTES = 100*1024*1024
 
@@ -39,10 +40,9 @@ def ordinary(path):
 
 
 def run_tool(name, args, timeout=12):
-    candidate = pathlib.Path('C:/ffmpeg-tools/bin')/(name+'.exe')
-    tool = str(candidate) if candidate.is_file() else shutil.which(name)
-    if not tool:
-        raise RuntimeError('VIDEO_FFMPEG_MISSING')
+    if name != 'ffmpeg':
+        raise ValueError('Unsupported media tool')
+    tool = ffmpeg_path()
     result = subprocess.run([tool, '-hide_banner', '-loglevel', 'error', *args],
         stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -148,7 +148,7 @@ class VideoCatalog:
                 header = stream.read(32)
             if len(header) < 12 or header[4:8] != b'ftyp':
                 raise RuntimeError('VIDEO_FORMAT_UNSUPPORTED')
-            info = json.loads(run_tool('ffprobe', ['-protocol_whitelist','file,pipe','-show_entries','format=duration:stream=codec_type','-of','json',str(file)]))
+            info = probe_media(file)
             duration = float(info['format']['duration'])
             if not math.isfinite(duration) or not 0 < duration <= 14400:
                 raise RuntimeError('VIDEO_DURATION_INVALID')

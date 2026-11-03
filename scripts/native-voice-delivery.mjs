@@ -7,6 +7,7 @@ import {prepareVoiceClip} from '../packages/voice-output/prepare.mjs';
 import {allowedConversation} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {conversationId} from './hook-onebot.mjs';
 import {hookAccountProblem} from './wechat-account-check.mjs';
+import {mediaFfmpeg} from './media-tools.mjs';
 
 const idPattern=/^[a-f0-9]{64}$/;
 const serverId=value=>typeof value==='string'&&/^[1-9]\d{0,19}$/.test(value);
@@ -17,9 +18,9 @@ export function voiceHookOrigin(value){
   if(url.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.username||url.password||url.search||url.hash||url.pathname!=='/')fail('VOICE_HOOK_ENDPOINT_INVALID');
   return url.origin;
 }
-export async function audioFileToSilk(file,{signal}={}){
+export async function audioFileToSilk(file,{signal,root}={}){
   const stat=fs.statSync(file);if(!stat.isFile()||!stat.size||stat.size>64*1024*1024)fail('VOICE_CONVERSION_FAILED');
-  const ffmpeg=fs.existsSync('C:/ffmpeg-tools/bin/ffmpeg.exe')?'C:/ffmpeg-tools/bin/ffmpeg.exe':'ffmpeg';
+  const ffmpeg=mediaFfmpeg(root);
   const pcm=await new Promise((resolve,reject)=>{
     const child=spawn(ffmpeg,['-hide_banner','-loglevel','error','-nostdin','-protocol_whitelist','file,pipe','-i',file,'-t','60.02','-vn','-ac','1','-ar','24000','-f','s16le','pipe:1'],{windowsHide:true,shell:false,stdio:['ignore','pipe','ignore']});
     const chunks=[];let size=0,error;
@@ -139,7 +140,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     try{
       const own=await identity(current),wxid=await targetFor(key);if(wxid===own.wxid)fail('VOICE_TARGET_UNRESOLVED');
       if(context&&(context.account!==own.account||context.wxid!==own.wxid||context.target!==wxid||context.binding!==binding()||context.policy!==policy(kind)))fail('VOICE_HOOK_ACCOUNT_MISMATCH');
-      const clip=await convert(file,{signal:current});current.throwIfAborted();assertScope(key,kind);
+      const clip=await convert(file,{signal:current,root});current.throwIfAborted();assertScope(key,kind);
       if(r.binding!==binding()||r.origin!==origin()||r.policy!==policy(kind))fail('VOICE_SETTINGS_CHANGED');
       Object.assign(r,{state:'queued',account:own.account,accountWxid:own.wxid,wxid,durationMs:clip.durationMs,silkHash:hash(clip.silk)});
       fs.writeFileSync(path.join(directory,id+'.silk'),clip.silk,{flag:'wx',mode:0o600});persist(r);run(r,signal);

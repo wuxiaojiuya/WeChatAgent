@@ -33,17 +33,21 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
     packagedFiles++;
   }
   for(const relative of ['state','config/wechatagent.json','config/plugins.json','config/extensions.json'])if(fs.existsSync(path.join(directory,relative)))throw Error('PACKAGED_PRIVATE_DATA_REJECTED');
-  for(const relative of ['scripts/audio-runtime-installer.mjs','scripts/install-audio-runtime.py','scripts/audio-runtime-manifest.json','public/console/audio-runtime.js','docs/AUDIO_INSTALLER.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_INSTALLER_NOT_PACKAGED');
+  for(const relative of ['scripts/audio-runtime-installer.mjs','scripts/install-audio-runtime.py','scripts/audio-runtime-manifest.json','public/console/audio-runtime.js','docs/AUDIO_INSTALLER.md',
+    'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','docs/VIDEO_SINGING.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
 }
 const desktop=JSON.parse(fs.readFileSync(path.join(output,'win-unpacked/resources/app/package.json')));
 if(desktop.version!==version)throw Error('DESKTOP_VERSION_MISMATCH');
+const runtimeProbe=spawnSync(path.join(output,'win-unpacked/resources/runtime/python/python.exe'),['-B','-c',
+  'import yt_dlp,imageio_ffmpeg,subprocess,sqlcipher3,PIL; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("PACKAGED_MEDIA_RUNTIME_OK")'],{windowsHide:true,encoding:'utf8',timeout:30000});
+if(runtimeProbe.status!==0)throw Error('PACKAGED_MEDIA_RUNTIME_INVALID');
 const binary=fs.readFileSync(path.join(output,assets[0])),pe=binary.readUInt32LE(0x3c);
 if(binary.toString('ascii',0,2)!=='MZ'||binary.readUInt32LE(pe)!==0x4550)throw Error('INSTALLER_PE_INVALID');
 const identity=spawnSync('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true,encoding:'utf8'});
 if(identity.status!==0)throw Error('SOURCE_REVISION_UNAVAILABLE');
 Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),
-  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC pipeline checks were performed separately with verified cached official models; full first-time model downloads require access to official sources.'],servicesRestarted:false,realWeChatMessagesSent:false});
+  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC pipeline checks were performed separately with verified cached official models; full first-time model downloads require access to official sources.','Video singing was tested using synthetic media; the supplied live Douyin link requires fresh cookies and has not completed real download/cover validation.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
 fs.writeFileSync(path.join(output,'VERIFICATION.json'),JSON.stringify(manifest,null,2)+'\n');
 const sums=assets.map(name=>sha(path.join(output,name))+'  '+name).join('\n')+'\n';
 fs.writeFileSync(path.join(output,'SHA256SUMS.txt'),sums);

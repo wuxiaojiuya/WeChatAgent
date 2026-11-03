@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {createMusicCapabilities} from './music-capabilities.mjs';
+import {mediaFfmpeg} from './media-tools.mjs';
 const videoId='a'.repeat(64),conversationKey='wechat:private:123';
 function wave(){
   const data=Buffer.alloc(44+44100*4);data.write('RIFF');data.writeUInt32LE(data.length-8,4);data.write('WAVEfmt ',8);data.writeUInt32LE(16,16);data.writeUInt16LE(1,20);data.writeUInt16LE(2,22);data.writeUInt32LE(44100,24);data.writeUInt32LE(44100*4,28);data.writeUInt16LE(4,32);data.writeUInt16LE(16,34);data.write('data',36);data.writeUInt32LE(data.length-44,40);return data;
@@ -30,7 +31,7 @@ test('revocation, cancellation, local-only policy and path injection cannot admi
   assert.equal(f.service.status().latestJob,null);
   const controller=new AbortController();controller.abort();await assert.rejects(f.service.requestVideo({videoId,conversationKey},{signal:controller.signal}));assert.equal(calls,1);
 });
-test('verified video clip uses original stereo bytes, skips music search and keeps it out of shared song cache',{skip:!fs.existsSync('C:/ffmpeg-tools/bin/ffmpeg.exe')},async t=>{
+test('verified video clip uses original stereo bytes, skips music search and keeps it out of shared song cache',{skip:!fs.existsSync(mediaFfmpeg())},async t=>{
   let packet,seenInput,bytes,root;
   const f=fixture(t,{settings:()=>({modelId:'configured-voice',pitch:2,accompaniment:true}),fetchImpl:async(url,options)=>{
     assert(new URL(url).pathname.endsWith('/'+videoId+'/singing-audio'));assert.equal(options.headers.Authorization,'Bearer fixture-reader-token');return Response.json(packet);
