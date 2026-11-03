@@ -54,6 +54,18 @@ def main():
     reader = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(reader)
     verify_hook_components(root)
+    config = json.loads((root / 'config/wechatagent.json').read_text(encoding='utf-8-sig'))
+    if config.get('hook', {}).get('backend') == 'supplier-http':
+        startup = subprocess.run([sys.executable, '-B', str(root / 'scripts/supplier-probe.py'), '--check-runtime'],
+            capture_output=True, text=True, encoding='utf-8', timeout=20,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        try:
+            ready = json.loads(startup.stdout)
+        except ValueError:
+            raise RuntimeError('Hook probe startup check failed') from None
+        if startup.returncode or ready.get('probeReady') is not True:
+            module = ready.get('module', '')
+            raise RuntimeError('Hook probe startup check failed: ' + ready.get('code', 'HOOK_PROBE_FAILED') + (' (' + module + ')' if module else ''))
     # This must run in a fresh child, rather than inheriting the reader's sys.path.
     probe = subprocess.run([sys.executable, '-B', str(root / 'scripts/resolve-wechat-image.py'), '--check-runtime'],
         capture_output=True, text=True, encoding='utf-8', timeout=20,
