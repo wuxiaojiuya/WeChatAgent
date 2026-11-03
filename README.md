@@ -40,6 +40,7 @@ Hook 随 Windows 安装包提供，无需填写 DLL 路径或自定义 HTTP 接�
 
 ## 文档
 
+- [交给 AI 的音频环境安装指南](docs/AI_INSTALL_GUIDE.md)
 - [4.1.8.27 Hook](docs/SUPPLIER_HOOK_41827.md)
 - [多模态消息理解](docs/MEDIA_UNDERSTANDING.md)
 - [微信视频与抖音链接翻唱](docs/VIDEO_SINGING.md)

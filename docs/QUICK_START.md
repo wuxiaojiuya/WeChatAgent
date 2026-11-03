@@ -24,6 +24,8 @@
 
 基础安装包包含控制台、桥接代码、Node.js、Python 和微信 Hook；不包含开发机的音频虚拟环境、权重、参考音频及歌曲。见 [音频运行环境](AUDIO_RUNTIME.md)。
 
+若要由 AI 帮助安装语音回复和翻唱环境，请把 [AI 安装指南](AI_INSTALL_GUIDE.md) 交给它，按独立环境、官方模型下载和本地试听的顺序完成验证。
+
 ## 源码运行
 
 需要 Windows、Node.js 22.13+、Python 3.13、Git、DSH 和匹配微信。
