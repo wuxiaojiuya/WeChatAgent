@@ -105,18 +105,25 @@ test('real WAV conversion produces a bounded valid SILK clip',async t=>{
 
 test('console voice endpoint generates, converts and confirms a scoped reply, while retries and preview do not duplicate sends',async t=>{
   const f=fixture(t),key=f.key;
+  Object.assign(f.config.hook,{backend:'supplier-http',expectedVersion:'4.1.8.27',voiceBaseUrl:f.config.hook.baseUrl});
+  Object.assign(f.state.main,{integration:'WeChatAgent-supplier-v1',provider:'supplier-http',version:'4.1.8.27',databaseAccounts:['wxid_self']});
+  Object.assign(f.state.health,{version:'4.1.8.27',databaseAccounts:['wxid_self']});
+  Object.assign(f.state.own,{backend:'supplier-http',accountDirectory:'wxid_self'});f.state.integerIsSend=true;
   fs.mkdirSync(path.join(f.root,'config'),{recursive:true});
   const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url),'utf8'));config.hook={...config.hook,...f.config.hook};config.wechat.whitelist=f.config.wechat.whitelist;
   fs.writeFileSync(path.join(f.root,'config/wechatagent.json'),JSON.stringify(config));
   fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),JSON.stringify({reader_token:'reader-fixture'}));
   fs.mkdirSync(path.join(f.root,'state/voice-output'),{recursive:true});
-  fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key],apiKey:'tts-fixture'}}));
+  fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
+  const runtime=path.join(f.root,'state/maintenance/audio-capabilities/feiyu-tts'),data=path.join(runtime,'service-data');fs.mkdirSync(data,{recursive:true});
+  fs.writeFileSync(path.join(runtime,'voice-service.json'),JSON.stringify({schema:'feiyu-voice-service-v1',data_dir:data}));
+  fs.writeFileSync(path.join(data,'api_key.txt'),'managed-tts-fixture');
   const pcm=Buffer.alloc(48000),wav=Buffer.alloc(48044);wav.write('RIFF');wav.writeUInt32LE(48036,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(24000,24);wav.writeUInt32LE(48000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(pcm.length,40);
   let generated=0;
   const app=createConsole({root:f.root,port:0,fetchImpl:async(url,options)=>{
     const u=new URL(url);
     if(u.port==='9880'){
-      assert.equal(options.headers.Authorization,'Bearer tts-fixture');
+      assert.equal(options.headers.Authorization,'Bearer managed-tts-fixture');
       if(u.pathname==='/v1/speech'){generated++;return Response.json({id:'job-fixture'});}
       if(u.pathname.endsWith('/audio'))return new Response(wav);return Response.json({status:'success'});
     }

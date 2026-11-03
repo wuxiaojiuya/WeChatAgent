@@ -209,7 +209,7 @@ runpy.run_path(str(project / "scripts/music-cover.py"), run_name="__main__")
 & $TtsPython -B .\scripts\feiyu-service.py
 ```
 
-另一个终端检查 `http://127.0.0.1:9880/health`，再打开项目控制台，在「能力 → 语音回复」配置本机服务，并使用本地试听。服务首次生成的 API Key 位于 `service-data/api_key.txt`，只在本机填入能力设置，不打印、不写入文档。情绪覆盖层依赖固定服务源码；出现版本不匹配时核对提交，不删除完整性检查。
+另一个终端检查 `http://127.0.0.1:9880/health`，再打开项目控制台，在「能力 → 语音回复」选择「本机肥鱼服务（自动连接）」，检测后生成本地试听。服务首次生成的 API Key 位于 `data_dir/api_key.txt`，项目自动读取，不要求用户复制填写，不打印、不写入文档。通过 `scripts/feiyu-service.py` 启动时会移除继承的 `FEIYU_API_KEY` 环境变量覆盖，避免进程密钥与磁盘凭据不一致；独立部署的其他服务通过高级自定义配置连接。情绪覆盖层依赖固定服务源码；出现版本不匹配时核对提交，不删除完整性检查。
 
 翻唱在能力页选默认肥鱼模型，或上传自己的 `.pth` 和匹配 `.index`。命令行验收可使用完整默认声库目录，替换下面的音源路径，并为每次运行选新输出目录：
 
@@ -243,6 +243,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Local cover validation failed' }
 
 ## 7. 常见失败
 
+### 从另一目录迁移时额外检查
+
+整份复制 `state/maintenance/audio-capabilities` 不能保证直接运行。Python venv 不是通用便携环境；优先在新位置重建并按本机冻结清单安装。确需迁移已有环境时，至少核对 `pyvenv.cfg` 的基础解释器位置、TTS 服务配置的 `data_dir/package/runtime_profile`、两份 runtime profile 的 `python/repo`，并实际运行两个解释器与模型验证。
+
+WeText 资源可能在原部署进程的 `%LOCALAPPDATA%` 中，而非项目目录；沙箱或桌面应用可能将该变量重定向。先确认原配置所指目录真实存在，再按来源与 SHA256 校验完整资源，将其放入当前工作区的 `state/media-runtime/wetext/` 并更新 `normalizer.json`。不要猜某个固定用户的 AppData 路径，也不要只迁移 JSON 而遗漏 tagger/verbalizer 等资源。`no frontend is available`、`TTS returned no audio` 应检查规范化组件和上游日志，不能只重复填写 Key。
+
+DSH 插件安装目录变化后，需要验证插件 health 返回的 `projectRoot` 指向当前工作区。DSH 启动时加载的旧插件不会因为目录复制就自动切换；如果 AI 自己运行在 DSH 内，应让用户完成重启后继续，而不是关闭自己的宿主。旧进程返回 401 可能是项目令牌不一致，不是 TTS 密钥错误。
+
+PowerShell 5.1 发送包含中文的 JSON 时，应显式使用 UTF-8 字节，例如把 JSON 文本通过 `[Text.Encoding]::UTF8.GetBytes($JsonText)` 转为请求 body，并声明 `application/json; charset=utf-8`。不要仅根据终端显示正常判断收到的中文正常，更不要把被编码替换成 `?` 的请求用于模型验收。
+
 | 现象 | 检查与处理 |
 | --- | --- |
 | `FEIYU_LOCAL_RUNTIME_MISSING` | 检查真实数据工作区、固定服务目录和 `voice-service.json`，不要改指向不存在的路径 |
@@ -253,6 +263,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Local cover validation failed' }
 | `FEIYU_EMOTION_ADAPTER_VERSION_MISMATCH` | 对照本项目情绪覆盖层需要的固定服务提交，不能直接使用最新分支替换 |
 | FAISS 中文路径错误 | 使用仓库正式 `music-rvc-worker.py` 的字节反序列化入口，不改权重或索引 |
 | health 成功但语音失败 | 查看 TTS 工作进程、模型完整性和文本规范化，HTTP 存活并不证明推理可用 |
+| 已填 Key 仍不可用 | 本机默认服务无需填写；先区分服务未启动、自动凭据缺失、鉴权失败和模型缺失，按「保存并检测服务」返回结果处理 |
 | 翻唱提示输入太短 | 选足够长的片段并检查 `--start`，不通过补静音掩盖音源缺失 |
 | CPU 很慢或超时 | 从短句和 10 秒片段开始，记录实际耗时；GPU 加速需另行适配，不虚报速度 |
 | 视频下载失败 | 检查平台访问条件，或改发本地视频，不能用其他歌曲冒充该片段 |

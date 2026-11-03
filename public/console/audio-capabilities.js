@@ -10,14 +10,18 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
     const controller=new AbortController();
     const input=(label,id,value,attrs='',help='')=>`<div class="field"><label for="${id}">${label}</label><input id="${id}" value="${esc(value)}" ${attrs}>${help?`<small>${help}</small>`:''}</div>`;
     const select=(label,id,value,options)=>`<div class="field"><label for="${id}">${label}</label><select id="${id}">${options.map(([key,name])=>`<option value="${esc(key)}" ${key===value?'selected':''}>${esc(name)}</option>`).join('')}</select></div>`;
-    const fields=voice?`${input('肥鱼语音服务地址','audio-endpoint',settings.endpoint,'type="url" maxlength="2048"','启动 astrbot_plugin_feiyu_voice 的本地 HTTP 服务后填写地址。')}
+    const fields=voice?`${select('语音服务','audio-connection',settings.credentialMode??'managed',[['managed','本机肥鱼服务（自动连接）'],['custom','自定义服务（高级）']])}
+      <p id="audio-local-credentials" class="subtle">本机服务的访问凭据由项目自动读取，无需复制或填写。请先完成音频环境安装并启动服务。</p>
+      <div id="audio-custom-service" hidden>
+        ${input('自定义语音服务地址','audio-endpoint',settings.endpoint,'type="url" maxlength="2048"','仅连接另行部署的语音服务时修改。')}
+        ${input('自定义服务 API Key','audio-api-key','','type="password" autocomplete="new-password" maxlength="4096"',settings.credentialMode==='custom'&&settings.hasApiKey?'已保存，留空保留。':'填写自定义服务提供的访问凭据；本机默认服务无需填写。')}
+        <label class="extension-option"><input id="audio-clear-key" type="checkbox" ${settings.credentialMode==='custom'&&settings.hasApiKey?'':'disabled'}>清除自定义服务密钥</label>
+      </div>
       ${select('默认声线','audio-style',settings.style,[['cute','可爱'],['gentle','温柔']])}
       ${select('回复方式','audio-mode',settings.mode,[['ai-choice','由 AI 自然选择'],['on-request','用户要求时使用语音'],['prefer-voice','优先使用语音回复']])}
       ${select('情绪表达','audio-emotion-mode',settings.emotionMode??'auto',[['auto','AI 根据对话与人格自行判断'],['neutral','始终平静自然']])}
       ${select('情绪强度','audio-emotion-strength',settings.emotionStrength??'natural',[['gentle','轻微含蓄'],['natural','自然适度'],['strong','明显表达']])}
-      <p class="subtle">AI 会区分开心、难过、不满、安慰、担忧和惊讶，用同一声线表达。需要支持情绪指令的本地肥鱼服务；效果以试听为准。</p>
-      ${input('肥鱼服务 API Key','audio-api-key','','type="password" autocomplete="new-password" maxlength="4096"',(settings.hasApiKey?'已保存，留空保留。':'')+'这是肥鱼服务的本地访问令牌，不是火山引擎密钥，也不是 RVC 模型密钥。首次启动服务后，在服务目录的 .runtime/voice-service/api_key.txt 获取；自定义 data_dir 时到该目录查找。仅本机翻唱不需要此 Key。')}
-      <label class="extension-option"><input id="audio-clear-key" type="checkbox" ${settings.hasApiKey?'':'disabled'}>清除已保存的密钥</label>`:
+      <p class="subtle">AI 会区分开心、难过、不满、安慰、担忧和惊讶，用同一声线表达。需要支持情绪指令的本地肥鱼服务；效果以试听为准。</p>`:
       `${select('唱歌音色 / RVC 模型','audio-model',settings.modelId,models.map(model=>[model.id,model.name]))}
       ${input('变调（半音）','audio-pitch',settings.pitch,'type="number" min="-12" max="12" step="1"','0 保留原调，正数升调，负数降调。')}
       ${input('试听时长（秒）','audio-clip',settings.clipSeconds,'type="number" min="10" max="30" step="1"')}
@@ -34,16 +38,25 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       </div><div class="audio-footer"><p id="audio-config-error" class="extension-error" role="alert" hidden></p><div class="modal-actions"><button type="button" class="button" data-close>关闭</button><button type="submit" class="button primary">保存配置</button></div></div></form>`,
       {className:'audio-modal',onClose(){closed=true;controller.abort();music?.close();document.querySelector('#audio-preview-player')?.pause();if(audioUrl)URL.revokeObjectURL(audioUrl);}});
     const form=document.querySelector('#audio-capability-form'),field=id=>form.querySelector('#'+id);
+    const managed=()=>field('audio-connection').value==='managed';
+    if(voice){
+      const updateConnection=()=>{
+        field('audio-custom-service').hidden=managed();field('audio-local-credentials').hidden=!managed();
+        for(const id of ['audio-endpoint','audio-api-key'])field(id).disabled=managed();
+        field('audio-clear-key').disabled=managed()||saved.settings.voice.credentialMode!=='custom'||!saved.settings.voice.hasApiKey;
+      };
+      field('audio-connection').addEventListener('change',updateConnection);updateConnection();
+    }
     function collect() {
       const common={enabled:field('audio-enabled').checked,chats:[...form.querySelectorAll('[name="audio-chat"]:checked')].map(input=>input.value)};
-      return voice?{...common,provider:'feiyu',endpoint:field('audio-endpoint').value.trim(),style:field('audio-style').value,mode:field('audio-mode').value,emotionMode:field('audio-emotion-mode').value,emotionStrength:field('audio-emotion-strength').value,apiKey:field('audio-api-key').value}:
+      return voice?{...common,provider:'feiyu',endpoint:managed()?'http://127.0.0.1:9880':field('audio-endpoint').value.trim(),style:field('audio-style').value,mode:field('audio-mode').value,emotionMode:field('audio-emotion-mode').value,emotionStrength:field('audio-emotion-strength').value,apiKey:managed()?'':field('audio-api-key').value}:
         {...common,provider:'feiyu-rvc',modelId:field('audio-model').value,pitch:Number(field('audio-pitch').value),clipSeconds:Number(field('audio-clip').value),
           accompaniment:field('audio-accompaniment').checked,musicSource:field('music-source').value,douyinCookie:field('audio-douyin-cookie').value};
     }
     function error(value){if(closed)return;field('audio-config-error').textContent=value.message;field('audio-config-error').hidden=false;}
     async function save() {
-      saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:field('audio-clear-key').checked}:{clearDouyinCookie:field('audio-clear-douyin-cookie').checked})},true,{signal:controller.signal});
-      if(!closed&&voice){field('audio-api-key').value='';field('audio-clear-key').checked=false;field('audio-clear-key').disabled=!saved.settings.voice.hasApiKey;}
+      saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:managed()||field('audio-clear-key').checked}:{clearDouyinCookie:field('audio-clear-douyin-cookie').checked})},true,{signal:controller.signal});
+      if(!closed&&voice){field('audio-api-key').value='';field('audio-clear-key').checked=false;field('audio-clear-key').disabled=managed()||saved.settings.voice.credentialMode!=='custom'||!saved.settings.voice.hasApiKey;}
       if(!closed&&!voice){field('audio-douyin-cookie').value='';field('audio-clear-douyin-cookie').checked=false;field('audio-clear-douyin-cookie').disabled=!saved.settings.singing.hasDouyinCookie;}
       return saved;
     }
@@ -60,7 +73,7 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
     });
     field('audio-check-button')?.addEventListener('click',async()=>{
       if(busy||!form.reportValidity())return;busy=true;field('audio-check-button').disabled=true;field('audio-config-error').hidden=true;
-      field('audio-check-status').textContent='正在检测肥鱼服务、密钥和 TTS 配置…';
+      field('audio-check-status').textContent='正在检测语音服务、自动连接和 TTS 配置…';
       try{await save();const result=await api('/api/audio-capabilities/voice/check',{revision:saved.revision},true,{signal:controller.signal});
         if(!closed)field('audio-check-status').textContent=result.message;
       }catch(value){error(value);if(!closed)field('audio-check-status').textContent='检测未完成。';}

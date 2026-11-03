@@ -19,6 +19,9 @@ normalizer = runtime/'feiyu-tts/normalizer.json'
 if normalizer.is_file():
     os.environ['WECHATAGENT_FEIYU_WETEXT'] = json.loads(normalizer.read_text())['directory']
 os.environ['PYTHONIOENCODING'] = 'utf-8'
+# The managed service and console share the generated data_dir/api_key.txt.
+# An inherited override would make that local credential silently stop working.
+os.environ.pop('FEIYU_API_KEY', None)
 os.environ['PATH'] = os.pathsep.join([str(runtime/'feiyu-cover/tools/mingit/cmd'), 'C:/ffmpeg-tools/bin', os.environ.get('PATH', '')])
 sys.argv = ['feiyu_voice_service', '--config', str(config), '--host', '127.0.0.1', '--port', '9880']
 runpy.run_module('feiyu_voice_service', run_name='__main__')

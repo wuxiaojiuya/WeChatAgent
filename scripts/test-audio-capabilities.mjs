@@ -5,14 +5,77 @@ import path from 'node:path';
 import os from 'node:os';
 import {createAudioCapabilities,audioDefaults} from './audio-capabilities.mjs';
 import {createConsole} from './console-server.mjs';
+import {feiyuCredential} from './feiyu-credentials.mjs';
 const secret='fixture-feiyu-credential';
 const config={wechat:{whitelist:{private:['123'],groups:['456']}}};
-function fixture(t,fetchImpl){
+function fixture(t,fetchImpl,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'feiyu-audio-'));
-  const service=createAudioCapabilities({root,fetchImpl});t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
-  const save=(kind,value,extra={})=>service.save(kind,{revision:service.snapshot().revision,settings:{...audioDefaults()[kind],...value},...extra},config);
+  const service=createAudioCapabilities({root,fetchImpl,...options});t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
+  const save=(kind,value,extra={})=>service.save(kind,{revision:service.snapshot().revision,settings:{...audioDefaults()[kind],...(kind==='voice'?{endpoint:'http://127.0.0.1:9882'}:{}),...value},...extra},config);
   return {root,service,save};
 }
+
+function localCredential(root,key,{relative=false}={}){
+  const folder=path.join(root,'state/maintenance/audio-capabilities/feiyu-tts');fs.mkdirSync(folder,{recursive:true});
+  const server=path.join(root,'state/maintenance/audio-capabilities/feiyu-cover/source/astrbot_plugin_feiyu_voice-76774b499f7d306454562d56348dd63399b6d7e8/server');
+  const data=relative?'custom-service-data':path.join(folder,'service-data');
+  fs.writeFileSync(path.join(folder,'voice-service.json'),JSON.stringify({schema:'feiyu-voice-service-v1',data_dir:data}));
+  const keyFile=path.resolve(server,data,'api_key.txt');fs.mkdirSync(path.dirname(keyFile),{recursive:true});fs.writeFileSync(keyFile,key);return keyFile;
+}
+
+test('managed speech reads the actual service key, overrides stale manual keys and invalidates readiness after rotation',async t=>{
+  let current='managed-local-credential-one';const wav=Buffer.alloc(48);wav.write('RIFF');wav.write('WAVE',8);
+  const {root,service,save}=fixture(t,async(url,options)=>{
+    if(url.endsWith('/health'))return Response.json({status:'ok',version:'fixture'});
+    assert.equal(options.headers.Authorization,'Bearer '+current);
+    if(url.endsWith('/v1/capabilities'))return Response.json({tts:[{voice:'feiyu',available:true,styles:['cute']}]});
+    if(url.endsWith('/v1/speech'))return Response.json({id:'managed-job'});
+    return url.endsWith('/audio')?new Response(wav):Response.json({status:'success'});
+  },{nativeStatus:()=>({ready:true})});
+  const keyFile=localCredential(root,current,{relative:true});
+  save('voice',{endpoint:'http://127.0.0.1:9880',apiKey:'stale-manual-credential'});
+  const saved=service.snapshot();assert.equal(saved.settings.voice.credentialMode,'managed');assert.equal(saved.settings.voice.hasApiKey,true);assert.equal(saved.settings.voice.apiKey,'');
+  assert(!JSON.stringify(saved).includes(current));assert(!fs.readFileSync(path.join(root,'state/voice-output/capabilities.json'),'utf8').includes('stale-manual-credential'));
+  assert.equal((await service.checkVoice({revision:saved.revision})).code,'TTS_CONFIGURED');
+  await service.preview({revision:saved.revision,text:'你好'});assert.equal(service.catalog(config)[0].ready,true);
+  current='managed-local-credential-two';fs.writeFileSync(keyFile,current);
+  assert.equal(service.catalog(config)[0].ready,false);assert.equal(service.snapshot().revision,saved.revision);
+  assert.equal((await service.checkVoice({revision:saved.revision})).authenticated,true);
+  await service.preview({revision:saved.revision,text:'你好'});assert.equal(service.catalog(config)[0].ready,true);
+});
+
+test('managed credentials never leave for custom addresses or silently carry over when switching services',async t=>{
+  const {root,service,save}=fixture(t,async()=>assert.fail('Missing credential must not start inference'));
+  const key=localCredential(root,'private-managed-service-key');
+  const file=path.join(root,'state/voice-output/capabilities.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+  fs.writeFileSync(file,JSON.stringify({voice:{...audioDefaults().voice,apiKey:'legacy-manual-local-key'}}));
+  for(const endpoint of ['https://remote.example','https://127.0.0.1:9880','http://127.0.0.1:9882']){
+    assert.deepEqual(feiyuCredential(root,{endpoint,apiKey:''}),{mode:'custom',key:''});
+  }
+  save('voice',{endpoint:'https://remote.example'});assert.equal(service.snapshot().settings.voice.hasApiKey,false);
+  await assert.rejects(service.preview({revision:service.snapshot().revision,text:'你好'}),/自定义.*API Key/);
+  save('voice',{endpoint:'https://remote.example',apiKey:secret});
+  assert.equal(service.snapshot().settings.voice.hasApiKey,true);
+  save('voice',{endpoint:'https://another.example'});assert.equal(service.snapshot().settings.voice.hasApiKey,false);
+  assert.equal(fs.readFileSync(key,'utf8'),'private-managed-service-key');
+});
+
+test('managed setup reports missing, malformed and rejected credentials without requesting manual input or exposing secrets',async t=>{
+  let status=200,healthFails=false;
+  const {root,service,save}=fixture(t,async url=>{
+    if(healthFails)throw Error('sensitive network diagnostic');
+    return url.endsWith('/health')?Response.json({status:'ok',version:'fixture'}):new Response('private-managed-service-key',{status});
+  });
+  save('voice',{endpoint:'http://localhost:9880'});
+  const check=()=>service.checkVoice({revision:service.snapshot().revision});
+  assert.equal((await check()).code,'LOCAL_KEY_UNAVAILABLE');
+  const keyFile=localCredential(root,'bad\ncredential');assert.equal(service.snapshot().settings.voice.hasApiKey,false);
+  await assert.rejects(service.preview({revision:service.snapshot().revision,text:'你好'}),/无需填写/);
+  fs.writeFileSync(keyFile,'private-managed-service-key');status=401;
+  const rejected=await check();assert.equal(rejected.code,'AUTH_FAILED');assert.match(rejected.message,/重启/);assert(!JSON.stringify(rejected).includes('private-managed-service-key'));
+  healthFails=true;assert.equal((await check()).code,'SERVICE_UNAVAILABLE');
+  fs.rmSync(keyFile);assert.equal(service.snapshot().settings.voice.hasApiKey,false);
+});
 test('new local service never reuses old cloud credentials or speaker associations',t=>{
   const {root,service,save}=fixture(t);const file=path.join(root,'state/voice-output/capabilities.json');fs.mkdirSync(path.dirname(file),{recursive:true});
   fs.writeFileSync(file,JSON.stringify({voice:{provider:'volcengine',apiKey:secret,speaker:'old-speaker',mode:'on-request'},singing:{provider:'rvc',voiceSource:'voice-reply',modelId:'old-model'}}));
@@ -55,7 +118,7 @@ test('Feiyu preview submits a real service job, polls completion, then fetches W
   });
   save('voice',{apiKey:secret,style:'gentle'});
   const result=await service.preview({revision:service.snapshot().revision,text:'你好'});
-  assert.equal(result.sent,false);assert.deepEqual(Buffer.from(result.audio,'base64'),wav);assert.equal(calls.length,4);assert.ok(calls.every(url=>url.startsWith('http://127.0.0.1:9880/')));
+  assert.equal(result.sent,false);assert.deepEqual(Buffer.from(result.audio,'base64'),wav);assert.equal(calls.length,4);assert.ok(calls.every(url=>url.startsWith('http://127.0.0.1:9882/')));
 });
 test('voice preview enforces a saved credential, serializes work and supports cancellation',async t=>{
   let entered;const ready=new Promise(resolve=>entered=resolve);
@@ -92,7 +155,7 @@ test('voice check distinguishes service, credential and TTS readiness without ge
     return status===200?Response.json(capabilities):new Response(secret,{status});
   });
   const check=()=>service.checkVoice({revision:service.snapshot().revision});
-  let result=await check();assert.equal(result.code,'KEY_REQUIRED');assert.equal(calls.length,1);
+  let result=await check();assert.equal(result.code,'LOCAL_KEY_UNAVAILABLE');assert.equal(calls.length,1);
   save('voice',{apiKey:secret});status=401;result=await check();assert.equal(result.code,'AUTH_FAILED');assert.ok(!JSON.stringify(result).includes(secret));
   status=200;result=await check();assert.equal(result.code,'TTS_NOT_CONFIGURED');
   capabilities={tts:[{voice:'feiyu',available:true,styles:['gentle']}]};assert.equal((await check()).code,'STYLE_NOT_CONFIGURED');

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {speechEmotion,EMOTION_STRENGTHS} from './voice-emotion.mjs';
+import {feiyuCredential,managedFeiyuEndpoint} from './feiyu-credentials.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 export const AUDIO_FEATURES = Object.freeze([
@@ -28,13 +29,14 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     // Never send the old cloud credential to the new local voice service.
     const voice = saved.voice?.provider === 'feiyu' ? {...defaults.voice,...saved.voice} :
       {...defaults.voice, mode:saved.voice?.mode ?? defaults.voice.mode, chats:saved.voice?.chats ?? []};
+    if(managedFeiyuEndpoint(voice.endpoint))voice.apiKey='';
     const singing = saved.singing?.provider === 'feiyu-rvc' ? {...defaults.singing,...saved.singing} :
       {...defaults.singing, chats:saved.singing?.chats ?? []};
     return {settings:{voice,singing},revision:crypto.createHash('sha256').update(raw).digest('hex')};
   }
   function snapshot() {
-    const saved=read(); return {revision:saved.revision,nativeTransport:nativeStatus(),settings:{
-      voice:{...saved.settings.voice,apiKey:'',hasApiKey:!!saved.settings.voice.apiKey}, singing:{...saved.settings.singing,douyinCookie:'',hasDouyinCookie:!!saved.settings.singing.douyinCookie}}};
+    const saved=read(),credential=feiyuCredential(root,saved.settings.voice); return {revision:saved.revision,nativeTransport:nativeStatus(),settings:{
+      voice:{...saved.settings.voice,apiKey:'',hasApiKey:!!credential.key,credentialMode:credential.mode}, singing:{...saved.settings.singing,douyinCookie:'',hasDouyinCookie:!!saved.settings.singing.douyinCookie}}};
   }
   function save(kind,body,config) {
     const saved=read(), defaults=audioDefaults()[kind];
@@ -51,8 +53,9 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
       if(next.provider!=='feiyu'||!['cute','gentle'].includes(next.style)||!['ai-choice','on-request','prefer-voice'].includes(next.mode))throw fault('请选择有效的肥鱼声线和回复方式。');
       next.endpoint=endpoint(next.endpoint);
       if(typeof next.apiKey!=='string'||next.apiKey.length>4096||/[\r\n\0]/.test(next.apiKey))throw fault('API Key 格式无效。');
-      next.apiKey=next.apiKey.trim()||(!body.clearApiKey?saved.settings.voice.apiKey:'');
+      next.apiKey=next.apiKey.trim()||(!body.clearApiKey&&next.endpoint===saved.settings.voice.endpoint?saved.settings.voice.apiKey:'');
       if(body.clearApiKey)next.apiKey='';
+      if(managedFeiyuEndpoint(next.endpoint))next.apiKey='';
     } else {
       if(typeof next.douyinCookie!=='string'||next.douyinCookie.length>32768||/[\r\n\0]/.test(next.douyinCookie))throw fault('抖音 Cookie 请填写单行内容，或留空保留。');
       next.douyinCookie=next.douyinCookie.trim()||(!body.clearDouyinCookie?saved.settings.singing.douyinCookie:'');
@@ -72,21 +75,24 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     return AUDIO_FEATURES.map(feature=>{
       const value=saved.settings[feature.audioKind],count=value.chats.filter(key=>keys.includes(key)).length;
       const configured=feature.audioKind==='voice'?!!value.hasApiKey:!!value.modelId&&modelExists(value.modelId);
-      const transportReady=nativeStatus().ready===true,ttsVerified=feature.audioKind!=='voice'||inferenceRevision===saved.revision;
+      const transportReady=nativeStatus().ready===true,ttsVerified=feature.audioKind!=='voice'||inferenceRevision===inferenceKey(read());
       const ready=configured&&transportReady&&ttsVerified;
       return {...feature,management:'audio',builtin:true,host:'console',category:'语音与音乐',enabled:value.enabled,ready,
         statusLabel:!configured?'待配置':ready?'原生语音通道已连接':transportReady?'语音服务待试听验证':'原生语音已接入 · 待连接微信',statusTone:ready?'success':'warning',
         effectiveChats:ready&&value.enabled?value.chats.filter(key=>keys.includes(key)):[],scopeCount:count,selectedCount:count,configured,featureState:{globalEnabled:value.enabled,effectiveCount:ready&&value.enabled?count:0,totalCount:keys.length}};
     });
   }
+  function inferenceKey(saved){
+    return crypto.createHash('sha256').update(saved.revision+'\0'+feiyuCredential(root,saved.settings.voice).key).digest('hex');
+  }
   async function checkVoice(body,{signal}={}) {
     if(closed)throw fault('语音服务检测已关闭。',503);
     const saved=read();
     if(body?.revision!==saved.revision)throw fault('音频设置已变化，请重新打开配置。',409);
-    const value=saved.settings.voice,controller=new AbortController();controllers.add(controller);
+    const value=saved.settings.voice,credential=feiyuCredential(root,value),controller=new AbortController();controllers.add(controller);
     const requestSignal=AbortSignal.any([controller.signal,AbortSignal.timeout(8000),...(signal?[signal]:[])]);
     const result={serviceReachable:false,authenticated:false,ttsConfigured:false,styleConfigured:false,
-      keyConfigured:!!value.apiKey,nativeVoiceSend:nativeStatus().ready===true,nativeReason:nativeStatus().ready?'CONNECTED':'WECHAT_VOICE_NOT_READY',sent:false};
+      keyConfigured:!!credential.key,credentialMode:credential.mode,nativeVoiceSend:nativeStatus().ready===true,nativeReason:nativeStatus().ready?'CONNECTED':'WECHAT_VOICE_NOT_READY',sent:false};
     const finish=(code,message)=>({...result,code,message});
     async function json(response){
       let size=0;const chunks=[];
@@ -100,9 +106,9 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
       const identity=await json(health);
       if(identity?.status!=='ok'||typeof identity.version!=='string')return finish('INVALID_SERVICE','该地址未返回肥鱼服务的预期健康状态，请核对地址。');
       result.serviceReachable=true;
-      if(!value.apiKey)return finish('KEY_REQUIRED','服务已连接，请填写此服务生成的 API Key。默认位置为服务目录下 .runtime/voice-service/api_key.txt。');
-      const response=await fetchImpl(base+'/v1/capabilities',{headers:{Authorization:'Bearer '+value.apiKey},signal:requestSignal,redirect:'error'});
-      if([401,403].includes(response.status))return finish('AUTH_FAILED','API Key 验证失败，请使用当前肥鱼服务的本地密钥。');
+      if(!credential.key)return finish(credential.mode==='managed'?'LOCAL_KEY_UNAVAILABLE':'KEY_REQUIRED',credential.mode==='managed'?'服务已连接，但未找到本项目的服务凭据。请确认本机肥鱼环境已安装，并通过项目启动服务；无需手动填写密钥。':'服务已连接，请在自定义服务设置中填写该服务的 API Key。');
+      const response=await fetchImpl(base+'/v1/capabilities',{headers:{Authorization:'Bearer '+credential.key},signal:requestSignal,redirect:'error'});
+      if([401,403].includes(response.status))return finish('AUTH_FAILED',credential.mode==='managed'?'本机服务凭据不匹配，请确认 9880 端口运行的是本项目启动的肥鱼服务，再重启该服务。':'自定义服务 API Key 验证失败，请核对该服务的访问凭据。');
       if(!response.ok)return finish('CAPABILITIES_UNAVAILABLE','服务已连接，但无法读取 TTS 配置。');
       const capabilities=await json(response);
       if(!Array.isArray(capabilities?.tts))return finish('INVALID_SERVICE','服务返回的能力格式无效，请核对服务版本。');
@@ -123,12 +129,13 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
     const saved=read();
     if(body?.revision!==saved.revision)throw fault('音频设置已变化，请重新打开配置。',409);
     if(typeof body.text!=='string'||!body.text.trim()||body.text.length>500)throw fault('试听文字需要 1～500 个字符。');
-    const value=saved.settings.voice;if(!value.apiKey)throw fault('请先保存肥鱼本地语音服务的 API Key。');
+    const value=saved.settings.voice,credential=feiyuCredential(root,value),verifiedKey=inferenceKey(saved);
+    if(!credential.key)throw fault(credential.mode==='managed'?'本机肥鱼服务尚未生成访问凭据，请完成环境安装并启动服务，无需填写 API Key。':'请先保存自定义语音服务的 API Key。');
     const controller=new AbortController();controllers.add(controller);
     const requestSignal=AbortSignal.any([controller.signal,AbortSignal.timeout(95000),...(signal?[signal]:[])]);
     async function request(route, body) {
-      const response=await fetchImpl(endpoint(value.endpoint)+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+value.apiKey,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:requestSignal,redirect:'error'});
-      if(!response.ok)throw fault(response.status===401?'肥鱼语音服务鉴权失败，请核对本机 API Key。':'肥鱼语音服务无法完成试听，请检查 TTS 是否已配置。',502);
+      const response=await fetchImpl(endpoint(value.endpoint)+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+credential.key,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:requestSignal,redirect:'error'});
+      if(!response.ok)throw fault([401,403].includes(response.status)?credential.mode==='managed'?'本机肥鱼服务鉴权失败，请通过项目重启肥鱼服务。':'自定义语音服务鉴权失败，请核对 API Key。':'肥鱼语音服务无法完成试听，请检查 TTS 是否已配置。',502);
       return response;
     }
     try {
@@ -145,7 +152,7 @@ export function createAudioCapabilities({root, fetchImpl = fetch, modelExists = 
       const response=await request('/v1/jobs/'+id+'/audio'),chunks=[];let size=0;
       for await(const chunk of response.body){size+=chunk.length;if(size>16*1024*1024)throw fault('试听文件过大，请缩短文字。',502);chunks.push(chunk);}
       const audio=Buffer.concat(chunks);if(audio.toString('ascii',0,4)!=='RIFF')throw fault('肥鱼服务未返回可播放的 WAV。',502);
-      inferenceRevision=saved.revision;
+      inferenceRevision=verifiedKey;
       return {audio:audio.toString('base64'),mime:'audio/wav',emotion:expression.emotion,sent:false};
     } catch(error) {if(error.status)throw error;throw fault(requestSignal.aborted?'语音试听已取消或超时。':'无法连接肥鱼本地语音服务，请先启动服务。',502);}
     finally{controller.abort();controllers.delete(controller);}
