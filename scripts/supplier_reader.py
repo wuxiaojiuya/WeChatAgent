@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import hmac
+import io
 import json
 import pathlib
 import re
@@ -13,13 +14,72 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from supplier_api import SupplierApi, RemoteConnection, BACKEND, VERSION, read_json, origin, runtime_directory
+from supplier_api import SupplierApi, RemoteConnection, BACKEND, VERSION, VOICE_UPLOAD_TIMEOUT_SECONDS, IMAGE_UPLOAD_TIMEOUT_SECONDS, read_json, origin, runtime_directory
 from wechat_files import FileCatalog, file_policy, media_file_policy, hashes, MAX_FILE_BYTES, safe_file_name
 from wechat_voice_input import MAX_SILK_BYTES
 from wechat_image_normalize import normalize_image
 from wechat_sticker import resolve_sticker
 from supplier_images import download_image
 from supplier_videos import download_video
+
+
+_voice_diagnostic_lock = threading.Lock()
+
+
+def record_voice_submission(root, *, at, elapsed_ms, result, outcome, error=None):
+    """Keep bounded stage evidence, never raw responses or message identities."""
+    response = {'hasServerId': False}
+    if isinstance(result, dict):
+        base = result.get('baseResponse')
+        if isinstance(base, dict) and type(base.get('ret')) is int:
+            response['ret'] = base['ret']
+        for key in ('code', 'errCode', 'endFlag', 'cancelFlag', 'offset', 'length', 'voiceLength'):
+            if type(result.get(key)) is int:
+                response[key] = result[key]
+        response['hasServerId'] = isinstance(result.get('newMsgId'), str) and bool(re.fullmatch(r'[1-9]\d{0,19}', result['newMsgId']))
+    record = {'at': at, 'elapsedMs': elapsed_ms, 'route': '/api/send_voice', 'outcome': outcome, 'response': response}
+    if error is not None:
+        code = str(error)
+        record['error'] = code if re.fullmatch(r'[A-Z][A-Z0-9_]{2,79}', code) else 'HOOK_GATEWAY_UNAVAILABLE'
+    # Failure to write diagnostics must not change or repeat the send operation.
+    try:
+        with _voice_diagnostic_lock:
+            directory = pathlib.Path(root)/'state/hook/voice-submissions'
+            directory.mkdir(parents=True, exist_ok=True)
+            files = sorted((file for file in directory.glob('*.json') if re.fullmatch(r'\d{13,}-[a-z0-9_]+\.json', file.name)),
+                           key=lambda file: int(file.name.split('-')[0]))
+            # Windows clocks can repeat a tick; random suffixes must not decide
+            # which recent submission is discarded, even after a clock rollback.
+            sequence = max(time.time_ns(), int(files[-1].name.split('-')[0])+1 if files else 0)
+            descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=str(sequence)+'-', suffix='.tmp')
+            try:
+                with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                    json.dump(record, stream)
+                os.replace(temporary, pathlib.Path(temporary).with_suffix('.json'))
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            for file in files[:-29]:
+                file.unlink()
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def submit_voice(reader, mapped, account, target, duration):
+    at, started = time.time(), time.monotonic()
+    result, outcome, error = None, 'error', None
+    try:
+        size = pathlib.Path(mapped['silkPath']).stat().st_size
+        # This is a single upload request, with a separate budget from reads.
+        result = reader.api.post('/api/send_voice', mapped, timeout=VOICE_UPLOAD_TIMEOUT_SECONDS)
+        response = normalize_send_response('/SendVoiceMsg', result, account, target, duration, size)
+        outcome = 'confirmed' if response.get('confirmed') else 'submitted' if response.get('submitted') else 'rejected'
+        return response
+    except Exception as caught:
+        error = caught
+        raise
+    finally:
+        record_voice_submission(reader.root, at=at, elapsed_ms=max(0, round((time.monotonic()-started)*1000)), result=result, outcome=outcome, error=error)
 
 
 def xml_root(text):
@@ -269,7 +329,7 @@ def start_gateway(reader):
                     return self.reply({'error': 'HOOK_AUTH_FAILED'}, 401)
                 identity = reader.active_identity()
                 if self.command == 'GET' and self.path in ('/WeChatAgent/health', '/health'):
-                    health = {'integration': 'WeChatAgent-supplier-v1', 'backend': 'wechat-voice' if self.path == '/health' else 'wechat-hook', 'provider': BACKEND, 'version': VERSION, 'pid': identity['pid'], 'databaseAccounts': [identity['wxid']], 'startupState': 'ready', 'ready': True, 'nativeTextSend': True, 'nativeStickerSend': True, 'nativeFileSend': True, 'nativeVoiceSend': True}
+                    health = {'integration': 'WeChatAgent-supplier-v1', 'backend': 'wechat-voice' if self.path == '/health' else 'wechat-hook', 'provider': BACKEND, 'version': VERSION, 'pid': identity['pid'], 'databaseAccounts': [identity['wxid']], 'startupState': 'ready', 'ready': True, 'nativeTextSend': True, 'nativeStickerSend': True, 'nativeFileSend': True, 'nativeVoiceSend': True, 'nativeImageSend': True}
                     return self.reply(health)
                 if self.command != 'POST':
                     return self.reply({'error': 'HOOK_ROUTE_NOT_FOUND'}, 404)
@@ -287,6 +347,11 @@ def start_gateway(reader):
                     field = 'silkPath' if self.path == '/SendVoiceMsg' else 'filepath'
                     mapped[field] = str(stage_media(reader.root, pathlib.Path(mapped[field])))
                 # Do not retry upstream sends, even on network timeout.
+                if self.path == '/SendVoiceMsg':
+                    return self.reply(submit_voice(reader, mapped, identity['wxid'], target, body.get('duration')))
+                if self.path == '/SendImageMsg':
+                    result = reader.api.post(route, mapped, timeout=IMAGE_UPLOAD_TIMEOUT_SECONDS)
+                    return self.reply(normalize_send_response(self.path, result))
                 result = reader.api.post(route, mapped)
                 # Keep the last acknowledgement locally for diagnosis, never
                 # expose it in public status or log the submitted message body.
@@ -358,13 +423,27 @@ def map_send(route, body):
         if not isinstance(body.get('msg'), str) or not body['msg'].strip() or len(body['msg'].encode()) > 16000:
             raise ValueError('HOOK_TEXT_INVALID')
         return '/api/send_text_msg', {'wxid': target, 'msg': body['msg']}
-    mapping = {'/SendFileMsg': ('/api/send_file_msg', 'filepath', 50*1024*1024), '/SendStickerMsg': ('/api/send_emotion_msg', 'filepath', 8*1024*1024), '/SendVoiceMsg': ('/api/send_voice', 'silkPath', 2*1024*1024)}
+    mapping = {'/SendFileMsg': ('/api/send_file_msg', 'filepath', 50*1024*1024), '/SendImageMsg': ('/api/send_image_msg', 'filepath', 16*1024*1024), '/SendStickerMsg': ('/api/send_emotion_msg', 'filepath', 8*1024*1024), '/SendVoiceMsg': ('/api/send_voice', 'silkPath', 2*1024*1024)}
     if route not in mapping:
         raise ValueError('HOOK_ROUTE_UNSUPPORTED')
     upstream, key, maximum = mapping[route]
     file = source_file(body['path'], maximum)
     if route == '/SendFileMsg' and (file.stat().st_size != body.get('size') or hashes(file)[0] != body.get('md5')):
         raise ValueError('HOOK_FILE_INTEGRITY_FAILED')
+    if route == '/SendImageMsg':
+        if file.stat().st_size != body.get('size') or hashes(file)[0] != body.get('md5'):
+            raise ValueError('HOOK_IMAGE_INTEGRITY_FAILED')
+        from PIL import Image
+        try:
+            raw = file.read_bytes()
+            with Image.open(io.BytesIO(raw)) as image:
+                if image.format not in ('PNG', 'JPEG') or not 0 < image.width <= 8192 or not 0 < image.height <= 8192 or image.width*image.height > 40_000_000:
+                    raise ValueError('HOOK_IMAGE_FORMAT_INVALID')
+                image.verify()
+            with Image.open(io.BytesIO(raw)) as image:
+                image.load()
+        except (OSError, SyntaxError, Image.DecompressionBombError):
+            raise ValueError('HOOK_IMAGE_FORMAT_INVALID') from None
     if route == '/SendVoiceMsg':
         if not 1 <= body.get('duration', 0) <= 60000 or not file.read_bytes().startswith((b'#!SILK_V3', b'\x02#!SILK_V3')):
             raise ValueError('HOOK_VOICE_INVALID')

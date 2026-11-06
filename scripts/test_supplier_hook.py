@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 import urllib.request
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -231,6 +232,93 @@ class SupplierContract(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'HOOK_SEND_RESPONSE_UNKNOWN'):
             normalize_send_response('/SendTextMsg', {'status': 'maybe'})
 
+    def test_voice_upload_has_a_separate_budget_and_other_requests_keep_five_seconds(self):
+        file = self.root/'voice.silk'
+        file.write_bytes(b'\x02#!SILK_V3fixture')
+        self.api.transport = None
+        with patch.object(self.api.opener, 'open', side_effect=lambda *args, **kwargs: io.BytesIO(b'{"code":1}')) as opened:
+            self.api.post('/api/send_text_msg', {'wxid': 'friend', 'msg': 'hello'})
+            result = supplier_reader.submit_voice(SimpleNamespace(root=self.root, api=self.api), {'silkPath': str(file)}, 'self', 'friend', 1000)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual([call.kwargs['timeout'] for call in opened.call_args_list], [5, 30])
+
+    def test_gateway_voice_diagnostics_survive_later_text_and_never_save_payloads(self):
+        reader = self.reader()
+        reader.start_native_gateway()
+        self.addCleanup(reader.gateway.server_close)
+        self.addCleanup(reader.gateway.shutdown)
+        file = self.root/'private-audio-path.silk'
+        file.write_bytes(b'\x02#!SILK_V3fixture')
+        headers = {'Authorization': 'Bearer '+'a'*64, 'X-WeChatAgent-Account': 'wxid_self', 'Content-Type': 'application/json'}
+        def call(route, body):
+            request = urllib.request.Request(self.api.hook['baseUrl']+route, json.dumps(body).encode(), headers)
+            return json.load(urllib.request.urlopen(request, timeout=5))
+        with patch.object(self.api, 'post', wraps=self.api.post) as posted:
+            voice = call('/SendVoiceMsg', {'wxidorgid': 'wxid_friend', 'path': str(file), 'duration': 1000})
+            sends = [entry for entry in posted.call_args_list if entry.args[0] == '/api/send_voice']
+            self.assertEqual(len(sends), 1)
+            self.assertEqual(sends[0].kwargs, {'timeout': 30})
+        self.assertFalse(voice['confirmed'])
+        files = list((self.root/'state/hook/voice-submissions').glob('*.json'))
+        self.assertEqual(len(files), 1)
+        diagnostic = files[0].read_text()
+        call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': 'secret-text-content'})
+        self.assertEqual(files[0].read_text(), diagnostic)
+        self.assertEqual(json.loads((self.root/'state/hook/last-submit-response.json').read_text())['route'], '/api/send_text_msg')
+        for private in ('wxid_self', 'wxid_friend', str(file), file.name, 'secret-text-content', 'a'*64, 'silkPath'):
+            self.assertNotIn(private, diagnostic)
+        record = json.loads(diagnostic)
+        self.assertEqual(record['outcome'], 'submitted')
+        self.assertEqual(record['response'], {'hasServerId': False, 'code': 1})
+        self.assertGreaterEqual(record['elapsedMs'], 0)
+
+    def test_voice_diagnostic_response_is_a_whitelist_and_keeps_only_server_id_presence(self):
+        sensitive = 'private-wxid-path-secret'
+        result = {'baseResponse': {'ret': -2, 'errMsg': sensitive}, 'endFlag': 1, 'cancelFlag': 0, 'offset': 100, 'length': 500,
+                  'voiceLength': 30000, 'newMsgId': '8047442179716189588', 'fromUserName': sensitive, 'toUserName': sensitive,
+                  'silkPath': sensitive, 'token': sensitive, 'data': sensitive, 'code': sensitive}
+        supplier_reader.record_voice_submission(self.root, at=1700000000, elapsed_ms=5012, result=result, outcome='submitted')
+        record = json.loads(next((self.root/'state/hook/voice-submissions').glob('*.json')).read_text())
+        self.assertEqual(record['response'], {'hasServerId': True, 'ret': -2, 'endFlag': 1, 'cancelFlag': 0, 'offset': 100, 'length': 500, 'voiceLength': 30000})
+        self.assertNotIn(sensitive, json.dumps(record))
+        self.assertNotIn(result['newMsgId'], json.dumps(record))
+
+    def test_voice_diagnostics_keep_failures_without_retrying_or_leaking_exception_text(self):
+        file = self.root/'voice.silk'
+        file.write_bytes(b'\x02#!SILK_V3fixture')
+        reader = SimpleNamespace(root=self.root, api=self.api)
+        for error in (RuntimeError('HOOK_UPSTREAM_TIMEOUT'), RuntimeError('private path C:\\private-audio.silk with secret-token')):
+            with patch.object(self.api, 'post', side_effect=error) as posted:
+                with self.assertRaises(RuntimeError):
+                    supplier_reader.submit_voice(reader, {'silkPath': str(file)}, 'self', 'friend', 1000)
+                posted.assert_called_once()
+        records = [json.loads(file.read_text()) for file in sorted((self.root/'state/hook/voice-submissions').glob('*.json'))]
+        self.assertEqual([record['error'] for record in records], ['HOOK_UPSTREAM_TIMEOUT', 'HOOK_GATEWAY_UNAVAILABLE'])
+        self.assertTrue(all(record['outcome'] == 'error' and record['elapsedMs'] >= 0 for record in records))
+        self.assertNotIn('private-audio', json.dumps(records))
+        self.assertNotIn('secret-token', json.dumps(records))
+
+    def test_voice_diagnostics_are_bounded_and_do_not_change_upload_results_on_disk_failure(self):
+        with patch.object(supplier_reader.time, 'time_ns', return_value=1700000000000000000):
+            for index in range(35):
+                supplier_reader.record_voice_submission(self.root, at=index, elapsed_ms=0, result={}, outcome='submitted')
+        files = sorted((self.root/'state/hook/voice-submissions').glob('*.json'))
+        self.assertEqual(len(files), 30)
+        self.assertEqual([json.loads(file.read_text())['at'] for file in files], list(range(5, 35)))
+        file = self.root/'voice.silk'
+        file.write_bytes(b'\x02#!SILK_V3fixture')
+        with patch.object(supplier_reader.tempfile, 'mkstemp', side_effect=OSError('disk unavailable')):
+            result = supplier_reader.submit_voice(SimpleNamespace(root=self.root, api=self.api), {'silkPath': str(file)}, 'self', 'friend', 1000)
+        self.assertTrue(result['submitted'])
+
+    def test_upstream_timeouts_have_a_safe_code_and_are_never_retried(self):
+        self.api.transport = None
+        for error in (TimeoutError('private endpoint'), urllib.error.URLError(TimeoutError('private endpoint'))):
+            with patch.object(self.api.opener, 'open', side_effect=error) as opened:
+                with self.assertRaisesRegex(RuntimeError, '^HOOK_UPSTREAM_TIMEOUT$'):
+                    self.api.post('/api/send_voice', {}, timeout=30)
+                opened.assert_called_once()
+
     def test_final_upload_voice_ack_requires_matching_account_target_duration_and_complete_bytes(self):
         ack = {'baseResponse': {'ret': 0}, 'endFlag': 2, 'cancelFlag': 0, 'fromUserName': 'self', 'toUserName': 'friend', 'voiceLength': 5000, 'offset': 0, 'length': 9933, 'newMsgId': '5254719564166250390'}
         result = normalize_send_response('/SendVoiceMsg', ack, 'self', 'friend', 5000, 9933)
@@ -253,6 +341,64 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual((route, body), ('/api/send_voice', {'wxid': 'friend', 'toWxid': 'friend', 'silkPath': str(file)}))
         with self.assertRaises(ValueError):
             map_send('/SendVoiceMsg', {'wxidorgid': 'friend', 'path': str(file), 'duration': 61000})
+
+    def image_file(self, format='PNG'):
+        from PIL import Image
+        stream = io.BytesIO()
+        Image.new('RGB', (4, 4), 'blue').save(stream, format=format)
+        file = self.root/('generated.png' if format == 'PNG' else 'generated.jpg')
+        file.write_bytes(stream.getvalue())
+        return file
+
+    def test_image_send_uses_the_delivered_binary_filepath_field_and_checks_actual_pixels_and_hash(self):
+        for format in ('PNG', 'JPEG'):
+            file = self.image_file(format)
+            body = {'wxidorgid': 'friend', 'path': str(file), 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()}
+            self.assertEqual(map_send('/SendImageMsg', body), ('/api/send_image_msg', {'wxid': 'friend', 'filepath': str(file)}))
+            with self.assertRaisesRegex(ValueError, 'HOOK_IMAGE_INTEGRITY_FAILED'):
+                map_send('/SendImageMsg', {**body, 'md5': 'a'*32})
+        file.write_bytes(b'not an image')
+        with self.assertRaisesRegex(ValueError, 'HOOK_IMAGE_FORMAT_INVALID'):
+            map_send('/SendImageMsg', {**body, 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()})
+        from PIL import Image
+        Image.new('RGB', (2, 2)).save(file, format='GIF')
+        with self.assertRaisesRegex(ValueError, 'HOOK_IMAGE_FORMAT_INVALID'):
+            map_send('/SendImageMsg', {**body, 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()})
+
+    def test_image_gateway_stages_ascii_uses_thirty_seconds_once_and_does_not_confirm_generic_ack(self):
+        reader = self.reader()
+        reader.start_native_gateway()
+        self.addCleanup(reader.gateway.server_close)
+        self.addCleanup(reader.gateway.shutdown)
+        file = self.image_file()
+        body = {'wxidorgid': 'wxid_friend', 'path': str(file), 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()}
+        headers = {'Authorization': 'Bearer '+'a'*64, 'X-WeChatAgent-Account': 'wxid_self', 'Content-Type': 'application/json'}
+        request = urllib.request.Request(self.api.hook['baseUrl']+'/SendImageMsg', json.dumps(body).encode(), headers)
+        with patch.object(self.api, 'post', wraps=self.api.post) as posted:
+            result = json.load(urllib.request.urlopen(request, timeout=5))
+            sends = [call for call in posted.call_args_list if call.args[0] == '/api/send_image_msg']
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0].kwargs, {'timeout': 30})
+        self.assertEqual(sends[0].args[1]['wxid'], 'wxid_friend')
+        self.assertTrue(sends[0].args[1]['filepath'].isascii())
+        self.assertEqual(pathlib.Path(sends[0].args[1]['filepath']).read_bytes(), file.read_bytes())
+        self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False})
+        health_request = urllib.request.Request(self.api.hook['baseUrl']+'/WeChatAgent/health', headers=headers)
+        self.assertTrue(json.load(urllib.request.urlopen(health_request, timeout=5))['nativeImageSend'])
+        body['wxidorgid'] = 'unselected_target'
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(urllib.request.Request(self.api.hook['baseUrl']+'/SendImageMsg', json.dumps(body).encode(), headers), timeout=5)
+        self.assertEqual(denied.exception.code, 403)
+        self.assertEqual(len([route for route, _ in self.fake.calls if route == '/api/send_image_msg']), 1)
+
+    def test_image_receipts_extract_only_valid_message_bound_md5_and_reject_xml_entities(self):
+        md5 = 'ABCDEF0123456789ABCDEF0123456789'
+        for index, xml in enumerate((f'<msg><img md5="{md5}"/></msg>', '<msg><img md5="not-a-hash"/></msg>', '<!DOCTYPE msg [<!ENTITY leak "private">]><msg><img md5="&leak;"/></msg>'), start=3):
+            self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(?, ?,3,2,?,?)', (index, 8047442179716189590+index, 1700000000+index, xml.encode()))
+        rows = {row['localId']: row for row in self.reader().messages('wxid_friend')}
+        self.assertEqual(rows[3]['imageMd5'], md5.lower())
+        self.assertNotIn('imageMd5', rows[4])
+        self.assertNotIn('imageMd5', rows[5])
 
     def test_native_media_copy_is_ascii_and_detects_changed_cached_bytes(self):
         source = self.root/'unicode-\u6d4b\u8bd5.silk'

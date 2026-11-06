@@ -1,0 +1,95 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {bindDrawingTools,DRAWING_POLICY,drawingReplyOutcome} from '../packages/dsh-social-bridge-plugin/drawing-tools.mjs';
+import {apply as restrictTools} from '../packages/dsh-social-bridge-plugin/social-tool-restrict.mjs';
+
+const key='wechat:private:123',id='11111111-1111-4111-8111-111111111111';
+function fixture(t,{fetchImpl,...options}={}){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'drawing-tools-')),tools=new Map(),calls=[];
+  fs.mkdirSync(path.join(root,'config'));fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+  let turn={controller:new AbortController()},capability={enabled:true,chats:[key],apiKeyConfigured:true},job={id,state:'running',stage:'正在生成图片',conversationKey:key},allowed=true;
+  const ctx={tools:{register(tool){tools.set(tool.name,tool);return()=>tools.delete(tool.name);}}};
+  const binding=bindDrawingTools(ctx,root,key,()=>turn,{...options,isAllowed:()=>allowed,fetchImpl:async(url,request)=>{
+    calls.push({url,request});
+    if(fetchImpl)return fetchImpl(url,request,{root,capability,job});
+    return Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root,token:'fixture-token'}:url.endsWith('/api/drawing-capability')?{settings:capability,conversations:[{key,title:'测试会话'}]}:{job});
+  }});
+  t.after(()=>{binding.dispose();fs.rmSync(root,{recursive:true,force:true});});
+  return {root,ctx,tools,binding,calls,setTurn:value=>turn={controller:new AbortController(),...value},setCapability:value=>capability=value,setJob:value=>job=value,setAllowed:value=>allowed=value,turn:()=>turn};
+}
+const result=async(tool,args={})=>JSON.parse((await tool.execute(args)).content);
+
+test('drawing tools and instructions require fresh enabled capability, configured key and live conversation authorization',async t=>{
+  const f=fixture(t),policy=f.ctx[DRAWING_POLICY];assert.equal(policy.names().size,0);assert.equal(f.binding.instructions(),'');
+  assert.equal(await f.binding.refresh(),true);assert.deepEqual([...policy.names()],['wechat_draw_image','wechat_drawing_status']);
+  assert.match(f.binding.instructions(),/只看图.*不能擅自画图/);assert.match(f.binding.instructions(),/模糊先问清/);
+  const before=f.calls.length;await f.binding.refresh();assert.equal(f.calls.length,before,'one capability lookup per model turn');
+  for(const capability of [{enabled:false,chats:[key],apiKeyConfigured:true},{enabled:true,chats:[],apiKeyConfigured:true},{enabled:true,chats:[key],apiKeyConfigured:false}]){
+    f.setTurn();f.setCapability(capability);assert.equal(await f.binding.refresh(),false);assert.equal(policy.names().size,0);
+  }
+  f.setCapability({enabled:true,chats:[key],apiKeyConfigured:true});f.setTurn();await f.binding.refresh();f.setAllowed(false);assert.equal(policy.names().size,0);
+  f.setAllowed(true);fs.writeFileSync(path.join(f.root,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:[],groups:[]}}}));assert.equal(policy.names().size,0);
+});
+
+test('drawing generation submits the bound conversation and internal request id exactly once per turn',async t=>{
+  const f=fixture(t),tool=f.tools.get('wechat_draw_image');await f.binding.refresh();
+  const first=await result(tool,{prompt:'请画一只趴在窗边看雨的橘猫，水彩风格。'});assert.equal(first.job.state,'running');assert.equal(first.job.sent,false);
+  await result(tool,{prompt:'请画一只趴在窗边看雨的橘猫，水彩风格。'});
+  const generate=f.calls.filter(row=>row.url.endsWith('/generate'));assert.equal(generate.length,1);
+  const body=JSON.parse(generate[0].request.body);assert.deepEqual(Object.keys(body).sort(),['conversationKey','previewOnly','prompt','requestId']);assert.equal(body.conversationKey,key);assert.equal(body.previewOnly,false);assert.match(body.requestId,/^[a-f0-9-]{36}$/);
+  const previous=f.turn().drawingOutcome;const conflict=await result(tool,{prompt:'换一张，画山水。'});assert.match(conflict.message,/不会生成第二张/);assert.deepEqual(f.turn().drawingOutcome,previous);assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,1);
+  f.setTurn();await result(tool,{prompt:'画一条红色小鱼。'});assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,2);
+});
+
+test('model arguments cannot redirect drawings or supply credentials, paths or API controls',async t=>{
+  const f=fixture(t),tool=f.tools.get('wechat_draw_image');await f.binding.refresh();
+  assert.deepEqual(Object.keys(tool.parameters.properties),['prompt']);assert.equal(tool.parameters.additionalProperties,false);
+  for(const args of [{prompt:'cat',conversationKey:'wechat:private:456'},{prompt:'cat',path:'C:/secret.png'},{prompt:'cat',apiKey:'secret'},{prompt:'cat',url:'https://foreign.invalid'},{prompt:'cat',requestId:'chosen'}, {prompt:''},{prompt:'a'.repeat(4001)}])await assert.rejects(tool.execute(args));
+  assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);
+});
+
+test('a lost generation response stays unconfirmed and a repeat never resubmits the image',async t=>{
+  const f=fixture(t,{fetchImpl:async(url,request,{root,capability})=>{
+    if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root,token:'fixture-token'});
+    if(url.endsWith('/api/drawing-capability'))return Response.json({settings:capability});throw Error('socket disconnected with private details');
+  }}),tool=f.tools.get('wechat_draw_image');
+  const first=await result(tool,{prompt:'画一只猫。'}),second=await result(tool,{prompt:'画一只猫。'});
+  assert.equal(first.job.state,'unconfirmed');assert.equal(second.job.state,'unconfirmed');assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,1);assert(!JSON.stringify(first).includes('private details'));
+  assert.match(drawingReplyOutcome('RESPOND: 图片已经发给你了。',f.turn()),/结果还没确认/);
+});
+
+test('status discovers the latest chat task after rebinding and uses only the scoped query to fetch a receipt',async t=>{
+  const f=fixture(t),status=f.tools.get('wechat_drawing_status');
+  const first=await result(status);assert.equal(first.job.id,id);assert(f.calls.at(-1).url.endsWith('/latest?conversationKey=wechat%3Aprivate%3A123'));
+  f.setTurn();f.setJob({id,state:'success',stage:'图片已生成',conversationKey:key,delivery:{state:'unconfirmed'},previewUrl:'http://127.0.0.1/private.png',file:'C:/private.png',apiKey:'secret'});
+  const generated=await result(status);assert.equal(generated.job.sent,false);assert(!JSON.stringify(generated).includes('private.png'));assert(!JSON.stringify(generated).includes('secret'));assert(f.calls.at(-1).url.includes('/jobs/'+id+'?conversationKey='));
+  assert.match(drawingReplyOutcome('RESPOND: 发给你啦。',f.turn()),/发送结果还没确认/);
+  f.setTurn();f.setJob({id,state:'success',conversationKey:key,delivery:{state:'confirmed'}});assert.equal((await result(status,{jobId:id})).job.sent,true);assert.equal(drawingReplyOutcome('RESPOND: 画好了，发你啦。',f.turn()),'RESPOND: 画好了，发你啦。');
+  f.setTurn();f.setJob(null);assert.equal((await result(status)).job.state,'none');assert.match(drawingReplyOutcome('RESPOND: 还在画。',f.turn()),/没有已启动/);
+});
+
+test('revocation, network opt-out, mismatched jobs and foreign consoles cannot start or confirm a drawing',async t=>{
+  const f=fixture(t),tool=f.tools.get('wechat_draw_image');await f.binding.refresh();f.setCapability({enabled:false,chats:[key],apiKeyConfigured:true});await assert.rejects(tool.execute({prompt:'画一只猫。'}),/未开启/);assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);
+  f.setCapability({enabled:true,chats:[key],apiKeyConfigured:true});f.setTurn({networkOptOut:true});assert.equal((await result(tool,{prompt:'画一只猫。'})).job.state,'failed');assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);
+  f.setTurn();f.setJob({id,state:'success',conversationKey:'wechat:private:456',delivery:{state:'confirmed'}});assert.equal((await result(f.tools.get('wechat_drawing_status'))).job.state,'unconfirmed');
+  const foreign=fixture(t,{fetchImpl:async()=>Response.json({project:'WeChatAgent Console',root:'Z:/other',token:'private-token'})});assert.equal(await foreign.binding.refresh(),false);assert.equal(foreign.calls.length,1);assert.equal(foreign.ctx[DRAWING_POLICY].names().size,0);
+});
+
+test('drawing outcome guard keeps truthful persona wording while refusing invented completion and delivery',()=>{
+  assert.equal(drawingReplyOutcome('RESPOND: 普通聊天。',{}),'RESPOND: 普通聊天。');
+  for(const state of ['failed','unconfirmed','running'])for(const text of ['RESPOND: 图片已经发送成功了。','RESPOND: 已经画好了，你看这张。','RESPOND: 图片发你了，看看。'])assert.notEqual(drawingReplyOutcome(text,{drawingOutcome:{state,sent:false}}),text);
+  const failed={drawingOutcome:{state:'failed',sent:false}},natural='RESPOND: 哎，这张没画成，服务这会儿出了问题。';assert.equal(drawingReplyOutcome(natural,failed),natural);
+  const pending='RESPOND: 结果还没确认，我先不重复生成。';assert.equal(drawingReplyOutcome(pending,{drawingOutcome:{state:'unconfirmed',sent:false}}),pending);
+  const generated='RESPOND: 图片已经生成，不过微信发送还没确认。';assert.equal(drawingReplyOutcome(generated,{drawingOutcome:{state:'success',sent:false,delivery:{state:'unconfirmed'}}}),generated);
+  const unsent='RESPOND: 画好了，可微信没发出去。';assert.equal(drawingReplyOutcome(unsent,{drawingOutcome:{state:'success',sent:false}}),unsent);
+});
+
+test('social tool presentation and execution include only the live drawing policy',async t=>{
+  const f=fixture(t),guards=[],handlers=[];f.ctx.tools.guard=guard=>guards.push(guard);f.ctx.on=(name,handler)=>handlers.push({name,handler});restrictTools(f.ctx);
+  const guard=guards[0],agent={ctx:f.ctx};assert.equal(typeof guard({agent,name:'wechat_draw_image'}),'string');await f.binding.refresh();assert.equal(guard({agent,name:'wechat_draw_image'}),undefined);
+  const assembly={sections:[],tools:[{name:'pwsh'},{name:'wechat_draw_image'},{name:'wechat_drawing_status'}]};
+  const shown=await handlers[0].handler(null,{scope:agent},async()=>assembly);assert.deepEqual(shown.tools.map(tool=>tool.name),['wechat_draw_image','wechat_drawing_status']);f.setAllowed(false);assert.equal(typeof guard({agent,name:'wechat_draw_image'}),'string');
+});

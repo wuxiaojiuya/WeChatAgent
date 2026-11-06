@@ -3,6 +3,8 @@ import {createMemoryConsole} from './memory-console.mjs';
 import {fishNotebookSnapshot} from './fish-notebook-console.mjs';
 import {createSpeechPluginConsole} from './speech-plugin-console.mjs';
 import {createAudioCapabilities} from './audio-capabilities.mjs';
+import {createDrawingCapability} from './drawing-capability.mjs';
+import {createNativeImageDelivery} from './native-image-delivery.mjs';
 import {createAudioRuntimeInstaller} from './audio-runtime-installer.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {createRvcModels} from './rvc-models.mjs';
@@ -115,7 +117,18 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.singingSettings(),models:rvcModels,
     planPerformance:async({signal,...body})=>(await plugin('/singing-performance',body,{signal})).performance});
   const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
+  const nativeImage=createNativeImageDelivery({root,fetchImpl,config:()=>snapshot().config,enabledFor:key=>drawingCapability.allowed(key),reader});
+  const drawingCapability=createDrawingCapability({root,fetchImpl,config:()=>snapshot().config,delivery:nativeImage});
   const voiceRequests=new Map(),musicDeliveries=new Map();
+  async function musicJobStatus(job){
+    let entry=musicDeliveries.get(job.id);
+    if(!entry&&job.conversationKey){
+      const recovered=nativeVoice.lookup(job.conversationKey,'singing',job.id);
+      entry={key:job.conversationKey,delivery:recovered??{state:job.state==='running'?'waiting':'not-sent',sent:false,message:job.state==='success'?'翻唱已生成，但没有微信投递记录；未自动重发。':'尚未提交微信发送。'}};
+    }
+    if(entry?.delivery?.state==='unconfirmed'&&entry.delivery.id&&allowedConversation(snapshot().config.wechat,entry.key))entry.delivery=await nativeVoice.refresh(entry.delivery.id,entry.key);
+    return {...job,sent:entry?.delivery?.sent===true,...(entry?{delivery:entry.delivery??{state:'waiting',sent:false}}:{})};
+  }
   const personaCategories=createPersonaCategories(root);
   const categorySnapshot=()=>{try{return personaCategories.read();}catch(error){return {categories:[],assignments:{},revision:null,error:error.message};}};
   const configFile = path.join(root, 'config', 'wechatagent.json');
@@ -423,7 +436,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     });
   }
   const server = http.createServer(async (req, res) => {
-    const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
+    const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
     const reply = (status, body, type = 'application/json; charset=utf-8') => { res.writeHead(status, { ...headers, 'Content-Type': type }); res.end(type.startsWith('application/json') ? JSON.stringify(body) : body); };
     try {
       const boundPort = server.address()?.port ?? port;
@@ -461,6 +474,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         assets['/liquid-glass.js']=['liquid-glass.js','text/javascript; charset=utf-8'];assets['/liquid-glass.css']=['liquid-glass.css','text/css; charset=utf-8'];
         assets['/dsh-access.js']=['dsh-access.js','text/javascript; charset=utf-8'];assets['/extensions.js']=['extensions.js','text/javascript; charset=utf-8'];
         assets['/audio-capabilities.js']=['audio-capabilities.js','text/javascript; charset=utf-8'];
+        assets['/drawing-capability.js']=['drawing-capability.js','text/javascript; charset=utf-8'];
+        assets['/drawing-capability.css']=['drawing-capability.css','text/css; charset=utf-8'];
         assets['/audio-runtime.js']=['audio-runtime.js','text/javascript; charset=utf-8'];
         assets['/music-source.js']=['music-source.js','text/javascript; charset=utf-8'];
         assets['/voice-profiles.js']=['voice-profiles.js','text/javascript; charset=utf-8'];
@@ -488,16 +503,26 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if(req.method==='GET'&&route==='/api/persona-proposals/notifications')return reply(200,{notifications:personaApprovals.notifications()});
       if(req.method==='GET'&&route==='/api/audio-capabilities'){voiceTransport=await nativeVoice.check();return reply(200,audioCapabilities.snapshot());}
+      if(req.method==='GET'&&route==='/api/drawing-capability')return reply(200,drawingCapability.snapshot());
+      if(req.method==='GET'&&route==='/api/drawing-capability/latest')return reply(200,await drawingCapability.latest(url.searchParams.get('conversationKey')));
+      const drawingJobRoute=/^\/api\/drawing-capability\/jobs\/([a-f0-9-]{36})(\/image)?$/.exec(route);
+      if(req.method==='GET'&&drawingJobRoute){const key=url.searchParams.get('conversationKey')??undefined;
+        return drawingJobRoute[2]?reply(200,drawingCapability.image(drawingJobRoute[1],key),'image/png'):reply(200,{job:await drawingCapability.get(drawingJobRoute[1],key)});
+      }
       const deliveryRoute=/^\/api\/audio-capabilities\/voice\/deliveries\/([a-f0-9]{64})$/.exec(route);
       if(req.method==='GET'&&deliveryRoute){const key=url.searchParams.get('conversationKey');if(!allowedConversation(snapshot().config.wechat,key))throw fault('当前聊天未授权。',403);return reply(200,await nativeVoice.refresh(deliveryRoute[1],key));}
       const musicBase='/api/audio-capabilities/music';
       if(req.method==='GET'&&route===musicBase+'/status')return reply(200,musicCapabilities.status());
+      if(req.method==='GET'&&route===musicBase+'/latest'){
+        const key=url.searchParams.get('conversationKey'),singing=audioCapabilities.snapshot().settings.singing;
+        if(!allowedConversation(snapshot().config.wechat,key)||!singing.enabled||!singing.chats.includes(key))throw fault('当前聊天的唱歌能力未开启。',403);
+        const job=musicCapabilities.latestForConversation(key,activeReaderAccount(root).id);
+        return reply(200,job?await musicJobStatus(job):{state:'none',sent:false,message:'当前账号的这个聊天没有可恢复的翻唱任务。'});
+      }
       if(req.method==='GET'&&route===musicBase+'/models')return reply(200,{models:rvcModels.publicList()});
       if(req.method==='GET'&&route==='/api/audio-capabilities/voice/models')return reply(200,{voices:voiceProfiles.publicList()});
       const musicJobRoute=/^\/api\/audio-capabilities\/music\/jobs\/([a-f0-9-]{36})$/.exec(route);
-      if(req.method==='GET'&&musicJobRoute){const job=musicCapabilities.getJob(musicJobRoute[1]),entry=musicDeliveries.get(job.id);
-        if(entry?.delivery?.state==='unconfirmed'&&entry.delivery.id&&allowedConversation(snapshot().config.wechat,entry.key))entry.delivery=await nativeVoice.refresh(entry.delivery.id,entry.key);
-        return reply(200,{...job,sent:entry?.delivery?.sent===true,...(entry?{delivery:entry.delivery??{state:'waiting',sent:false}}:{})});}
+      if(req.method==='GET'&&musicJobRoute)return reply(200,await musicJobStatus(musicCapabilities.getJob(musicJobRoute[1])));
       if(req.method==='POST'&&[musicBase+'/models/upload','/api/audio-capabilities/voice/models/upload'].includes(route)){
         assertIdle();
         if(req.headers['content-type']!=='application/octet-stream')throw fault('请使用模型上传表单。',415);
@@ -521,7 +546,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         for(const item of catalog.plugins)if(item.id==='speech-recognition')item.serviceStatus=speechChecks.status();
         if(route==='/api/plugins')return reply(200,catalog);
         const base=builtinCatalog(saved.config,saved.revision,connected);
-        return reply(200,{...base,extensions:[...audioCapabilities.catalog(saved.config),...base.extensions],plugins:catalog.plugins,pluginRevision:catalog.revision,pluginError:catalog.error??null,canInstallZip:true,pluginApiReady});
+        return reply(200,{...base,extensions:[...drawingCapability.catalog(),...audioCapabilities.catalog(saved.config),...base.extensions],plugins:catalog.plugins,pluginRevision:catalog.revision,pluginError:catalog.error??null,canInstallZip:true,pluginApiReady});
       }
       if (req.method === 'GET' && route === '/api/deployment') {
         const distribution = optionalJson(path.join(root, 'config', 'distribution.json'));
@@ -596,11 +621,16 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if(route==='/api/updates/check')return reply(200,await updates.check({force:true}));
       if (route === '/api/jobs') return reply(202, startJob(body));
       assertIdle();
+      if(route==='/api/drawing-capability/save')return reply(200,drawingCapability.save(body));
+      if(route==='/api/drawing-capability/check')return reply(200,await drawingCapability.check(body));
+      if(route==='/api/drawing-capability/generate')return reply(202,await drawingCapability.generate(body));
       if(route==='/api/audio-runtime/start'){
-        if(musicCapabilities.isBusy?.()||audioCapabilities.isBusy?.())throw fault('请等待音频任务完成，再安装或修复。',409);
+        if(musicCapabilities.isBusy?.()||audioCapabilities.isBusy?.()||drawingCapability.isBusy())throw fault('请等待语音、翻唱或绘画任务完成，再安装或修复。',409);
         return reply(202,await audioInstaller.start(body));
       }
       if(route==='/api/persona-proposals/propose')return reply(200,personaApprovals.propose(body));
+      if(route==='/api/persona/default/generate')return reply(200,await plugin('/persona-generate',{accountScope:activeReaderAccount(root).id}));
+      if(route==='/api/persona/default/apply')return reply(200,personaApprovals.applyDefault(body));
       if(route==='/api/persona-proposals/review-context')return reply(200,personaApprovals.reviewContext(body));
       if(route==='/api/persona-proposals/decide')return reply(200,personaApprovals.decide(body.message,body.accountScope));
       if(route==='/api/persona-proposals/ack')return reply(200,personaApprovals.acknowledge(body.id));
@@ -655,7 +685,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
             while(musicDeliveries.size>=30)musicDeliveries.delete(musicDeliveries.keys().next().value);
             const entry={key:conversationKey};musicDeliveries.set(job.id,entry);
             void musicCapabilities.settled(job.id).then(async ready=>{
-              if(ready.state!=='success')return;
+              if(ready.state!=='success'){entry.delivery={state:'not-sent',sent:false,code:'SINGING_GENERATION_FAILED',message:'演唱未生成，未提交微信发送。'};return;}
               if(!isAllowed())throw Error('VOICE_SCOPE_DENIED');
               entry.delivery=await nativeVoice.enqueue({key:conversationKey,kind:'singing',sourceId:job.id,file:path.join(root,'state/music-jobs',job.id,'preview.mp3'),context});
               entry.delivery=await nativeVoice.settled(entry.delivery.id,conversationKey);
@@ -774,6 +804,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         finally { protectingCredential = false; }
       }
       if (route === '/api/quit') {
+        if(drawingCapability.isBusy())throw fault('图片仍在生成，请等待完成后再退出。',409);
         reply(200, { ok: true });
         setTimeout(() => { if (onQuit) onQuit(); else { server.closeAllConnections(); server.close(); } }, 100);
         return;
@@ -896,8 +927,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     };
     listen();
   });
-  server.on('close',()=>{const file=path.join(root,'state/console-runtime.json'),record=optionalJson(file);if(record.pid===process.pid&&record.port===registeredPort)fs.rmSync(file,{force:true});audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();voiceProfiles.close();rvcModels.close();});
-  return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
+  server.on('close',()=>{const file=path.join(root,'state/console-runtime.json'),record=optionalJson(file);if(record.pid===process.pid&&record.port===registeredPort)fs.rmSync(file,{force:true});drawingCapability.close();nativeImage.close();audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();voiceProfiles.close();rvcModels.close();});
+  return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy() || drawingCapability.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

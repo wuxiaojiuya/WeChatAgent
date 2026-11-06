@@ -8,7 +8,7 @@ export const BEHAVIOR_POLICY = 'local-config-only-v1';
 export const MAX_PERSONA_BYTES = 60000;
 export const MAX_RPC_BYTES = 256 * 1024;
 
-/** Read current owner files so an approved card takes effect on the next turn.
+/** Read current owner files so a locally applied card takes effect next turn.
  * Legacy installations can still use the generated snapshot. RPC metadata is
  * never an authority for persona content or binding. */
 export function localPersona(root, key) {

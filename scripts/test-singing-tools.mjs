@@ -33,16 +33,52 @@ test('chat model supplies song metadata, retries reuse the job, and status never
   f=fixture(t,{fetchImpl:async(url,options)=>{
     if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
     assert.equal(options.headers['X-Console-Token'],'fixture-token');calls.push({url,body:options.body&&JSON.parse(options.body)});
+    if(url.includes('/latest?'))return Response.json({state:'none',sent:false});
     return Response.json(url.endsWith('/request')?{id:'job-fixture',state:'running'}:{id:'job-fixture',state:'success',seconds:30});
   }});
   const sing=f.tools.get('wechat_sing_song'),status=f.tools.get('wechat_singing_status');
   const empty=JSON.parse((await status.execute({})).content);assert.equal(empty.state,'none');
+  assert.match(calls[0].url,/\/music\/latest\?conversationKey=wechat%3Aprivate%3A123$/);calls.length=0;
   f.setTurn({networkOptOut:true});
   const first=JSON.parse((await sing.execute({title:'朋友的酒',version:'DJ版'})).content);
   await sing.execute({title:'朋友的酒',version:'DJ版'});assert.equal(calls.length,1);assert.equal(first.sent,false);
   assert.deepEqual(calls[0].body,{title:'朋友的酒',version:'DJ版',conversationKey:key,localOnly:true});
   f.setTurn();const ready=JSON.parse((await status.execute({})).content);assert.equal(ready.state,'success');assert.equal(ready.sent,false);
   assert.match(ready.notice,/不代表微信已发送/);assert.ok(!JSON.stringify(ready).includes('fixture-token'));
+});
+
+test('a fresh singing binding restores the latest authorized job without starting or resending it',async t=>{
+ const id='12345678-1234-1234-1234-123456789abc',calls=[];let f;
+ f=fixture(t,{fetchImpl:async(url,options)=>{
+   assert.equal(options.method??'GET','GET');assert.equal(options.body,undefined);
+   if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+   calls.push(url);assert.equal(options.headers['X-Console-Token'],'fixture-token');
+   return Response.json({id,conversationKey:key,state:'success',sent:false,delivery:{state:'unconfirmed',sent:false}});
+ }});
+ const turn=f.setTurn(),first=JSON.parse((await f.tools.get('wechat_singing_status').execute({})).content);
+ assert.equal(first.state,'success');assert.equal(first.delivery.state,'unconfirmed');assert.equal(first.sent,false);
+ assert.match(calls[0],/\/music\/latest\?conversationKey=wechat%3Aprivate%3A123$/);
+ assert.match(singingReplyOutcome('RESPOND: 还没生成好。',turn),/音频已经生成.*微信发送回执还没确认/);
+ f.setTurn();const second=JSON.parse((await f.tools.get('wechat_singing_status').execute({})).content);
+ assert.equal(second.id,id);assert(calls[1].endsWith('/music/jobs/'+id));assert.equal(calls.length,2);
+ assert(!calls.some(url=>/\/(?:request|video-request|deliveries)(?:[/?]|$)/.test(url)));
+});
+
+test('latest-job restoration rejects another conversation or a malformed ID without retaining ownership',async t=>{
+ for(const record of [{id:'12345678-1234-1234-1234-123456789abc',conversationKey:'wechat:private:456'},
+   {id:'12345678-1234-1234-1234-123456789abc'}, {id:'job-fixture',conversationKey:key},
+   {id:'------------------------------------',conversationKey:key},{id:null,conversationKey:key}]){
+   let f,latestCalls=0;const calls=[];
+   f=fixture(t,{fetchImpl:async(url,options)=>{
+     assert.equal(options.method??'GET','GET');assert.equal(options.body,undefined);
+     if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+     calls.push(url);assert(url.includes('/latest?'));latestCalls++;
+     return Response.json(latestCalls===1?{...record,state:'success',sent:true}:{state:'none',sent:false});
+   }});
+   const turn=f.setTurn(),rejected=await f.tools.get('wechat_singing_status').execute({});assert.equal(rejected.isError,true);
+   assert.equal(turn.singingOutcome.sent,false);assert.equal(JSON.parse(rejected.content).state,'failed');assert(!rejected.content.includes('wechat:private:456'));
+   f.setTurn();const next=JSON.parse((await f.tools.get('wechat_singing_status').execute({})).content);assert.equal(next.state,'none');assert.equal(next.sent,false);assert.equal(calls.length,2);
+ }
 });
 
 test('a different local project cannot receive song requests or the console token',async t=>{
@@ -162,7 +198,8 @@ test('failed singing status replaces invented progress while confirmed delivery 
    if(state==='running'||state==='confirmed')assert.equal(text,claim);
  }
  assert.equal(singingReplyOutcome('RESPOND: 普通文字',f.setTurn()),'RESPOND: 普通文字');
- const other=fixture(t),turn=other.setTurn();await other.tools.get('wechat_singing_status').execute({});
+ let other;other=fixture(t,{fetchImpl:async url=>Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root:other.root,token:'fixture-token'}:{state:'none',sent:false})});
+ const turn=other.setTurn();await other.tools.get('wechat_singing_status').execute({});
  assert.match(singingReplyOutcome(claim,turn),/没有已启动/);
 });
 
@@ -177,6 +214,26 @@ test('a truthful singing failure keeps the persona wording and next step instead
  assert.equal(singingReplyOutcome('RESPOND: 链接我这边打不开，你下载好发我，我就唱',turn),'RESPOND: 链接我这边打不开，你下载好发我，我就唱');
  const invented=singingReplyOutcome('RESPOND: 音源下不来，被版权挡了，得开会员',turn);
  assert(!/版权|会员/.test(invented));assert.match(invented,/音乐平台没有返回可用音源/);
+});
+
+test('a completed singing job with an unconfirmed delivery reports completed audio and uncertain WeChat delivery separately',async t=>{
+ let f;const outcome={id:'job-fixture',state:'success',sent:false,delivery:{state:'unconfirmed',sent:false}};
+ f=fixture(t,{fetchImpl:async url=>Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root:f.root,token:'fixture-token'}:outcome)});
+ const turn=f.setTurn(),result=JSON.parse((await f.tools.get('wechat_sing_song').execute({title:'朋友的酒'})).content);
+ assert.equal(turn.singingOutcome.state,'success');assert.equal(turn.singingOutcome.deliveryState,'unconfirmed');
+ assert.match(result.notice,/音频已经生成.*微信发送回执/);
+ for(const text of ['RESPOND: 还没有生成，结果还没确认。','RESPOND: 唱好了，但我还在生成，微信发送还没确认。',
+   'RESPOND: 唱好了，我正在处理，微信回执还没确认。','RESPOND: 音频生成失败了，微信送达还没确认。',
+   'RESPOND: 歌已经唱好了，微信回执还没确认，不过没问题。','RESPOND: 已经生成好了，微信发送回执还没确认，你肯定能收到。',
+   'RESPOND: 微信发送结果还没确认，先不重复发。','RESPOND: 这次翻唱的处理或送达结果还没确认。',
+   'RESPOND: 唱好了，但还无法确认是否生成完成，微信没问题。','RESPOND: 唱好了，但微信没有发送成功。']){
+   const guarded=singingReplyOutcome(text,turn);assert.notEqual(guarded,text);assert.match(guarded,/音频已经生成.*微信发送回执还没确认/);
+   assert(!/处理或送达|还在生成|正在处理|没问题/.test(guarded));
+ }
+ for(const text of ['RESPOND: 唱好了呀，不过微信这边还没给我回执，我先不重复发啦。',
+   'RESPOND: 翻唱音频已经生成，只是还无法确认是否发送成功，先不重发。',
+   'RESPOND: 音频已经生成，正在等待微信发送回执。',
+   'RESPOND: 我已经唱完了，微信发送结果还不明，先不重复提交。'])assert.equal(singingReplyOutcome(text,turn),text);
 });
 
 test('preserved failure explanations cannot smuggle success or progress past the receipt check',()=>{

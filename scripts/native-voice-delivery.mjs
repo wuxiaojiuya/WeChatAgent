@@ -12,6 +12,7 @@ import {mediaFfmpeg} from './media-tools.mjs';
 const idPattern=/^[a-f0-9]{64}$/;
 const serverId=value=>typeof value==='string'&&/^[1-9]\d{0,19}$/.test(value);
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
+const submissionCode=error=>/^VOICE_HTTP_\d{3}$/.test(error?.message??'')?error.message:error?.name==='TimeoutError'?'VOICE_SUBMISSION_TIMEOUT':error?.name==='AbortError'?'VOICE_SUBMISSION_ABORTED':'VOICE_SUBMISSION_TRANSPORT_ERROR';
 // Old ambiguous submissions are never retried. Only the interval in which
 // their late receipt could overlap a NEW operation needs to hold the lane.
 const AMBIGUOUS_VOICE_WINDOW_MS=90000;
@@ -55,11 +56,11 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
   }
   const notice=record=>record.state==='confirmed'?'微信原生语音已取得服务器消息回执。':record.state==='closed-unconfirmed'?'此前发送结果未确认，已由用户结束核对；该条不会重发。':record.state==='unconfirmed'?'语音提交结果未确认，不会自动重发。':record.state==='failed'?'语音未发送，请检查微信连接与音频服务。':'音频正在准备或等待微信回执。';
   const publicRecord=r=>({id:r.id,state:r.state,kind:r.kind,conversationKey:r.key,sent:r.state==='confirmed',confirmed:r.state==='confirmed',durationMs:r.durationMs,
-    ...(r.error?{code:/^[A-Z][A-Z0-9_]{0,79}$/.test(r.error)?r.error:'VOICE_DELIVERY_FAILED'}:{}),...(r.state==='confirmed'?{serverId:r.serverId,receipt:r.receipt??'wechat-server-id'}:{}),message:notice(r)});
+    ...(r.error?{code:/^[A-Z][A-Z0-9_]{0,79}$/.test(r.error)?r.error:'VOICE_DELIVERY_FAILED'}:{}),...(r.submission?.code?{submissionCode:r.submission.code}:{}),...(r.state==='confirmed'?{serverId:r.serverId,receipt:r.receipt??'wechat-server-id'}:{}),message:notice(r)});
   function persist(r){fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json');fs.writeFileSync(file+'.tmp',JSON.stringify(r),{mode:0o600});fs.renameSync(file+'.tmp',file);records.set(r.id,r);}
   async function api(base,route,body,signal,account){
     const response=await fetchImpl(base+route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token(),...(body===undefined?{}:{'Content-Type':'application/json'}),...(account?{'X-WeChatAgent-Account':account}:{})},
-      ...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(body===undefined?4000:8000)])});
+      ...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(body===undefined?4000:route==='/SendVoiceMsg'?35000:8000)])});
     if(!response.ok)throw Error('VOICE_HTTP_'+response.status);
     const chunks=[];let size=0;for await(const chunk of response.body){size+=chunk.length;if(size>128*1024)fail('VOICE_HOOK_UNAVAILABLE');chunks.push(chunk);}
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -113,7 +114,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     const task=lane.catch(()=>{}).then(async()=>{
       try{
         signal.throwIfAborted();assertScope(r.key,r.kind);
-        if(r.binding!==binding()||r.origin!==origin()||r.policy!==policy(r.kind))fail('VOICE_SETTINGS_CHANGED');
+        if(r.binding!==binding()||r.origin!==origin()||r.state==='queued'&&r.policy!==policy(r.kind))fail('VOICE_SETTINGS_CHANGED');
         const own=await identity(signal);
         if(own.account!==r.account||own.wxid!==r.accountWxid||await targetFor(r.key)!==r.wxid||r.wxid===own.wxid)fail('VOICE_HOOK_ACCOUNT_MISMATCH');
         if(r.state==='queued'){
@@ -124,12 +125,13 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
           r.state='dispatching';r.startedAt=Date.now();persist(r); // Must precede the native call; never resubmit after a crash/timeout.
           try{
             const result=await api(r.origin,'/SendVoiceMsg',{wxidorgid:r.wxid,path:file,duration:r.durationMs},signal,r.account);
+            r.submission={state:result?.ret===0?'accepted':'rejected',startedAt:r.startedAt,completedAt:Date.now()};
             if(result?.ret!==0){r.state='failed';r.error='NATIVE_VOICE_REJECTED';persist(r);return;}
             if(config().hook.backend==='supplier-http'&&result.confirmed===true&&result.receipt==='wechat-uploadvoice-response'&&serverId(result.serverId)&&result.account===own.wxid&&result.target===r.wxid&&result.durationMs===r.durationMs){
               r.state='confirmed';r.serverId=result.serverId;r.receipt=result.receipt;r.reportedDurationMs=result.reportedDurationMs;r.confirmedAt=Date.now();delete r.error;persist(r);return;
             }
             r.state='submitted';persist(r);
-          }catch(e){r.error=e.message;/* A lost HTTP reply may still mean submitted. Reconcile only. */}
+          }catch(e){r.error=e.message;r.submission={state:'unconfirmed',code:submissionCode(e),startedAt:r.startedAt,completedAt:Date.now()};persist(r);/* A lost HTTP reply may still mean submitted. Reconcile only. */}
         }
         if(!await reconcile(r,signal)){r.state='unconfirmed';r.error='VOICE_DELIVERY_UNCONFIRMED';persist(r);}
       }catch(e){r.error=e.message;r.state=r.startedAt?'unconfirmed':'failed';persist(r);}
@@ -156,7 +158,13 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     return publicRecord(r);
   }
   function get(id,key){const r=records.get(id);if(!r||r.key!==key)fail('VOICE_DELIVERY_NOT_FOUND');return publicRecord(r);}
-  async function refresh(id,key){get(id,key);const r=records.get(id);if(r.state==='unconfirmed'&&r.startedAt)await run(r);return get(id,key);}
+  async function refresh(id,key,{wait=false}={}){
+    get(id,key);const r=records.get(id);
+    // Status requests must not wait through the receipt polling window. The
+    // same durable operation is checked in the background and is never resent.
+    if(r.state==='unconfirmed'&&r.startedAt){const task=run(r);if(wait)await task;}
+    return get(id,key);
+  }
   if(fs.existsSync(directory))for(const name of fs.readdirSync(directory).filter(n=>/^[a-f0-9]{64}\.json$/.test(n))){
     try{const r=JSON.parse(fs.readFileSync(path.join(directory,name),'utf8'));if(!idPattern.test(r.id)||name!==r.id+'.json'||!/^wechat:(private|group):[1-9]\d*$/.test(r.key))continue;
       if(!['confirmed','failed','closed-unconfirmed'].includes(r.state)){r.state='unconfirmed';r.error='VOICE_DELIVERY_UNCONFIRMED';}records.set(r.id,r);

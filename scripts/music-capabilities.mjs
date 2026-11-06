@@ -7,6 +7,7 @@ import {searchMusic,resolveMusic,fetchMusicAudio} from '../packages/music-source
 import {checkNeteaseLogin} from '../packages/music-source/netease.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
 import {mediaFfmpeg,probeMedia} from './media-tools.mjs';
+import {activeReaderAccount} from './reader-account-state.mjs';
 import {validatePerformance} from '../packages/dsh-social-bridge-plugin/singing-performance.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
@@ -44,10 +45,70 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   const runtime = path.join(root, 'state', 'maintenance', 'audio-capabilities', 'feiyu-cover');
   const python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
   const singer = path.join(root, 'state/maintenance/audio-capabilities/soulx-singer');
+  const jobDirectory = path.join(root, 'state', 'music-jobs');
   const tickets = new Map(), jobs = new Map(), controllers = new Set();
   const references=new Map(),referenceDirectory=path.join(root,'state/music-references');
   const readerScope=()=>crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'state/wechat-io-config.json'))).digest('hex');
   let active = false, closed = false, preparing = false;
+  const jobText=(value,max=400)=>typeof value==='string'&&value.length<=max&&!/[\r\n\0]|https?:\/\/|[A-Z]:[\\/]|^[\\/]|[A-Za-z0-9_-]{48,}/i.test(value);
+  const jobTime=value=>typeof value==='string'&&value.length<=40&&Number.isFinite(Date.parse(value));
+  function savedJob(job){
+    const value={version:1,id:job.id,state:job.state,stage:job.stage,startedAt:job.startedAt,sourceKind:job.sourceKind};
+    for(const key of ['conversationKey','accountScope','source','modelId','title','artist','seconds','previewOnly','sourceStartSeconds','completedAt','error','performance'])if(job[key]!==undefined)value[key]=job[key];
+    // Only public task metadata belongs here; process objects, settings and
+    // credentials must never become part of a recovery record.
+    for(const key of ['title','artist','error'])if(value[key]!==undefined&&!jobText(value[key],key==='error'?400:240))delete value[key];
+    if(value.source!==undefined&&!/^(?:local:[a-f0-9-]{36}|video:[a-f0-9]{64}|kugou:[A-Fa-f0-9]{32}:\d+|qq:[A-Za-z0-9]+|netease:\d+)$/.test(value.source))delete value.source;
+    if(value.modelId!==undefined&&!/^[A-Za-z0-9_-]{1,100}$/.test(value.modelId))delete value.modelId;
+    if(value.accountScope!==undefined&&(typeof value.accountScope!=='string'||!/^[a-f0-9]{64}$/.test(value.accountScope)))delete value.accountScope;
+    if(value.performance&&!jobText(value.performance.intention,240))delete value.performance;
+    return value;
+  }
+  function persistJob(job){
+    const output=path.join(jobDirectory,job.id);fs.mkdirSync(output,{recursive:true});atomic(path.join(output,'job.json'),savedJob(job));
+  }
+  function updateJob(job,patch){Object.assign(job,patch);persistJob(job);}
+  const stageJob=(job,stage)=>{if(job.stage!==stage)updateJob(job,{stage});};
+  function regularJobFile(id,name){
+    const output=path.join(jobDirectory,id),file=path.join(output,name);
+    try{
+      if(!uuid(id)||!fs.lstatSync(output).isDirectory()||fs.lstatSync(output).isSymbolicLink())return;
+      const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink())return;
+      if(path.dirname(fs.realpathSync(file))!==fs.realpathSync(output))return;
+      return stat;
+    }catch{return;}
+  }
+  function recoverJobs(){
+    if(!fs.existsSync(jobDirectory))return;
+    const entries=fs.readdirSync(jobDirectory).filter(uuid).flatMap(id=>{const stat=regularJobFile(id,'job.json');return stat&&stat.size>0&&stat.size<=32768?[{id,modified:stat.mtimeMs}]:[];}).sort((a,b)=>b.modified-a.modified);
+    const recovered=[];
+    for(const entry of entries){
+      try{
+        const record=JSON.parse(fs.readFileSync(path.join(jobDirectory,entry.id,'job.json'),'utf8'));
+        if(!record||record.version!==1||record.id!==entry.id||!['running','success','failed'].includes(record.state)||!jobText(record.stage)||!record.stage||!jobTime(record.startedAt)||!['song','video'].includes(record.sourceKind))continue;
+        if(Object.keys(record).some(key=>!['version','id','state','stage','startedAt','sourceKind','conversationKey','accountScope','source','modelId','title','artist','seconds','previewOnly','sourceStartSeconds','completedAt','error','performance'].includes(key)))continue;
+        if(record.accountScope!==undefined&&(typeof record.accountScope!=='string'||!/^[a-f0-9]{64}$/.test(record.accountScope)))continue;
+        if(record.conversationKey!==undefined&&!/^wechat:(private|group):[1-9]\d*$/.test(record.conversationKey)||record.seconds!==undefined&&(!Number.isFinite(record.seconds)||record.seconds<=0||record.seconds>30)||record.previewOnly!==undefined&&typeof record.previewOnly!=='boolean'||record.sourceStartSeconds!==undefined&&(!Number.isFinite(record.sourceStartSeconds)||record.sourceStartSeconds<0||record.sourceStartSeconds>14400)||record.completedAt!==undefined&&!jobTime(record.completedAt))continue;
+        const safe=savedJob(record);if(JSON.stringify(safe)!==JSON.stringify(record)){
+          // Compare fields, not property ordering: hand-migrated snapshots can
+          // use a different order but may not contain paths or extra values.
+          if(Object.keys(record).some(key=>JSON.stringify(record[key])!==JSON.stringify(safe[key])))continue;
+        }
+        if(record.performance)validatePerformance(record.performance,record.seconds??30);
+        if(record.state==='success'){
+          const preview=regularJobFile(entry.id,'preview.mp3');
+          if(!Number.isFinite(record.seconds)||!jobTime(record.completedAt)||!preview||preview.size<=0||preview.size>4*1024*1024)continue;
+        }
+        const {version,...job}=record;
+        recovered.push(job);
+        recovered.sort((a,b)=>Date.parse(b.startedAt)-Date.parse(a.startedAt));if(recovered.length>30)recovered.pop();
+      }catch{/* Damaged or foreign records are not evidence of an audio job. */}
+    }
+    for(const job of recovered.reverse()){
+      if(job.state==='running')updateJob(job,{state:'failed',stage:'上次演唱因服务重启而中断',error:'演唱服务已重启，上次任务被中断，未自动重新生成或发送。',completedAt:new Date(now()).toISOString()});
+      jobs.set(job.id,job);
+    }
+  }
   const probe = probeAudio ?? (async file => {
     const value = await probeMedia(file, {root});
     if (!value.streams?.some(stream => stream.codec_type === 'audio')) throw fault('文件中没有可解码的音频。');
@@ -268,13 +329,16 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     if(!source?.reference&&typeof planPerformance!=='function')throw fault('AI 演唱编排服务尚未就绪，请启动 DSH 并启用项目插件。',503);
     if (!runCover && !runtimeAvailable()) throw fault('SoulX 翻唱环境尚未准备，请在设置中安装或修复翻唱环境；仍可搜歌和缓存音频。', 503);
     if (!source && !findCached(body.songId) && !tickets.has(body.songId)) throw fault('请重新搜索并选择歌曲。', 409);
-    while (jobs.size >= 30) jobs.delete(jobs.keys().next().value);
+    while (jobs.size >= 30) {
+      const oldest=jobs.keys().next().value;jobs.delete(oldest);
+      if(regularJobFile(oldest,'job.json'))fs.unlinkSync(path.join(jobDirectory,oldest,'job.json'));
+    }
     const config=structuredClone(settings()),model=models?.get(config.modelId);
     if(models&&!model)throw fault('当前音色没有可用的翻唱模型，请在“语音回复”中补充配套 RVC 模型。',409);
-    const accountScope=()=>fs.existsSync(path.join(root,'state/wechat-io-config.json'))?readerScope():null,scope=accountScope();
-    const id = crypto.randomUUID(), output = path.join(root, 'state', 'music-jobs', id);
-    const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
-    jobs.set(id, job); active = true;
+    const accountScope=()=>fs.existsSync(path.join(root,'state/wechat-io-config.json'))?readerScope():null,scope=accountScope(),accountId=activeReaderAccount(root).id;
+    const id = crypto.randomUUID(), output = path.join(jobDirectory, id);
+    const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(accountId?{accountScope:accountId}:{}),...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
+    persistJob(job);jobs.set(id, job); active = true;
     const controller = new AbortController(); controllers.add(controller);
     let processLog='',reference=source?.reference,performance=body.performance;
     const check=()=>{controller.signal.throwIfAborted();if(!isAllowed()||source&&!source.isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);if(scope!==accountScope())throw fault('微信账号已变化，本次演唱已取消。',409);};
@@ -284,23 +348,22 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
         const available = Math.floor((song.durationSeconds - startSeconds) * 1000) / 1000;
         if (available < 1) throw fault('开始时间超出了音频长度，请调整开始时间。');
         const duration = Math.min(seconds, available);
-        Object.assign(job, {title:song.title, artist:song.artist, seconds:duration, previewOnly:song.previewOnly});
-        job.stage = '正在分离人声和伴奏';
+        updateJob(job, {title:song.title, artist:song.artist, seconds:duration, previewOnly:song.previewOnly,stage:'正在分离人声和伴奏'});
         check();
         const inputFile=source?song.file:audioPath(song.key);
         if(!reference){
           cleanupReferences();
           const referenceId=crypto.randomUUID(),dir=path.join(referenceDirectory,referenceId);fs.mkdirSync(dir,{recursive:false});
           reference={id:referenceId,dir,inUse:true};references.set(referenceId,reference);
-          job.stage='正在分析歌词、旋律、节奏与分句';
+          stageJob(job,'正在分析歌词、旋律、节奏与分句');
           if(runReference)await runReference({input:inputFile,output:dir,seconds:duration,startSeconds,withScore:true,signal:controller.signal});
           else await execute(python,[path.join(root,'scripts/music-reference.py'),'--input',inputFile,'--output',dir,'--start',String(startSeconds),'--seconds',String(duration),'--soulx-runtime',singer],{cwd:runtime,signal:controller.signal,timeoutMs:10*60*1000,onData:chunk=>{processLog=(processLog+chunk).slice(-64000);}});
           check();
           const record=JSON.parse(fs.readFileSync(path.join(dir,'reference.json'),'utf8'));
           if(record.schema!=='singing-reference-v1'||record.source_sha256!==crypto.createHash('sha256').update(fs.readFileSync(inputFile)).digest('hex')||Math.abs(record.seconds-duration)>.05||!record.analysis?.phrases?.length||!record.analysis?.lyrics?.length)throw fault('歌曲参考分析未完成，未生成演唱。',502);
-          job.stage='AI 正在结合歌词与人格编排演唱';
+          stageJob(job,'AI 正在结合歌词与人格编排演唱');
           performance=validatePerformance(await planPerformance({analysis:record.analysis,seconds:duration,song:{title:song.title,artist:song.artist,requestedTitle:body.requestedTitle??song.title,version:body.requestedVersion??''},direction:body.direction??'',conversationKey:body.conversationKey,signal:controller.signal}),duration);
-          check();job.performance=performance;
+          check();updateJob(job,{performance});
         }
         let performanceFile;
         fs.mkdirSync(output,{recursive:true});performanceFile=path.join(output,'performance.json');atomic(performanceFile,performance);
@@ -309,44 +372,50 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
           '--seconds', String(duration), '--output', output,'--model',model?.directory??path.join(runtime,'models','FeiyuVoice-RVC'),
           '--pitch',String(config.pitch??0),'--performance',performanceFile,'--reference',reference.dir,...(config.accompaniment===false?['--vocals-only']:[])], {cwd:runtime, signal:controller.signal, timeoutMs:45 * 60 * 1000,
           onData(chunk) {processLog=(processLog+chunk).slice(-64000);
-            if(chunk.includes('soulx_preprocess'))job.stage='正在提取歌词、旋律与节奏';
-            if(chunk.includes('soulx_loading'))job.stage='正在加载 SoulX 演唱模型';
-            if(chunk.includes('performance_arranged'))job.stage='AI 编排已应用，正在按谱重新演唱';
-            if(chunk.includes('soulx_singing'))job.stage='SoulX 正在重新演唱（CPU 处理需要数分钟）';
-            if(chunk.includes('Converting with'))job.stage='正在用所选 .pth 音色换声';
-            if(chunk.includes('"mixing"'))job.stage='正在混入原歌曲伴奏并优化音量';}});
+            if(chunk.includes('soulx_preprocess'))stageJob(job,'正在提取歌词、旋律与节奏');
+            if(chunk.includes('soulx_loading'))stageJob(job,'正在加载 SoulX 演唱模型');
+            if(chunk.includes('performance_arranged'))stageJob(job,'AI 编排已应用，正在按谱重新演唱');
+            if(chunk.includes('soulx_singing'))stageJob(job,'SoulX 正在重新演唱（CPU 处理需要数分钟）');
+            if(chunk.includes('Converting with'))stageJob(job,'正在用所选 .pth 音色换声');
+            if(chunk.includes('"mixing"'))stageJob(job,'正在混入原歌曲伴奏并优化音量');}});
         const receipt = JSON.parse(fs.readFileSync(path.join(output, 'result.json'), 'utf8'));
         if (receipt.status !== 'success' || Math.abs(receipt.seconds - duration) > 0.05) throw fault('翻唱结果校验失败。', 502);
         if(!runCover&&(receipt.route!=='SoulX -> selected RVC -> accompaniment remix'||receipt.original_vocals_mixed!==false))throw fault('翻唱链路校验失败，未返回 SoulX 演唱结果。',502);
         check();
         if(!runCover&&(receipt.performance_sha256!==crypto.createHash('sha256').update(fs.readFileSync(performanceFile)).digest('hex')||receipt.performance?.control!=='score'||receipt.performance?.source_f0_used!==false||receipt.performance?.dynamics?.applied!==true))throw fault('演唱编排未实际执行，未返回音频。',502);
         const wav = path.join(output, 'feiyu-cover-' + Number(duration).toString() + 's.wav');
-        job.stage = '正在准备试听文件';
+        stageJob(job,'正在准备试听文件');
         await execute(mediaFfmpeg(root), ['-hide_banner', '-loglevel', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '256k', path.join(output, 'preview.mp3')], {signal:controller.signal});
         check();
-        Object.assign(job, {state:'success', stage:'试听已生成', seconds:receipt.seconds, completedAt:new Date().toISOString()});
+        updateJob(job, {state:'success', stage:'试听已生成', seconds:receipt.seconds, completedAt:new Date().toISOString()});
       } catch (error) {
         if(processLog){fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output+'.log',processLog,{mode:0o600});}
-        Object.assign(job, {state:'failed', stage:'未生成试听', error:error.status ? error.message : '歌曲处理失败，请检查音源与本地翻唱环境。'});}
+        updateJob(job, {state:'failed', stage:'未生成试听', error:error.status ? error.message : '歌曲处理失败，请检查音源与本地翻唱环境。',completedAt:new Date().toISOString()});}
       finally {if(reference){fs.rmSync(reference.dir,{recursive:true,force:true});references.delete(reference.id);}active = false; controllers.delete(controller);}
     })();
     return publicJob(job);
   }
   function publicJob(job) {const {finished, ...value} = job; return value;}
   function getJob(id) {if (!uuid(id) || !jobs.has(id)) throw fault('找不到这个试听任务。', 404); return publicJob(jobs.get(id));}
+  function latestForConversation(key,accountScope){
+    if(typeof key!=='string'||!/^wechat:(private|group):[1-9]\d*$/.test(key)||typeof accountScope!=='string'||!/^[a-f0-9]{64}$/.test(accountScope))return null;
+    const job=[...jobs.values()].reverse().filter(job=>job.conversationKey===key&&job.accountScope===accountScope).sort((a,b)=>Date.parse(b.startedAt)-Date.parse(a.startedAt))[0];
+    return job?publicJob(job):null;
+  }
   function preview(body) {
     const job = getJob(body?.jobId); if (job.state !== 'success') throw fault('试听音频尚未生成。', 409);
     const file = path.join(root, 'state', 'music-jobs', job.id, 'preview.mp3');
     if (!fs.existsSync(file) || fs.statSync(file).size > 4 * 1024 * 1024) throw fault('试听文件不可用。', 404);
     return {audio:fs.readFileSync(file).toString('base64'), mime:'audio/mpeg', seconds:job.seconds, title:job.title};
   }
+  recoverJobs();
   const cleanupTimer=setInterval(()=>{try{cleanup();}catch{}},3600000);cleanupTimer.unref();cleanup();
   async function checkNetease({signal}={}) {
     if(closed)throw fault('音乐服务已关闭。',503);
     const current=settings();if(current.musicSource!=='netease')throw fault('请先选择网易云音乐并保存。');
     return checkNeteaseLogin({neteaseCookie:current.neteaseCookie,fetchImpl,signal});
   }
-  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,prepareVideoReference,checkNetease,isBusy:()=>!!active||preparing,
+  return {search, cache, importFile, status, start, getJob,latestForConversation, preview,cleanup,requestSong,requestVideo,prepareVideoReference,checkNetease,isBusy:()=>!!active||preparing,
     async settled(id) {await jobs.get(id)?.finished; return getJob(id);},
     close() {closed = true;clearInterval(cleanupTimer); for (const controller of controllers) controller.abort();}};
 }

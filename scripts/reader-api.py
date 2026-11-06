@@ -533,6 +533,16 @@ class Reader:
                         file_info=parse_file_message(message.get('localType'),message['fullText'])
                         if file_info:
                             message.update({'fileKind':'appmsg-6','fileName':file_info['name'],'fileSize':file_info['size'],'fileMd5':file_info['md5']})
+                        if message.get('localType') == 3:
+                            try:
+                                if len(message['fullText']) > 2*1024*1024 or re.search(r'<!DOCTYPE|<!ENTITY', message['fullText'], re.I):
+                                    raise ValueError('IMAGE_XML_INVALID')
+                                image = ET.fromstring(message['fullText']).find('img')
+                                md5 = image.get('md5', '') if image is not None else ''
+                                if re.fullmatch(r'[a-fA-F0-9]{32}', md5):
+                                    message['imageMd5'] = md5.lower()
+                            except (ValueError, ET.ParseError):
+                                pass
                         md5=sticker_receipt_md5(message.get('localType'),message['fullText'])
                         if md5:
                             message['stickerMd5']=md5

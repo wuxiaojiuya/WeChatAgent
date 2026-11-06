@@ -14,11 +14,14 @@ import re
 import socket
 import struct
 import time
+import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
 VERSION = '4.1.8.27'
 BACKEND = 'supplier-http'
+VOICE_UPLOAD_TIMEOUT_SECONDS = 30
+IMAGE_UPLOAD_TIMEOUT_SECONDS = 30
 # The supplied build ignores HttpServerHost and constructs http://0.0.0.0:PORT.
 # Accept that behavior only for this reviewed binary, while still verifying
 # the real owner, loaded module, client version and current account below.
@@ -163,6 +166,11 @@ class SupplierApi:
                 return json.loads(raw)
         except RuntimeError:
             raise
+        except TimeoutError:
+            raise RuntimeError('HOOK_UPSTREAM_TIMEOUT') from None
+        except urllib.error.URLError as error:
+            code = 'HOOK_UPSTREAM_TIMEOUT' if isinstance(error.reason, TimeoutError) else 'HOOK_UPSTREAM_UNAVAILABLE'
+            raise RuntimeError(code) from None
         except Exception:
             raise RuntimeError('HOOK_UPSTREAM_UNAVAILABLE') from None
 

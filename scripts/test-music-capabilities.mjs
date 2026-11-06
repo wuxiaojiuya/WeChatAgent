@@ -19,6 +19,116 @@ function fixture(t,options={}){
   t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});return {root,service,advance:days=>clock+=days*86400000};
 }
 
+function recoveryFixture(t){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'music-recovery-')),services=[];
+  const open=()=>{const service=createMusicCapabilities({root,runCover:async()=>assert.fail('recovered jobs must not run inference'),runReference:async()=>assert.fail('recovered jobs must not analyze audio')});services.push(service);return service;};
+  const save=(changes={},preview)=>{
+    const id=changes.id??crypto.randomUUID(),directory=path.join(root,'state/music-jobs',id);
+    fs.mkdirSync(directory,{recursive:true});
+    const job={version:1,id,state:'success',stage:'试听已生成',startedAt:'2026-11-06T09:52:00.000Z',sourceKind:'video',conversationKey:'wechat:private:123',seconds:30,completedAt:'2026-11-06T10:01:44.000Z',...changes};
+    fs.writeFileSync(path.join(directory,'job.json'),JSON.stringify(job));
+    if(preview!==undefined)fs.writeFileSync(path.join(directory,'preview.mp3'),preview);
+    return job;
+  };
+  t.after(()=>{for(const service of services)service.close();fs.rmSync(root,{recursive:true,force:true});});
+  return {root,open,save};
+}
+
+test('completed singing metadata and audio remain queryable after service restarts without inference or delivery',async t=>{
+  const f=recoveryFixture(t),bytes=Buffer.from('ID3fixture-existing-preview');
+  const job=f.save({title:'视频参考演唱',modelId:'uploaded-model',performance:plan},bytes);
+  for(let attempt=0;attempt<2;attempt++){
+    const service=f.open(),restored=await service.settled(job.id);
+    assert.equal(restored.state,'success');assert.equal(restored.conversationKey,job.conversationKey);assert.deepEqual(restored.performance,plan);
+    assert.equal(Object.hasOwn(restored,'version'),false);assert.equal(Object.hasOwn(restored,'sent'),false);
+    const audio=service.preview({jobId:job.id});assert.deepEqual(Buffer.from(audio.audio,'base64'),bytes);assert.equal(audio.seconds,30);
+    assert.equal(service.status().latestJob.id,job.id);assert.equal(service.isBusy(),false);service.close();
+  }
+});
+
+test('restart closes a persisted running job as interrupted and never treats incidental audio as a completed job',async t=>{
+  const f=recoveryFixture(t),job=f.save({state:'running',stage:'SoulX 正在重新演唱',completedAt:undefined},Buffer.from('ID3partial'));
+  const output=path.join(f.root,'state/music-jobs',job.id);fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({status:'success',seconds:30}));
+  const service=f.open(),restored=await service.settled(job.id);
+  assert.equal(restored.state,'failed');assert.match(restored.error,/重启.*中断/);assert.equal(service.isBusy(),false);
+  assert.throws(()=>service.preview({jobId:job.id}),error=>error.status===409);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(output,'job.json'),'utf8')).state,'failed');
+  assert.equal(f.open().getJob(job.id).state,'failed');
+  const orphan=crypto.randomUUID(),directory=path.join(f.root,'state/music-jobs',orphan);fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({status:'success',seconds:30}));fs.writeFileSync(path.join(directory,'preview.mp3'),'ID3old');
+  assert.throws(()=>f.open().getJob(orphan),error=>error.status===404);
+});
+
+test('recovery ignores damaged, foreign, unsafe-path, oversized and missing-preview records',t=>{
+  const f=recoveryFixture(t),valid=f.save({},Buffer.from('ID3valid')),ids=[];
+  for(const changes of [{id:'a'.repeat(36),state:'queued'},{source:'C:\\private\\song.mp3'},{file:'C:\\private\\audio.mp3'},
+    {conversationKey:'wechat:private:../../private'},{modelId:'../../model'},{title:'C:\\private\\secret.mp3'},
+    {startedAt:'yesterday'},{seconds:31},{performance:{...plan,apiKey:'secret'}},{error:'https://example.com/private?key=secret'},
+    {version:2},{sourceKind:'remote'}])ids.push(f.save(changes,Buffer.from('ID3unsafe')).id);
+  const missing=f.save(),empty=f.save({},Buffer.alloc(0));ids.push(missing.id,empty.id);
+  const corrupted=f.save();fs.writeFileSync(path.join(f.root,'state/music-jobs',corrupted.id,'job.json'),'{');ids.push(corrupted.id);
+  const oversized=f.save();fs.writeFileSync(path.join(f.root,'state/music-jobs',oversized.id,'job.json'),' '.repeat(32769));ids.push(oversized.id);
+  const mismatch=f.save();fs.writeFileSync(path.join(f.root,'state/music-jobs',mismatch.id,'job.json'),JSON.stringify({...mismatch,id:crypto.randomUUID()}));ids.push(mismatch.id);
+  const service=f.open();assert.equal(service.getJob(valid.id).state,'success');
+  for(const id of ids)assert.throws(()=>service.getJob(id),error=>error.status===404,id);
+});
+
+test('recovery rejects a linked job directory or preview outside the job directory',t=>{
+  const f=recoveryFixture(t),outside=fs.mkdtempSync(path.join(os.tmpdir(),'music-outside-'));t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  const original=f.save({},Buffer.from('ID3valid')),linked=crypto.randomUUID(),target=path.join(f.root,'state/music-jobs',original.id);
+  try{fs.symlinkSync(target,path.join(f.root,'state/music-jobs',linked),process.platform==='win32'?'junction':'dir');}
+  catch(error){if(['EPERM','EACCES'].includes(error.code))return t.skip('symlink creation is unavailable');throw error;}
+  const file=path.join(outside,'preview.mp3');fs.writeFileSync(file,'ID3outside');
+  const escaped=f.save();
+  try{fs.symlinkSync(file,path.join(f.root,'state/music-jobs',escaped.id,'preview.mp3'),'file');}
+  catch(error){if(!['EPERM','EACCES'].includes(error.code))throw error;}
+  const service=f.open();assert.equal(service.getJob(original.id).state,'success');
+  for(const id of [linked,escaped.id])assert.throws(()=>service.getJob(id),error=>error.status===404);
+});
+
+test('recovery keeps only the latest thirty valid jobs by start time',t=>{
+  const f=recoveryFixture(t),saved=[];
+  for(let index=0;index<33;index++)saved.push(f.save({state:'failed',stage:'未生成试听',startedAt:new Date(Date.UTC(2026,10,6,0,index)).toISOString()}));
+  // A late filesystem edit to an old task does not make it the newest request.
+  const oldest=path.join(f.root,'state/music-jobs',saved[0].id,'job.json');fs.utimesSync(oldest,new Date(),new Date());
+  const service=f.open();assert.equal(service.status().latestJob.id,saved.at(-1).id);
+  for(const job of saved.slice(0,3))assert.throws(()=>service.getJob(job.id),error=>error.status===404);
+  for(const job of saved.slice(3))assert.equal(service.getJob(job.id).state,'failed');
+});
+
+test('latest singing recovery requires the exact account and conversation and never falls back to unscoped legacy jobs',t=>{
+  const f=recoveryFixture(t),account='a'.repeat(64),other='b'.repeat(64),key='wechat:private:123';
+  const older=f.save({accountScope:account,startedAt:'2026-11-06T08:00:00.000Z'},Buffer.from('ID3old'));
+  const latest=f.save({accountScope:account,startedAt:'2026-11-06T09:00:00.000Z'},Buffer.from('ID3new'));
+  const foreign=f.save({accountScope:other,startedAt:'2026-11-06T10:00:00.000Z'},Buffer.from('ID3foreign'));
+  const otherChat=f.save({accountScope:account,conversationKey:'wechat:private:456',startedAt:'2026-11-06T11:00:00.000Z'},Buffer.from('ID3other-chat'));
+  const legacy=f.save({startedAt:'2026-11-06T12:00:00.000Z'},Buffer.from('ID3legacy'));
+  const invalid=f.save({accountScope:'../account'},Buffer.from('ID3invalid'));
+  const service=f.open();assert.equal(service.latestForConversation(key,account).id,latest.id);assert.notEqual(latest.id,older.id);
+  assert.equal(service.latestForConversation(key,other).id,foreign.id);assert.equal(service.latestForConversation('wechat:private:456',account).id,otherChat.id);
+  for(const scope of ['',null,undefined,'bad','c'.repeat(63),'C'.repeat(64),'c'.repeat(64)])assert.equal(service.latestForConversation(key,scope),null);
+  for(const chat of ['',null,'wechat:private:789','wechat:group:123'])assert.equal(service.latestForConversation(chat,account),null);
+  assert.equal(service.getJob(legacy.id).accountScope,undefined);assert.throws(()=>service.getJob(invalid.id),error=>error.status===404);
+});
+
+test('live job stages and failures are atomically saved with only public metadata',async t=>{
+  let entered,release;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+  const f=fixture(t,{settings:()=>({musicSource:'local',apiKey:'private-fixture-key',endpoint:'https://private.invalid'}),runCover:async()=>{entered();await gate;throw Error('private error with credentials');}});
+  const file=path.join(f.root,'test.mp3');fs.writeFileSync(file,'audio');const song=await f.service.importFile({path:file,title:'测试歌曲'});
+  fs.mkdirSync(path.join(f.root,'state/weflow'),{recursive:true});const account='a'.repeat(64),accountFile=path.join(f.root,'state/weflow/active-account.json');fs.writeFileSync(accountFile,JSON.stringify({id:account}));
+  const job=f.service.start({songId:song.id,seconds:30,conversationKey:'wechat:private:123'}),journal=path.join(f.root,'state/music-jobs',job.id,'job.json');
+  assert.equal(JSON.parse(fs.readFileSync(journal,'utf8')).stage,'正在获取歌曲音频');
+  try{
+    await ready;const persisted=JSON.parse(fs.readFileSync(journal,'utf8'));
+    assert.equal(persisted.state,'running');assert.equal(persisted.stage,'AI 正在结合歌词与人格编排演唱');assert.deepEqual(persisted.performance,plan);
+    assert.equal(persisted.accountScope,account);fs.writeFileSync(accountFile,JSON.stringify({id:'b'.repeat(64)}));assert.equal(f.service.getJob(job.id).accountScope,account);
+    assert.equal(persisted.conversationKey,'wechat:private:123');assert(!JSON.stringify(persisted).includes('private-fixture-key'));assert(!JSON.stringify(persisted).includes(f.root));
+    assert.equal(Object.hasOwn(persisted,'finished'),false);assert.equal(fs.readdirSync(path.dirname(journal)).some(name=>name.endsWith('.tmp')),false);
+  }finally{release();}
+  await f.service.settled(job.id);const failed=JSON.parse(fs.readFileSync(journal,'utf8'));assert.equal(failed.state,'failed');assert(!failed.error.includes('credentials'));
+  const restarted=createMusicCapabilities({root:f.root});t.after(()=>restarted.close());assert.equal(restarted.getJob(job.id).state,'failed');assert.equal(restarted.latestForConversation('wechat:private:123',account).id,job.id);assert.equal(restarted.latestForConversation('wechat:private:123','b'.repeat(64)),null);
+});
+
 test('conversational requests distinguish a capability question from a DJ song request',()=>{
   assert.equal(songRequest({message:'你会唱歌吗？'}).intent,'ability');
   assert.deepEqual(songRequest({message:'你会唱朋友的酒DJ版吗'}),{intent:'sing',title:'朋友的酒',version:'DJ版',artist:'',localOnly:false});

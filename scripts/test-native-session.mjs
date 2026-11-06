@@ -302,7 +302,7 @@ async function fixture(t) {
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
-  for(const name of ['persona-evolution.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
+  for(const name of ['persona-evolution.mjs','persona-generation.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs','drawing-tools.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['public/console/persona-files.mjs','components/qq-bridge/src/role-card.js']){fs.mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});fs.copyFileSync(name,path.join(dir,name));}
   for(const name of ['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-feedback.mjs','assistant-notifications.mjs','social-tool-restrict.mjs','assistant-tasks.mjs','assistant-control.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','singing-tools.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['web-reader.mjs','web-reader-policy.mjs','web-reader-fetch.mjs','web-reader-content.mjs','web-reader-zxsj.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
@@ -886,6 +886,30 @@ test('enabled singing is bound to the conversation model and included in its ins
   const text=JSON.stringify(f.store.get(result.sessionId).snapshotEvents());assert.match(text,/\[唱歌能力\]/);assert.match(text,/不要求用户选择歌手/);
 });
 
+test('native drawing tools require the live enabled chat and guard final text and cache with the real image receipt',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json'),jobId='11111111-1111-4111-8111-111111111111',requests=[];let enabled=true;
+ fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ const server=http.createServer(async(req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url==='/api/info')return res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'drawing-fixture'}));
+  assert.equal(req.headers['x-console-token'],'drawing-fixture');
+  if(req.url==='/api/drawing-capability')return res.end(JSON.stringify({settings:{enabled,chats:[key],apiKeyConfigured:true}}));
+  let raw='';for await(const chunk of req)raw+=chunk;requests.push({route:req.url,body:raw?JSON.parse(raw):null});
+  res.end(JSON.stringify({job:{id:jobId,state:'success',stage:'图片已生成',conversationKey:key,delivery:{state:'unconfirmed'}}}));
+ });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ let turns=0;const r=await f.start({assistantMessages:[[{type:'text',text:'RESPOND: 图片已经发送成功了，你看这张。'}]],beforeAssistant:async agent=>{
+  const policy=agent.ctx[Symbol.for('wechatagent.drawing.v1')];
+  if(turns++===0){assert.deepEqual([...policy.names()],['wechat_draw_image','wechat_drawing_status']);assert.equal((await agent.registeredTools.get('wechat_draw_image').execute({prompt:'一只在窗边看雨的小猫，水彩风格。'})).isError,false);}
+  else assert.equal(policy.names().size,0);
+ }});
+ const body={...info,message:'帮我画一只在窗边看雨的小猫，水彩风格。',batchId:'7'.repeat(64)},first=await r.request('/followup',body);
+ assert.match(first.text,/图片已经生成.*还没确认/);assert(!first.text.includes('发送成功'));assert.equal(requests.length,1);assert.equal(requests[0].body.conversationKey,key);assert.equal(requests[0].body.previewOnly,false);
+ assert.match(JSON.stringify(f.store.get(first.sessionId).snapshotEvents()),/GPT 绘画/);
+ assert.equal((await r.request('/followup',body)).text,first.text);assert.equal(requests.length,1);
+ enabled=false;await r.request('/followup',{...info,message:'这次只看图，不要画图。'});assert.equal(requests.length,1);
+});
+
 test('a native video turn analyzes acoustic evidence before the model submits its own executable performance',async t=>{
  const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json'),videoId='b'.repeat(64),received=[];
  fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
@@ -893,6 +917,7 @@ test('a native video turn analyzes acoustic evidence before the model submits it
  const server=http.createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');
   if(req.url==='/api/info')return res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'reference-fixture'}));
+  if(req.url==='/api/drawing-capability')return res.end(JSON.stringify({settings:{enabled:false}}));
   let raw='';for await(const chunk of req)raw+=chunk;received.push({route:req.url,body:JSON.parse(raw)});
   res.end(JSON.stringify(req.url.endsWith('/video-reference')?{referenceId:'ref-native',videoId,startSeconds:0,seconds:12,analysis:{phrases:[{start:0,end:12}],tempo_bpm_estimate:120}}:{id:'job-native',state:'running',sent:false}));
  });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
@@ -952,7 +977,7 @@ test('native singing source failures preserve the model persona reply in deliver
  await r.stop();const resumed=await f.start(),again=await resumed.request('/followup',body);assert(again.cached);assert.equal(again.text,text);assert.equal(resumed.calls.model.length,0);
 });
 
-test('a native model can propose its persona through a bound approval tool but cannot approve it',async t=>{
+test('a native model can update its own persona through a bound scoped tool without approval',async t=>{
   const f=await fixture(t),account='e'.repeat(64);
   fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
   fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},assistant:{administrators:['wxid_admin']}}}));
@@ -961,7 +986,7 @@ test('a native model can propose its persona through a bound approval tool but c
   const r=await f.start({beforeAssistant:async agent=>{visible=[...agent.ctx[Symbol.for('wechatagent.persona-proposals.v1')].names()];}});
   const result=await r.request('/followup',{...info,message:'你可以根据聊天为自己设定人格，先让管理员同意'});
   assert.deepEqual(visible,['wechat_propose_persona','wechat_persona_proposal_status']);
-  const text=JSON.stringify(f.store.get(result.sessionId).snapshotEvents());assert.match(text,/人格调整与审批/);assert.match(text,/不能自称已获同意/);
+  const text=JSON.stringify(f.store.get(result.sessionId).snapshotEvents());assert.match(text,/人格自主成长/);assert.match(text,/无需审批/);assert.match(text,/共享默认卡、其他聊天/);
 });
 
 test('completed inbox turns feed automatic persona review once per effective batch outside the chat model',async t=>{
@@ -972,6 +997,7 @@ test('completed inbox turns feed automatic persona review once per effective bat
   const consoleServer=http.createServer(async(req,res)=>{
     res.setHeader('Content-Type','application/json');
     if(req.url==='/api/info'){res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'fixture-console'}));return;}
+    if(req.url==='/api/drawing-capability'){res.end(JSON.stringify({settings:{enabled:false}}));return;}
     assert.equal(req.headers['x-console-token'],'fixture-console');
     const chunks=[];for await(const chunk of req)chunks.push(chunk);requests.push({route:req.url,body:JSON.parse(Buffer.concat(chunks))});
     res.end(JSON.stringify({pending:{id:'123456abcdef'}}));

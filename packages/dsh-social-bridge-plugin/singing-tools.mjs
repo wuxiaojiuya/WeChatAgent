@@ -20,6 +20,7 @@ export function singingReplyOutcome(text,turn){
   if(singingExplanationMatches(text,outcome))return text;
   if(outcome.state==='failed')return outcome.message?'RESPOND: 这次还没唱成，'+outcome.message:'RESPOND: 这次翻唱生成失败了，还没有发出音频。';
   if(outcome.state==='none')return 'RESPOND: 当前没有已启动的翻唱任务，还没有生成音频。';
+  if(outcome.state==='success'&&outcome.deliveryState==='unconfirmed')return 'RESPOND: 翻唱音频已经生成，但微信发送回执还没确认，我先不重复发送。';
   if(outcome.state==='unconfirmed'||outcome.deliveryState==='unconfirmed')return 'RESPOND: 这次翻唱的处理或送达结果还没确认，我先不重复提交。';
   if(outcome.deliveryState==='failed')return 'RESPOND: 翻唱已生成，但微信发送失败了，还没有确认送达。';
   if(outcome.state==='success')return 'RESPOND: 翻唱已生成，正在等待微信发送结果，还没有确认送达。';
@@ -43,6 +44,17 @@ function singingExplanationMatches(text,outcome){
     .replace(/(?:还|尚|暂时)?(?:没有|没|未|无法|不能)(?:能)?(?:确认|确定|保证|知道|说|声称)(?:是否|有没有|已经|已|能否)?(?:成功)?(?:发送|发出|发给|送达|投递|推送)(?:了|过|成功)?/g,'')
     .replace(/(?:还|并|尚|暂时)?(?:没有|没|未|无法|不能|不曾|不是|并非)(?:能|成功|正在|在|继续)?(?:生成好?|合成好?|录制|录好|唱好|唱成|制作好|准备好|处理|排队|发送|发出|发给|送达|投递|推送|收到|完成)(?:了|过|成功)?/g,'');
   if(/(?:已经|刚刚|刚|已)(?:发|发送|送达)|发(?:给你|过去|出)(?:了|啦|喽)|(?:发送|发出|送达|投递|推送)(?:成功|完成)|(?:语音|音频)(?:在发|发了|送到(?:你|管理员)(?:的)?微信(?:里)?了)|(?:正在|马上|这就)(?:给你)?发送|(?:稍等|等一下|等会儿?|一会儿?|待会儿?).{0,12}(?:发给|发送|发出|送给)|你(?:先)?听一下|听听(?:这个|这段)/.test(claims))return false;
+  if(outcome.state==='success'){
+    // Generation and delivery are separate stages. A missing receipt cannot
+    // turn a completed audio job back into an unfinished or healthy send.
+    if(/(?:还没|尚未|没有|没|未)(?:能|成功)?(?:生成|合成|唱好|唱完|录好|做好|完成)|(?:生成|合成|演唱|制作)(?:失败|未完成)|(?:正在|还在|仍在|继续|开始|马上|即将|这就)(?:给你)?(?:生成|合成|制作|录制|录|唱|处理|排队)/.test(body))return false;
+    if(!/(?:已经|已)(?:经)?(?:生成|合成|完成|唱完)|(?:生成|合成|制作)(?:好|完成|成功)|唱好|唱完了|录好|做好|成品(?:已经|已)?(?:有了|出来了)/.test(claims))return false;
+    if(outcome.deliveryState==='unconfirmed'){
+      if(/没(?:有)?问题|一切正常|(?:肯定|一定|保证).{0,8}(?:发送|送达|收到)/.test(body))return false;
+      return body.split(/[。！？!?；;，,\n]/).some(part=>/微信|发送|发出|发过去|送达|投递|推送|回执/.test(part)&&
+        /未确认|未确定|不明|未知|待确认|等待|(?:还没|尚未|没有|没|无法|不能|未).{0,10}(?:确认|确定|回执)/.test(part));
+    }
+  }
   if(['failed','none','unconfirmed'].includes(outcome.state)){
     if(/(?:正在|已经|马上|这就)(?:给你)?(?:录|唱|合成|生成|制作|处理|排队)|(?:唱好|录好|生成好|合成好|做好)(?:了|啦|喽)|等(?:我|几分钟|一会).{0,12}(?:出片|唱|生成|发)/.test(claims))return false;
     if(outcome.state==='unconfirmed')return /(?:还没|尚未|没有|没|无法|不).{0,8}(?:确认|确定)|结果不明|送达不明/.test(body);
@@ -138,12 +150,21 @@ export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
           value=await turn.started;
           if(value.id){owned.add(value.id);latest=value.id;while(owned.size>30)owned.delete(owned.values().next().value);}
         }else{
-          value=latest&&owned.has(latest)?await request('/jobs/'+latest,undefined,signal):{state:'none',message:'当前聊天还没有发起过翻唱。',sent:false};
+          if(latest&&owned.has(latest))value=await request('/jobs/'+latest,undefined,signal);
+          else{
+            value=await request('/latest?conversationKey='+encodeURIComponent(key),undefined,signal);
+            if(value?.id!==undefined){
+              if(typeof value.id!=='string'||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value.id)||value.conversationKey!==key)throw Object.assign(Error('翻唱状态不属于当前聊天或任务编号无效，未恢复任务。'),{public:true});
+              if(!active(def.kind)||turnFor()!==turn)throw Error('音频操作已取消。');
+              owned.add(value.id);latest=value.id;while(owned.size>30)owned.delete(owned.values().next().value);
+            }else if(value?.state==='none')value={state:'none',message:'当前聊天还没有发起过翻唱。',sent:false};
+            else throw Object.assign(Error('未取得当前聊天的有效翻唱状态。'),{public:true});
+          }
         }
         if(def.kind==='voice')turn.voiceOutcome={state:value.state,sent:value.sent===true,code:value.code};
         else if(def.name!=='wechat_analyze_singing')turn.singingOutcome={state:value.state,sent:value.sent===true,deliveryState:value.delivery?.state,message:singingReason(value.error??value.message)};
         if(!active(def.kind)||turnFor()!==turn)throw Error('音频操作已取消。');
-        return {content:JSON.stringify({...value,sent:value.sent===true,notice:def.name==='wechat_analyze_singing'?'音轨已分析，尚未生成或发送演唱。请结合画面、转写和人格提交自己的演唱编排。':value.sent===true?'已取得微信服务器消息回执。':'生成或排队不代表微信已发送；仅 sent:true 可以说已送达。失败时按当前人格自然解释工具已证实的环节，不照读系统模板，不把取源失败推断为版权、付费或登录问题。'}),isError:value.state==='failed'};
+        return {content:JSON.stringify({...value,sent:value.sent===true,notice:def.name==='wechat_analyze_singing'?'音轨已分析，尚未生成或发送演唱。请结合画面、转写和人格提交自己的演唱编排。':value.sent===true?'已取得微信服务器消息回执。':def.kind==='singing'&&value.state==='success'&&value.delivery?.state==='unconfirmed'?'翻唱音频已经生成；未确认的是微信发送回执。请按当前人格自然说明这两个阶段，先不重复发送；不要说还没生成、仍在生成、已送达或发送没问题。':'生成或排队不代表微信已发送；仅 sent:true 可以说已送达。失败时按当前人格自然解释工具已证实的环节，不照读系统模板，不把取源失败推断为版权、付费或登录问题。'}),isError:value.state==='failed'};
       }catch(error){
         const state=error.code==='VOICE_REQUEST_UNCONFIRMED'?'unconfirmed':'failed',code=/^VOICE_[A-Z0-9_]{1,64}$/.test(error.code??'')?error.code:undefined;
         if(def.kind==='voice'&&turn.voiceOutcome?.sent!==true)turn.voiceOutcome={state,sent:false,code};

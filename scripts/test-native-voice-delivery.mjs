@@ -60,7 +60,29 @@ test('timeout and restart never resubmit; late receipt can be reconciled',async 
   f.service.close();const recovered=createNativeVoiceDelivery(f.options);t.after(()=>recovered.close());
   await recovered.enqueue({key:f.key,kind:'voice',sourceId:'test',file:'unused'});assert.equal(f.state.posts,1);
   f.state.rows=[{localId:8,localType:34,isSend:true,fullText:`<msg><voicemsg voicelength="1000"/></msg>`,createTime:Math.floor(Date.now()/1000),serverId:'999999999999999999'}];
-  assert.equal((await recovered.refresh(result.id,f.key)).sent,true);assert.equal(f.state.posts,1);
+  assert.equal((await recovered.refresh(result.id,f.key,{wait:true})).sent,true);assert.equal(f.state.posts,1);
+});
+
+test('receipt status returns immediately while a single background reconciliation checks a late receipt without resending',async t=>{
+  const f=fixture(t);f.state.confirm=false;f.state.failReply=true;
+  const prior=await f.send();assert.equal(prior.state,'unconfirmed');
+  assert.equal(prior.submissionCode,'VOICE_SUBMISSION_TRANSPORT_ERROR');
+  const saved=JSON.parse(fs.readFileSync(path.join(f.root,'state/voice-output/deliveries',prior.id+'.json')));
+  assert.equal(saved.submission.code,'VOICE_SUBMISSION_TRANSPORT_ERROR');
+  assert.ok(saved.submission.completedAt>=saved.submission.startedAt);
+  f.service.close();let release,entered,reads=0;
+  const gate=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+  const recovered=createNativeVoiceDelivery({...f.options,reader:async route=>{
+    if(route.includes('/messages')){reads++;entered();await gate;}
+    return f.options.reader(route);
+  }});t.after(()=>{release();recovered.close();});
+  const timer=new AbortController();
+  const quick=await Promise.race([recovered.refresh(prior.id,f.key),delay(250,undefined,{signal:timer.signal}).then(()=>assert.fail('status waited for receipt polling'))]);timer.abort();
+  assert.equal(quick.state,'unconfirmed');await started;
+  for(let i=0;i<5;i++)assert.equal((await recovered.refresh(prior.id,f.key)).sent,false);
+  assert.equal(reads,1);assert.equal(f.state.posts,1);
+  f.state.rows=[{localId:8,localType:34,isSend:true,fullText:'<msg><voicemsg voicelength="1000"/></msg>',createTime:Math.floor(Date.now()/1000),serverId:'999999999999999999'}];
+  release();assert.equal((await recovered.settled(prior.id,f.key)).sent,true);assert.equal(f.state.posts,1);
 });
 
 test('recent ambiguous delivery is rejected before generation, while old ambiguity does not permanently block new requests',async t=>{
@@ -78,6 +100,14 @@ test('recent ambiguous delivery is rejected before generation, while old ambigui
   assert.equal((await recovered.enqueue({key:f.key,kind:'voice',sourceId:'old-cover',file:'unused'})).state,'unconfirmed');
   assert.equal(f.state.posts,2);assert.equal(fs.readFileSync(file,'utf8'),before);
   assert.equal((await recovered.enqueue({key:f.key,kind:'voice',sourceId:'fresh-request',file:'unused'})).sent,true);assert.equal(f.state.posts,2);
+});
+
+test('changing synthesis settings after submission does not prevent reading a late receipt or submit the audio again',async t=>{
+  const f=fixture(t);f.state.confirm=false;
+  const prior=await f.send();assert.equal(prior.state,'unconfirmed');
+  f.settings.voice.emotion='warm';
+  f.state.rows=[{localId:9,localType:34,isSend:true,fullText:'<msg><voicemsg voicelength="1000"/></msg>',createTime:Math.floor(Date.now()/1000),serverId:'999999999999999998'}];
+  assert.equal((await f.service.refresh(prior.id,f.key,{wait:true})).sent,true);assert.equal(f.state.posts,1);
 });
 
 test('supplier final upload acknowledgement confirms without a local SQL row only when all bound fields match',async t=>{
@@ -118,6 +148,41 @@ test('real WAV conversion produces a bounded valid SILK clip',async t=>{
   const f=fixture(t),file=path.join(f.root,'tone.wav'),pcm=Buffer.alloc(24000*2);for(let i=0;i<24000;i++)pcm.writeInt16LE(Math.round(1200*Math.sin(2*Math.PI*440*i/24000)),i*2);
   const h=Buffer.alloc(44);h.write('RIFF');h.writeUInt32LE(36+pcm.length,4);h.write('WAVEfmt ',8);h.writeUInt32LE(16,16);h.writeUInt16LE(1,20);h.writeUInt16LE(1,22);h.writeUInt32LE(24000,24);h.writeUInt32LE(48000,28);h.writeUInt16LE(2,32);h.writeUInt16LE(16,34);h.write('data',36);h.writeUInt32LE(pcm.length,40);fs.writeFileSync(file,Buffer.concat([h,pcm]));
   const result=await audioFileToSilk(file);assert.equal(result.durationMs,1000);assert.ok(result.silk.includes(Buffer.from('#!SILK_V3')));
+});
+
+test('console recovers a completed song and returns its pending receipt promptly after restart without sending again',async t=>{
+  const f=fixture(t),jobId=crypto.randomUUID();f.state.confirm=false;
+  const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url),'utf8'));
+  config.hook={...config.hook,backend:'supplier-http',baseUrl:f.config.hook.baseUrl,voiceBaseUrl:f.config.hook.baseUrl,expectedVersion:'4.1.8.27'};config.wechat.whitelist=f.config.wechat.whitelist;
+  Object.assign(f.config,{hook:config.hook,wechat:config.wechat});
+  Object.assign(f.state.main,{integration:'WeChatAgent-supplier-v1',provider:'supplier-http',version:'4.1.8.27',databaseAccounts:['wxid_self']});
+  Object.assign(f.state.health,{version:'4.1.8.27',databaseAccounts:['wxid_self']});Object.assign(f.state.own,{backend:'supplier-http',accountDirectory:'wxid_self'});
+  const created=await f.service.enqueue({key:f.key,kind:'singing',sourceId:jobId,file:'cover.mp3'});
+  assert.equal((await f.service.settled(created.id,f.key)).state,'unconfirmed');f.service.close();
+  fs.mkdirSync(path.join(f.root,'config'),{recursive:true});fs.writeFileSync(path.join(f.root,'config/wechatagent.json'),JSON.stringify(config));
+  fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),JSON.stringify({reader_token:'reader-fixture'}));
+  fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({singing:{provider:'feiyu-rvc',enabled:true,chats:[f.key]}}));
+  const output=path.join(f.root,'state/music-jobs',jobId);fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,'preview.mp3'),'ID3fixture');
+  const accountScope='b'.repeat(64);fs.mkdirSync(path.join(f.root,'state/weflow'),{recursive:true});fs.writeFileSync(path.join(f.root,'state/weflow/active-account.json'),JSON.stringify({id:accountScope}));
+  fs.writeFileSync(path.join(output,'job.json'),JSON.stringify({version:1,id:jobId,state:'success',stage:'试听已生成',sourceKind:'video',conversationKey:f.key,accountScope,seconds:30,startedAt:new Date().toISOString(),completedAt:new Date().toISOString()}));
+  let release,entered,reads=0;const gate=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+  const app=createConsole({root:f.root,port:0,fetchImpl:async(url,options)=>{
+    const u=new URL(url);if(u.port==='5031'){
+      if(u.pathname.includes('/messages')){reads++;entered();await gate;}
+      return Response.json(await f.options.reader(u.pathname+u.search));
+    }return f.options.fetchImpl(url,options);
+  }});t.after(()=>{release();app.close();});
+  const address=await app.start(),origin='http://127.0.0.1:'+address.port;
+  const {token}=await fetch(origin+'/api/info').then(r=>r.json()),headers={'X-Console-Token':token};
+  const get=()=>fetch(origin+'/api/audio-capabilities/music/jobs/'+jobId,{headers,signal:AbortSignal.timeout(2000)}).then(r=>r.json());
+  const status=await get();assert.equal(status.state,'success');assert.equal(status.delivery.state,'unconfirmed');assert.equal(status.sent,false);
+  await Promise.race([started,delay(250).then(async()=>assert.fail(JSON.stringify((await get()).delivery)))]);assert.equal(reads,1);assert.equal(f.state.posts,1);
+  f.state.rows=[{localId:8,localType:34,isSend:true,fullText:'<msg><voicemsg voicelength="1000"/></msg>',createTime:Math.floor(Date.now()/1000),serverId:'999999999999999997'}];release();
+  let result;for(let i=0;i<30;i++){result=await get();if(result.sent)break;await delay(5);}
+  assert.equal(result.sent,true);assert.equal(f.state.posts,1);
+  const latest=()=>fetch(origin+'/api/audio-capabilities/music/latest?conversationKey='+encodeURIComponent(f.key),{headers}).then(r=>r.json());
+  assert.equal((await latest()).id,jobId);
+  fs.writeFileSync(path.join(f.root,'state/weflow/active-account.json'),JSON.stringify({id:'c'.repeat(64)}));assert.equal((await latest()).state,'none');assert.equal(f.state.posts,1);
 });
 
 test('console voice endpoint generates, converts and confirms a scoped reply, while retries and preview do not duplicate sends',async t=>{

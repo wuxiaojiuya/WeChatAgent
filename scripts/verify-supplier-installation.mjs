@@ -18,6 +18,9 @@ try {
   const config=JSON.parse(fs.readFileSync(configFile));
   assert.deepEqual(config.wechat.whitelist,{private:[],groups:[]});
   assert.equal(config.hook.backend,'supplier-http');
+  const featureFiles=['scripts/drawing-capability.mjs','scripts/native-image-delivery.mjs','packages/dsh-social-bridge-plugin/drawing-tools.mjs',
+    'packages/dsh-social-bridge-plugin/persona-generation.mjs','public/console/drawing-capability.js','public/console/drawing-capability.css','docs/GPT_DRAWING.md'];
+  for(const relative of featureFiles){assert(manifest.sourceHashes[relative]);assert(fs.existsSync(path.join(installed.root,relative)));}
   // No system Node/Python on PATH: verify the exact setup-page action with the
   // deployed config and copied embedded runtime, not developer dependencies.
   const powershell=path.join(process.env.SystemRoot??'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
@@ -32,7 +35,9 @@ try {
   assert(setup.includes('data-layout-control="save-button"'));
   config.wechat.whitelist.private=['123'];fs.writeFileSync(configFile,JSON.stringify(config));
   const fixtures=[['roles/验证保留.md','custom persona fixture'],['state/custom-models/validation.pth','custom model fixture'],['state/voice-output/validation-key.txt','private-key-fixture-only'],
-    ['state/voice-output/capabilities.json',JSON.stringify({singing:{provider:'feiyu-rvc',musicSource:'netease',neteaseCookie:'MUSIC_U=private-upgrade-fixture'}})]];
+    ['state/voice-output/capabilities.json',JSON.stringify({singing:{provider:'feiyu-rvc',musicSource:'netease',neteaseCookie:'MUSIC_U=private-upgrade-fixture'}})],
+    ['state/drawing/capability.json',JSON.stringify({enabled:false,apiKey:'private-drawing-upgrade-fixture'})],
+    ['state/persona-backups/validation/original.md','original persona backup fixture']];
   for(const [relative,text]of fixtures){const file=path.join(installed.root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,text);}
   const distributionFile=path.join(installed.root,'config/distribution.json');
   const previous=JSON.parse(fs.readFileSync(distributionFile));
@@ -46,7 +51,8 @@ try {
   assert(fs.readFileSync(path.join(installed.root,'public/console/music-source.js'),'utf8').includes('music-netease-login'));
   console.log(JSON.stringify({ok:true,version:manifest.version,cleanInstalledRuntimeCheck:true,systemNodeOrPythonRequired:false,
     setupWechatLocation:true,upgradePreservesChatSettings:true,upgradePreservesPersona:true,upgradePreservesPrivateKey:true,
-    upgradePreservesCustomModel:true,upgradePreservesMusicCredential:true,neteaseLoginPage:true,servicesStarted:false}));
+    upgradePreservesCustomModel:true,upgradePreservesMusicCredential:true,upgradePreservesDrawingCredential:true,upgradePreservesPersonaBackup:true,
+    drawingAndPersonaFiles:true,neteaseLoginPage:true,servicesStarted:false}));
 } finally {
   const resolved=path.resolve(temporary),parent=path.resolve(os.tmpdir());
   if(path.dirname(resolved)!==parent||!path.basename(resolved).startsWith('WeChatAgent installation '))throw Error('Invalid verification cleanup path');
