@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {validateMusicQuery} from '../packages/music-source/kugou.mjs';
 import {searchMusic,resolveMusic,fetchMusicAudio} from '../packages/music-source/providers.mjs';
+import {checkNeteaseLogin} from '../packages/music-source/netease.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
 import {mediaFfmpeg,probeMedia} from './media-tools.mjs';
 import {validatePerformance} from '../packages/dsh-social-bridge-plugin/singing-performance.mjs';
@@ -74,9 +75,10 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     cleanup();const query = validateMusicQuery(body?.query);
     const terms = query.normalize('NFKC').toLowerCase().split(/\s+/);
     const local = readEntries().filter(entry => terms.every(term => (entry.title + ' ' + entry.artist).normalize('NFKC').toLowerCase().includes(term))).map(publicEntry);
-    if (settings().musicSource === 'local') return {songs:local, remoteError:null};
+    const current=settings();
+    if (current.musicSource === 'local') return {songs:local, remoteError:null};
     try {
-      const songs = await searchMusic(settings().musicSource,query, {fetchImpl, signal});
+      const songs = await searchMusic(current.musicSource,query, {fetchImpl, signal,...(current.musicSource==='netease'?{neteaseCookie:current.neteaseCookie}:{})});
       return {songs:[...local, ...songs.map(song => ({...remember(song), mid:undefined,songId:undefined,cachedId:findCached(song.id) ? 'local:' + findCached(song.id).key : null}))], remoteError:null};
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -110,8 +112,9 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     const existing = findCached(id); if (existing) return existing;
     const ticket = tickets.get(id);
     if (!ticket || Date.now() - ticket.time > 15 * 60 * 1000) throw fault('搜索结果已过期，请重新搜索后选择歌曲。', 409);
-    if(settings().musicSource==='local')throw fault('当前只使用本地曲库，请先选择在线音乐来源。');
-    const song = ticket.song, resolved = await resolveMusic(song, {fetchImpl, signal});
+    const current=settings();
+    if(current.musicSource==='local')throw fault('当前只使用本地曲库，请先选择在线音乐来源。');
+    const song = ticket.song, resolved = await resolveMusic(song, {fetchImpl, signal,...(current.musicSource==='netease'&&song.source==='netease'?{neteaseCookie:current.neteaseCookie}:{})});
     fs.mkdirSync(directory, {recursive:true});
     const key = crypto.randomUUID(), temporary = path.join(directory, key + '.tmp');
     let handle;
@@ -338,7 +341,12 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     return {audio:fs.readFileSync(file).toString('base64'), mime:'audio/mpeg', seconds:job.seconds, title:job.title};
   }
   const cleanupTimer=setInterval(()=>{try{cleanup();}catch{}},3600000);cleanupTimer.unref();cleanup();
-  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,prepareVideoReference,isBusy:()=>!!active||preparing,
+  async function checkNetease({signal}={}) {
+    if(closed)throw fault('音乐服务已关闭。',503);
+    const current=settings();if(current.musicSource!=='netease')throw fault('请先选择网易云音乐并保存。');
+    return checkNeteaseLogin({neteaseCookie:current.neteaseCookie,fetchImpl,signal});
+  }
+  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,prepareVideoReference,checkNetease,isBusy:()=>!!active||preparing,
     async settled(id) {await jobs.get(id)?.finished; return getJob(id);},
     close() {closed = true;clearInterval(cleanupTimer); for (const controller of controllers) controller.abort();}};
 }

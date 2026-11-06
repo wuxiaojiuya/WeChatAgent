@@ -112,7 +112,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const audioInstaller=createAudioRuntimeInstaller({root,nodeExecutable,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
   const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles,speechRvc:speechRvc??createSpeechRvc({root,models:rvcModels})});
-  const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels,
+  const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.singingSettings(),models:rvcModels,
     planPerformance:async({signal,...body})=>(await plugin('/singing-performance',body,{signal})).performance});
   const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
   const voiceRequests=new Map(),musicDeliveries=new Map();
@@ -663,6 +663,11 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
           }
           return reply(202,{...job,sent:false,...(context&&job.id?{delivery:{state:'waiting',sent:false}}:{})});
         }finally{res.removeListener('close',cancel);}
+      }
+      if(route==='/api/audio-capabilities/music/netease/check'){
+        const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort();};res.once('close',cancel);
+        try{return reply(200,await musicCapabilities.checkNetease({signal:controller.signal}));}
+        finally{res.removeListener('close',cancel);}
       }
       if(route==='/api/audio-capabilities/music/import')return reply(200,await musicCapabilities.importFile(body));
       if(route==='/api/audio-capabilities/music/jobs')return reply(202,musicCapabilities.start(body));

@@ -165,3 +165,37 @@ test('failed singing status replaces invented progress while confirmed delivery 
  const other=fixture(t),turn=other.setTurn();await other.tools.get('wechat_singing_status').execute({});
  assert.match(singingReplyOutcome(claim,turn),/没有已启动/);
 });
+
+test('a truthful singing failure keeps the persona wording and next step instead of a canned receipt',async t=>{
+ let f;
+ f=fixture(t,{fetchImpl:async url=>Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root:f.root,token:'fixture-token'}:{error:'这首歌未提供可下载音频，可能需要登录、购买或受版权限制。'},{status:url.endsWith('/api/info')?200:422})});
+ const turn=f.setTurn(),result=JSON.parse((await f.tools.get('wechat_sing_song').execute({title:'偏向'})).content);
+ assert.equal(result.state,'failed');assert(!/版权|购买/.test(result.message));
+ assert.match(result.notice,/自然口语/);
+ const text='RESPOND: 哎，这歌的音源没拿到，还没唱成。\n你直接把视频发微信里，我再试试？';
+ assert.equal(singingReplyOutcome(text,turn),text);
+ assert.equal(singingReplyOutcome('RESPOND: 链接我这边打不开，你下载好发我，我就唱',turn),'RESPOND: 链接我这边打不开，你下载好发我，我就唱');
+ const invented=singingReplyOutcome('RESPOND: 音源下不来，被版权挡了，得开会员',turn);
+ assert(!/版权|会员/.test(invented));assert.match(invented,/音乐平台没有返回可用音源/);
+});
+
+test('preserved failure explanations cannot smuggle success or progress past the receipt check',()=>{
+ const turn={singingOutcome:{state:'failed',sent:false,message:'音源暂时不可用。'}};
+ for(const text of ['RESPOND: 没唱成，但已经发给你了','RESPOND: 音源下不来，我正在录，马上就好','RESPOND: 还没有生成好，不过已经发送了',
+   'RESPOND: 这次生成失败了，不过音频发送成功了。','RESPOND: 这次没唱成，我正在处理，稍等就发给你。',
+   'RESPOND: 这次没拿到新音源，语音送到你微信了。','RESPOND: 音源暂时不可用，稍等就发给你。',
+   'RESPOND: 没唱成，不过微信语音投递成功。','RESPOND: 这次没有发送成功，但现在发送成功了。']){
+   const guarded=singingReplyOutcome(text,turn);assert.notEqual(guarded,text);assert(!/已经发|正在录/.test(guarded));
+ }
+ for(const text of ['RESPOND: 音源没拿到，这次没有发送成功，你给我视频后我再试试。',
+   'RESPOND: 这次没唱成，目前并不是正在处理，也没有发送成功。',
+   'RESPOND: 这次没生成好，语音没有投递成功。',
+   'RESPOND: 音频没发出去，还不能说发送成功。'])assert.equal(singingReplyOutcome(text,turn),text);
+ const uncertain={singingOutcome:{state:'unconfirmed',sent:false}};
+ const pending='RESPOND: 这条我还没确认送达，先不重复发啦。';assert.equal(singingReplyOutcome(pending,uncertain),pending);
+ const unverified='RESPOND: 我还无法确认是否发送成功，先不重复发啦。';assert.equal(singingReplyOutcome(unverified,uncertain),unverified);
+ assert.notEqual(singingReplyOutcome('RESPOND: 这条没有发出去，你再让我发一次',uncertain),'RESPOND: 这条没有发出去，你再让我发一次');
+ const generated={singingOutcome:{state:'success',sent:false,deliveryState:'failed'}};
+ const explain='RESPOND: 唱好了，可惜发送失败了，音频还没发出去。';assert.equal(singingReplyOutcome(explain,generated),explain);
+ const unsent='RESPOND: 唱好了，但没有发送成功，音频还没发出去。';assert.equal(singingReplyOutcome(unsent,generated),unsent);
+});

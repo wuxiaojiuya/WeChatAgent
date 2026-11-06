@@ -41,12 +41,12 @@ export async function searchKugou(query, {fetchImpl = fetch, signal} = {}) {
 }
 export async function resolveKugou(song, {fetchImpl = fetch, signal} = {}) {
   if (!/^[A-F0-9]{32}$/.test(song.hash) || !/^\d{1,20}$/.test(song.albumId)) throw fault('请重新搜索并选择歌曲。', 400);
-  // Public mobile playback metadata reports access restrictions explicitly.
+  // Missing playback metadata proves only that no usable URL was returned.
   // Do not substitute hashes, forge paid credentials, or decrypt downloads.
   const url = new URL('https://m.kugou.com/app/i/getSongInfo.php');
   url.search = new URLSearchParams({cmd: 'playInfo', hash: song.hash, albumid: song.albumId});
   const data = await musicJson(url, fetchImpl, signal);
-  if (typeof data.url !== 'string' || !data.url) throw fault('这首歌未提供可下载音频，可能需要登录、购买或受版权限制。可在酷狗正常下载后导入普通音频文件。', 422);
+  if (typeof data.url !== 'string' || !data.url) throw fault('酷狗没有返回这首歌的可用音频地址，暂时无法取得音源；尚不能确定具体原因。可直接发送微信视频，或导入本地普通音频文件。', 422);
   const media = kugouMediaUrl(data.url);
   return {url: media, previewOnly: Number(data.pay_type) > 0 || Number(data.timeLength) + 2 < song.durationSeconds};
 }

@@ -1,8 +1,9 @@
 import {searchKugou,resolveKugou,musicJson,validateMusicQuery} from './kugou.mjs';
+import {neteaseRequest} from './netease.mjs';
 const fault=(message,status=502)=>Object.assign(new Error(message),{status});
 export const MUSIC_SOURCES={kugou:'酷狗音乐',qq:'QQ 音乐',netease:'网易云音乐',local:'本地曲库'};
 const clean=value=>String(value??'').replace(/<[^>]*>/g,'').slice(0,240);
-export async function searchMusic(source,query,{fetchImpl=fetch,signal}={}) {
+export async function searchMusic(source,query,{fetchImpl=fetch,signal,neteaseCookie=''}={}) {
   validateMusicQuery(query);
   if(source==='kugou')return searchKugou(query,{fetchImpl,signal});
   if(source==='qq'){
@@ -16,8 +17,7 @@ export async function searchMusic(source,query,{fetchImpl=fetch,signal}={}) {
     }));
   }
   if(source==='netease'){
-    const url=new URL('https://music.163.com/api/search/get/web');url.search=new URLSearchParams({s:query,type:'1',limit:'10',offset:'0'});
-    const data=await musicJson(url,fetchImpl,signal,{Referer:'https://music.163.com/'});
+    const data=await neteaseRequest('/api/search/get/web',{params:{s:query,type:'1',limit:'10',offset:'0'},fetchImpl,signal,neteaseCookie});
     if(data.code!==200)throw fault('网易云音乐搜索暂不可用。');
     return (data.result?.songs??[]).filter(song=>Number.isSafeInteger(song.id)).map(song=>({
       id:'netease:'+song.id,source:'netease',songId:song.id,title:clean(song.name),
@@ -34,13 +34,13 @@ export function musicMediaUrl(value,source) {
     !domains.some(domain=>url.hostname===domain||url.hostname.endsWith('.'+domain)))throw fault('音频地址不属于所选音乐平台。');
   url.protocol='https:';url.hash='';return url;
 }
-export async function resolveMusic(song,{fetchImpl=fetch,signal}={}) {
+export async function resolveMusic(song,{fetchImpl=fetch,signal,neteaseCookie=''}={}) {
   if(song.source==='kugou')return resolveKugou(song,{fetchImpl,signal});
   if(song.source==='netease'){
-    const url=new URL('https://music.163.com/api/song/enhance/player/url');
-    url.search=new URLSearchParams({ids:JSON.stringify([song.songId]),br:'128000'});
-    const data=await musicJson(url,fetchImpl,signal,{Referer:'https://music.163.com/'}),track=data.data?.[0];
-    if(!track?.url)throw fault('网易云未提供可用音频，歌曲可能需要登录、购买或受版权限制。',422);
+    if(!Number.isSafeInteger(song.songId)||song.songId<=0)throw fault('请重新搜索并选择网易云歌曲。',400);
+    const parameters={ids:JSON.stringify([song.songId]),br:'320000'};
+    const data=await neteaseRequest('/api/song/enhance/player/url',{...(neteaseCookie?{data:parameters}:{params:parameters}),fetchImpl,signal,neteaseCookie}),track=data.data?.[0];
+    if(!track?.url)throw fault('网易云没有返回这首歌的可用音频地址，暂时无法取得音源；尚不能确定具体原因。',422);
     return {url:musicMediaUrl(track.url,'netease'),previewOnly:!!track.freeTrialInfo};
   }
   if(song.source==='qq'){
@@ -49,7 +49,7 @@ export async function resolveMusic(song,{fetchImpl=fetch,signal}={}) {
     const url=new URL('https://u.y.qq.com/cgi-bin/musicu.fcg');url.searchParams.set('data',JSON.stringify(request));
     const data=await musicJson(url,fetchImpl,signal,{Referer:'https://y.qq.com/'}),value=data.req_0?.data;
     const purl=value?.midurlinfo?.[0]?.purl,host=value?.sip?.find(s=>s.startsWith('https:'))??value?.sip?.[0];
-    if(!purl||!host)throw fault('QQ 音乐未提供可用音频，歌曲可能需要登录、购买或受版权限制。',422);
+    if(!purl||!host)throw fault('QQ 音乐没有返回这首歌的可用音频地址，暂时无法取得音源；尚不能确定具体原因。',422);
     return {url:musicMediaUrl(new URL(purl,host),'qq'),previewOnly:false};
   }
   throw fault('歌曲来源无效。',400);

@@ -39,7 +39,8 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
     'scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md',
     'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','scripts/music-reference.py','scripts/music-performance.py','scripts/music-soulx-worker.py',
     'packages/dsh-social-bridge-plugin/singing-performance.mjs','docs/SINGING_PERFORMANCE.md','docs/VIDEO_SINGING.md',
-    'packages/dsh-social-bridge-plugin/persona-evolution.mjs','docs/PERSONA_EVOLUTION.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
+    'packages/dsh-social-bridge-plugin/persona-evolution.mjs','docs/PERSONA_EVOLUTION.md',
+    'packages/music-source/netease.mjs','packages/music-source/providers.mjs','public/console/music-source.js','public/console/audio-capabilities.js','docs/FEIYU_MUSIC.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
   for(const relative of ['scripts/supplier_images.py','scripts/supplier_videos.py','components/qq-bridge/src/core/image-context.js','components/qq-bridge/src/core/live-settings.js',
     'scripts/dsh-refresh.mjs','packages/dsh-social-bridge-plugin/console-client.mjs','docs/IMAGE_INPUT.md','docs/LIVE_SETTINGS.md'])if(!deployment.sourceHashes[relative])throw Error('IMAGE_OR_LIVE_SETTINGS_FEATURE_NOT_PACKAGED: '+relative);
 }

@@ -4,6 +4,36 @@ import {createAudioCapabilityUI} from '../public/console/audio-capabilities.js';
 import {musicMarkup} from '../public/console/music-source.js';
 import {audioDefaults} from './audio-capabilities.mjs';
 
+test('singing source toggles the NetEase login section, saves and verifies a masked credential, and supports clearing',async t=>{
+  const previous=globalThis.document;t.after(()=>{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;});
+  const fields=new Map(),events=new Map(),requests=[];
+  const element=id=>{if(!fields.has(id))fields.set(id,{value:'',checked:false,disabled:false,hidden:false,pause(){},append(){},addEventListener(name,handler){events.set(id+':'+name,handler);}});return fields.get(id);};
+  const form={querySelector:selector=>element(selector.slice(1)),querySelectorAll:()=>[],addEventListener(name,handler){events.set('form:'+name,handler);}};
+  globalThis.document={querySelector:()=>form,createElement:()=>({addEventListener(){}})};
+  const settings=audioDefaults();settings.singing.musicSource='kugou';settings.singing.hasNeteaseCookie=false;let markup='',credential='';
+  const ui=createAudioCapabilityUI({api:async(route,body)=>{
+    if(route.endsWith('/voice/models'))return {voices:[]};
+    if(route.endsWith('/music/status'))return {cachedSongs:0,cacheBytes:0,localCoverAvailable:true};
+    if(body){requests.push({route,body});if(route.endsWith('/netease/check'))return {authenticated:!!credential,message:credential?'网易云账号登录有效。':'请先填写网易云登录凭证。'};
+      assert(route.endsWith('/singing'));credential=body.clearNeteaseCookie?'':body.settings.neteaseCookie||credential;settings.singing.hasNeteaseCookie=!!credential;}
+    return {revision:'fixture',settings};
+  },modal(_title,html){markup=html;element('music-source').value='kugou';element('audio-pitch').value='0';element('audio-clip').value='30';element('audio-accompaniment').checked=true;},closeModal(){},escapeHtml:String,state:{config:{wechat:{whitelist:{private:[],groups:[]}}},names:new Map()},renderPage:async()=>{},toast(){}});
+  await ui.dialog({name:'唱歌',audioKind:'singing'});await new Promise(resolve=>setImmediate(resolve));
+  assert.match(markup,/网易云登录凭证（Cookie）/);assert.match(markup,/id="music-netease-cookie" type="password"/);
+  assert.equal(element('music-netease-login').hidden,true);
+  element('music-source').value='netease';events.get('music-source:change')();assert.equal(element('music-netease-login').hidden,false);
+  element('music-netease-cookie').value='MUSIC_U=fixture-ui-secret';
+  await events.get('music-netease-check:click')();
+  assert.equal(requests[0].body.settings.neteaseCookie,'MUSIC_U=fixture-ui-secret');assert.equal(requests[0].body.settings.musicSource,'netease');
+  assert.equal(requests[1].route,'/api/audio-capabilities/music/netease/check');assert.deepEqual(requests[1].body,{});
+  assert.equal(element('music-netease-cookie').value,'');assert.equal(element('music-clear-netease-cookie').disabled,false);assert.match(element('music-netease-status').textContent,/登录有效/);assert.match(element('music-netease-cookie-help').textContent,/已保存/);
+  element('music-source').value='qq';events.get('music-source:change')();assert.equal(element('music-netease-login').hidden,true);
+  element('music-source').value='netease';events.get('music-source:change')();assert.equal(element('music-netease-login').hidden,false);
+  element('music-clear-netease-cookie').checked=true;await events.get('form:submit')({preventDefault(){}});
+  assert.equal(requests.at(-1).body.clearNeteaseCookie,true);assert.equal(element('music-clear-netease-cookie').disabled,true);assert.match(element('music-netease-cookie-help').textContent,/尚未配置/);
+  assert(!markup.includes('fixture-ui-secret'));
+});
+
 test('voice setup exposes one shared voice selection and upload without service or advanced fields',async t=>{
   const previous=globalThis.document;t.after(()=>{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;});
   const fields=new Map(),events=new Map(),requests=[];

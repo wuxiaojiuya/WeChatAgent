@@ -4,6 +4,12 @@ export function musicMarkup({settings}) {
     <div class="music-conversation-note"><strong>想听什么，直接和 AI 说</strong><p>AI 理解歌名和你指定的版本，自动查找歌曲，分析歌词、旋律与节奏，编排自己的演唱，再用已选音色唱给你听。不需要你查看歌手或挑选搜索结果。</p>
     <div class="music-example">你会唱歌吗？<span>会呀，想听哪首？</span></div><div class="music-example">你会唱朋友的酒 DJ 版吗？<span>按 DJ 版找歌，用已选音色翻唱。</span></div></div>
     <div class="field"><label for="music-source">歌曲来源</label><select id="music-source">${[['kugou','酷狗音乐'],['netease','网易云音乐'],['qq','QQ 音乐'],['local','仅本地曲库']].map(([id,name])=>`<option value="${id}" ${settings.musicSource===id?'selected':''}>${name}</option>`).join('')}</select><small>优先复用匹配的本地歌曲。找不到可用音源时会说明，不会用其他版本替代你指定的版本。</small></div>
+    <div id="music-netease-login" ${settings.musicSource==='netease'?'':'hidden'}>
+      <div class="field"><label for="music-netease-cookie">网易云登录凭证（Cookie）</label><input id="music-netease-cookie" type="password" autocomplete="new-password" maxlength="32768" placeholder="粘贴网易云网页登录后的 Cookie"><small id="music-netease-cookie-help">${settings.hasNeteaseCookie?'已保存，留空保留。':'尚未配置登录凭证，可匿名搜索。'}仅保存在本机，用于网易云搜索和获取音源，不会交给 AI。</small></div>
+      <label class="extension-option"><input id="music-clear-netease-cookie" type="checkbox" ${settings.hasNeteaseCookie?'':'disabled'}>清除已保存的网易云登录凭证</label>
+      <div class="audio-preview-actions"><button type="button" class="button" id="music-netease-check">保存并验证网易云登录</button></div><p id="music-netease-status" class="subtle" role="status" aria-live="polite"></p>
+      <details><summary>如何获取登录凭证</summary><p class="subtle">在浏览器打开并登录 music.163.com，按 F12 打开开发者工具，在“网络 / Network”中刷新网页，选择发往 music.163.com 的请求，在“请求标头 / Request Headers”中复制 Cookie 的完整值（不要包含“Cookie:”），粘贴到上方。请勿通过聊天发送凭证。会员歌曲能否获取，以账号权限和平台返回结果为准。</p></details>
+    </div>
     <p class="music-retention">下载缓存保存 7 天，到期自动删除。手动导入的歌曲和上传的模型会保留。</p><span id="music-cache-info" class="subtle"></span></section>
     <section class="audio-section music-section audio-preview-section"><details class="music-import" id="music-test"><summary>本机点歌测试与歌曲导入（可选）</summary>
       <p class="subtle">这里可用一句话测试自动找歌、AI 编排与重新演唱，仅在本机生成试听。请保持 DSH 项目插件运行，使用已配置的模型和默认人格；聊天中会结合当前人格与语境。</p>
@@ -21,6 +27,15 @@ export function bindMusic({form,api,save,state,signal,showError}) {
   let busy=false,closed=false,audioUrl;
   const request=(route,body)=>api(base+route,body,true,{signal});
   const setBusy=value=>{busy=value;for(const button of form.querySelectorAll('.music-section button'))button.disabled=value;};
+  const showLogin=()=>{field('music-netease-login').hidden=field('music-source').value!=='netease';field('music-netease-status').textContent='';};
+  field('music-source').addEventListener('change',showLogin);showLogin();
+  field('music-netease-cookie').addEventListener('input',()=>{field('music-netease-status').textContent='';});
+  field('music-clear-netease-cookie').addEventListener('change',()=>{field('music-netease-status').textContent='';});
+  field('music-netease-check').addEventListener('click',()=>action(async()=>{
+    field('music-netease-status').textContent='正在保存并验证网易云登录…';
+    try{await save();const result=await request('/netease/check',{});if(!closed)field('music-netease-status').textContent=result.message;}
+    catch(error){if(!closed)field('music-netease-status').textContent=error.message;throw error;}
+  }));
   async function refresh(restore=false) {
     const info=await request('/status');if(closed)return;
     field('music-cache-info').textContent=`本地曲库 ${info.cachedSongs} 首 · ${(info.cacheBytes/1048576).toFixed(1)} MB`;
@@ -62,5 +77,8 @@ export function bindMusic({form,api,save,state,signal,showError}) {
     await poll(result.id);
   }));
   setBusy(true);refresh(true).catch(error=>{if(!closed)showError(error);}).finally(()=>{if(!closed)setBusy(false);});
-  return {close(){closed=true;field('music-player')?.pause();if(audioUrl)URL.revokeObjectURL(audioUrl);}};
+  return {saved(settings){
+    field('music-netease-cookie').value='';field('music-clear-netease-cookie').checked=false;field('music-clear-netease-cookie').disabled=!settings.hasNeteaseCookie;
+    field('music-netease-cookie-help').textContent=(settings.hasNeteaseCookie?'已保存，留空保留。':'尚未配置登录凭证，可匿名搜索。')+'仅保存在本机，用于网易云搜索和获取音源，不会交给 AI。';
+  },close(){closed=true;field('music-player')?.pause();if(audioUrl)URL.revokeObjectURL(audioUrl);}};
 }

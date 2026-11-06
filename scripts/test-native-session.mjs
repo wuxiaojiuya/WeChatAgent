@@ -938,6 +938,20 @@ test('native singing failures replace invented recording progress and retain the
  await r.stop();const resumed=await f.start(),third=await resumed.request('/followup',body);assert.equal(third.text,first.text);assert(third.cached);assert.equal(resumed.calls.model.length,0);
 });
 
+test('native singing source failures preserve the model persona reply in delivery, cache and resumed history',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+ fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ fs.mkdirSync(path.join(f.dir,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/voice-output/capabilities.json'),JSON.stringify({singing:{provider:'feiyu-rvc',enabled:true,chats:[key]}}));
+ const server=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.statusCode=req.url==='/api/info'?200:422;res.end(JSON.stringify(req.url==='/api/info'?{project:'WeChatAgent Console',root:f.dir,token:'singing-fixture'}:{error:'音乐平台没有返回可用音频地址。'}));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ const text='RESPOND: 哎，这首的音源没拿到，还没唱成。你把视频直接发过来，我再试试？';
+ const r=await f.start({assistantMessages:[[{type:'text',text}]],beforeAssistant:async agent=>{assert((await agent.registeredTools.get('wechat_sing_song').execute({title:'偏向'})).isError);}});
+ const body={...info,message:'这首唱给我听',batchId:'a'.repeat(64)},first=await r.request('/followup',body);
+ assert.equal(first.text,text);assert.equal((await r.request('/followup',body)).text,text);assert.equal(r.calls.model.length,1);
+ await r.stop();const resumed=await f.start(),again=await resumed.request('/followup',body);assert(again.cached);assert.equal(again.text,text);assert.equal(resumed.calls.model.length,0);
+});
+
 test('a native model can propose its persona through a bound approval tool but cannot approve it',async t=>{
   const f=await fixture(t),account='e'.repeat(64);
   fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});

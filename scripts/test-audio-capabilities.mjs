@@ -108,6 +108,22 @@ test('Douyin cookie stays local and masked, preserves blank edits and supports e
   assert.throws(()=>save('singing',{douyinCookie:'invalid\r\nheader'}));
   save('singing',{}, {clearDouyinCookie:true});assert.equal(service.snapshot().settings.singing.hasDouyinCookie,false);
 });
+
+test('NetEase login stays masked and survives source and voice changes until explicitly cleared',t=>{
+  const {root,service,save}=fixture(t),cookie='MUSIC_U=fixture-netease-secret; __csrf=fixture-csrf';
+  save('singing',{musicSource:'netease',neteaseCookie:cookie,douyinCookie:'douyin=separate'});
+  assert.equal(service.snapshot().settings.singing.hasNeteaseCookie,true);
+  assert.equal(service.snapshot().settings.singing.neteaseCookie,'');
+  assert(!JSON.stringify(service.snapshot()).includes('fixture-netease-secret'));
+  assert(!JSON.stringify(service.catalog(config)).includes('fixture-netease-secret'));
+  save('singing',{musicSource:'qq'});save('voice',{style:'gentle'});save('singing',{musicSource:'netease',neteaseCookie:'  '});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state/voice-output/capabilities.json'))).singing.neteaseCookie,cookie);
+  for(const value of ['MUSIC_U=x\r\nInjected: header','Cookie: MUSIC_U=x','not-a-cookie',42,'a='.repeat(20000),'a=\0'])assert.throws(()=>save('singing',{neteaseCookie:value}),error=>error.status===400);
+  assert.throws(()=>save('singing',{}, {clearNeteaseCookie:'yes'}),error=>error.status===400);
+  save('singing',{}, {clearNeteaseCookie:true});assert.equal(service.snapshot().settings.singing.hasNeteaseCookie,false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state/voice-output/capabilities.json'))).singing.neteaseCookie,'');
+  assert.equal(service.snapshot().settings.singing.hasDouyinCookie,true);
+});
 test('Feiyu preview submits a real service job, polls completion, then fetches WAV',async t=>{
   const calls=[];let pending=0;const wav=Buffer.alloc(48);wav.write('RIFF');wav.write('WAVE',8);
   const {service,save}=fixture(t,async(url,options)=>{
@@ -187,4 +203,19 @@ test('console authenticates music search, uploads, cache access and local model 
   const models=await request('/api/audio-capabilities/music/models').then(r=>r.json());assert.equal(models.models[0].id,'FeiyuVoice-RVC-v1');
   assert.equal((await request('/api/audio-capabilities/music/jobs',{songId:'local:../../outside',seconds:30})).status,503);
   const asset=await fetch(base+'/music-source.js');assert.equal(asset.status,200);assert.match(asset.headers.get('content-security-policy'),/media-src 'self' blob:/);
+});
+
+test('console saves a masked NetEase credential and verifies it only through authenticated requests',async t=>{
+  const {root}=fixture(t);fs.mkdirSync(path.join(root,'config'));fs.copyFileSync(new URL('../config/wechatagent.example.json',import.meta.url),path.join(root,'config/wechatagent.example.json'));
+  const cookie='MUSIC_U=fixture-console-login';let calls=0;
+  const app=createConsole({root,port:0,fetchImpl:async(url,options)=>{calls++;assert.equal(String(url),'https://music.163.com/weapi/w/nuser/account/get');assert.equal(options.headers.Cookie,cookie);return Response.json({code:200,account:{id:123}});}});
+  const address=await app.start();t.after(()=>app.close());
+  const base='http://127.0.0.1:'+address.port,{token}=await fetch(base+'/api/info').then(r=>r.json());
+  const route='/api/audio-capabilities/music/netease/check';
+  assert.equal((await fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);assert.equal(calls,0);
+  const request=(route,body)=>fetch(base+route,{method:body?'POST':'GET',headers:{'X-Console-Token':token,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
+  const current=await request('/api/audio-capabilities').then(r=>r.json());
+  const saved=await request('/api/audio-capabilities/singing',{revision:current.revision,settings:{...audioDefaults().singing,musicSource:'netease',neteaseCookie:cookie}}).then(r=>r.json());
+  assert.equal(saved.settings.singing.hasNeteaseCookie,true);assert(!JSON.stringify(saved).includes(cookie));
+  const result=await request(route,{}).then(r=>r.json());assert.equal(result.authenticated,true);assert.equal(calls,1);assert(!JSON.stringify(result).includes(cookie));
 });

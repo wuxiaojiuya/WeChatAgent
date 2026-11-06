@@ -41,7 +41,7 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       const common={enabled:field('audio-enabled').checked,chats:[...form.querySelectorAll('[name="audio-chat"]:checked')].map(input=>input.value)};
       return voice?{...common,provider:'feiyu',endpoint:'http://127.0.0.1:9880',style:settings.style??'cute',voiceId:field('audio-voice').value,mode:field('audio-mode').value,emotionMode:field('audio-emotion-mode').value,emotionStrength:field('audio-emotion-strength').value,apiKey:''}:
         {...common,provider:'feiyu-rvc',modelId:saved.settings.singing.modelId,pitch:Number(field('audio-pitch').value),clipSeconds:Number(field('audio-clip').value),
-          accompaniment:field('audio-accompaniment').checked,musicSource:field('music-source').value,douyinCookie:field('audio-douyin-cookie').value};
+          accompaniment:field('audio-accompaniment').checked,musicSource:field('music-source').value,douyinCookie:field('audio-douyin-cookie').value,neteaseCookie:field('music-netease-cookie').value};
     }
     function error(value){if(closed)return;field('audio-config-error').textContent=value.message;field('audio-config-error').hidden=false;}
     function showVoiceReadiness(){
@@ -61,8 +61,8 @@ export function createAudioCapabilityUI({api,modal,closeModal,escapeHtml:esc,sta
       showVoiceReadiness();
     }
     async function save() {
-      saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:true}:{clearDouyinCookie:field('audio-clear-douyin-cookie').checked})},true,{signal:controller.signal});
-      if(!closed&&!voice){field('audio-douyin-cookie').value='';field('audio-clear-douyin-cookie').checked=false;field('audio-clear-douyin-cookie').disabled=!saved.settings.singing.hasDouyinCookie;}
+      saved=await api('/api/audio-capabilities/'+kind,{revision:saved.revision,settings:collect(),...(voice?{clearApiKey:true}:{clearDouyinCookie:field('audio-clear-douyin-cookie').checked,clearNeteaseCookie:field('music-clear-netease-cookie').checked})},true,{signal:controller.signal});
+      if(!closed&&!voice){field('audio-douyin-cookie').value='';field('audio-clear-douyin-cookie').checked=false;field('audio-clear-douyin-cookie').disabled=!saved.settings.singing.hasDouyinCookie;music?.saved(saved.settings.singing);}
       return saved;
     }
     if(voice)bindVoiceUpload({form,api,state,signal:controller.signal,getVoices:()=>voices,setVoices(values){const current=field('audio-voice').value;voices=values;field('audio-voice').innerHTML=voices.map(value=>`<option value="${esc(value.id)}">${esc(value.name)}${value.rvcModelId?'':'（待上传 RVC 模型）'}</option>`).join('');field('audio-voice').value=current;field('voice-upload-target').innerHTML='<option value="">新建音色</option>'+voices.filter(value=>!value.builtin).map(value=>`<option value="${esc(value.id)}">更新：${esc(value.name)}</option>`).join('');},save:async()=>{const result=await save();showVoiceReadiness();return result;},showError:error,setBusy:value=>{busy=value;},isBusy:()=>busy});
