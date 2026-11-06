@@ -1,23 +1,65 @@
 {
   "schema": 1,
-  "version": "2026.11.03-cpu1",
+  "version": "2026.11.06-cpu2",
   "platform": "win32-x64",
   "baseUrl": "http://111.228.56.101/wechatagent-downloads/",
-  "bootstrap": {"file":"python-3.13.16-embed-amd64.zip","bytes":11439094,"sha256":"97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297"},
-  "bundles": {
-    "tts": {"file": "feiyu-tts-windows-cpu-20261103.zip", "bytes": 1006662162, "sha256": "ea0728c5c15113dddd354cd1c29aa773e412174024199bb2f27185adc0ec58c7"},
-    "rvc": {"file": "feiyu-cover-windows-cpu-20261103.zip", "bytes": 563402249, "sha256": "baca02dc64e85598b09409fefe96c38d35d736cdc2c2031295a56ba2f0ae6877"}
+  "bootstrap": {
+    "file": "python-3.13.16-embed-amd64.zip",
+    "bytes": 11439094,
+    "sha256": "97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297"
   },
-  "adapter": {"url": "https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice.git", "commit": "76774b499f7d306454562d56348dd63399b6d7e8"},
+  "bundles": {
+    "tts": {
+      "file": "feiyu-tts-windows-cpu-20261103.zip",
+      "bytes": 1006662162,
+      "sha256": "ea0728c5c15113dddd354cd1c29aa773e412174024199bb2f27185adc0ec58c7"
+    },
+    "rvc": {
+      "file": "feiyu-cover-windows-cpu-20261103.zip",
+      "bytes": 563402249,
+      "sha256": "baca02dc64e85598b09409fefe96c38d35d736cdc2c2031295a56ba2f0ae6877"
+    },
+    "soulx": {
+      "file": "soulx-singer-windows-cpu-20261106.zip",
+      "bytes": 1054454293,
+      "sha256": "2d8df2793946a1c5f9127456da3dc1d3d9cd5c5f6d93c13cab3adc12d9b04984"
+    }
+  },
+  "adapter": {
+    "url": "https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice.git",
+    "commit": "76774b499f7d306454562d56348dd63399b6d7e8"
+  },
   "sources": {
-    "tts": {"url": "https://github.com/FunAudioLLM/CosyVoice.git", "commit": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"},
-    "rvc": {"url": "https://github.com/IAHispano/Applio.git", "commit": "67a38f6abab3e90a55efa534ea3185a222c102f0"}
+    "tts": {
+      "url": "https://github.com/FunAudioLLM/CosyVoice.git",
+      "commit": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"
+    },
+    "rvc": {
+      "url": "https://github.com/IAHispano/Applio.git",
+      "commit": "67a38f6abab3e90a55efa534ea3185a222c102f0"
+    },
+    "soulx": {
+      "url": "https://github.com/Soul-AILab/SoulX-Singer.git",
+      "commit": "81aeb3ae772c70093c3de74dc23c92d983801ae4"
+    }
   },
   "models": {
-    "tts": {"repo": "Esmerubphire/FeiyuVoice-CosyVoice3", "revision": "f37e9d1dda26e8b45b4e9f1b4c347c0a07b797e2", "folder": "FeiyuVoice-CosyVoice3"},
-    "rvc": {"repo": "Esmerubphire/FeiyuVoice-RVC", "revision": "04e5011b72341a742ef17a718d5da0435343f893", "folder": "FeiyuVoice-RVC"}
+    "tts": {
+      "repo": "Esmerubphire/FeiyuVoice-CosyVoice3",
+      "revision": "f37e9d1dda26e8b45b4e9f1b4c347c0a07b797e2",
+      "folder": "FeiyuVoice-CosyVoice3"
+    },
+    "rvc": {
+      "repo": "Esmerubphire/FeiyuVoice-RVC",
+      "revision": "04e5011b72341a742ef17a718d5da0435343f893",
+      "folder": "FeiyuVoice-RVC"
+    }
   },
-  "demucs": {"url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th", "bytes": 84141911, "sha256": "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4"},
+  "demucs": {
+    "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th",
+    "bytes": 84141911,
+    "sha256": "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4"
+  },
   "wetext": {
     "en/tn/tagger.fst": "ee9353d503e20d6dd89508588ad2e261c837046ca38fac878faeb1e433abcb08",
     "en/tn/verbalizer.fst": "787142a2085a8eda20cfea2cd6295441347aadd6ed13de3a9905f2bd8b64ac8c",

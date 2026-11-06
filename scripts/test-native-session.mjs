@@ -13,7 +13,7 @@ import { socialPersona } from '../components/qq-bridge/src/core/social-persona.j
 import { contextBufferVersion } from '../packages/dsh-social-bridge-plugin/context-policy.mjs';
 import { WebSearch } from '../components/qq-bridge/src/core/web-search.js';
 import { SEARCH_DEFAULTS } from '../packages/dsh-social-bridge-plugin/search-policy.mjs';
-import {CHAT_POLICY_NOTICE,CHAT_COHERENCE_NOTICE,CHAT_MESSAGE_LAYOUT_NOTICE,SOCIAL_PROTOCOL_NOTICE,SOCIAL_FINAL_OUTPUT_HINT} from '../packages/dsh-social-bridge-plugin/prompt-context.mjs';
+import {CHAT_POLICY_NOTICE,CHAT_COHERENCE_NOTICE,GROUP_PARTICIPATION_NOTICE,CHAT_MESSAGE_LAYOUT_NOTICE,SOCIAL_PROTOCOL_NOTICE,SOCIAL_FINAL_OUTPUT_HINT} from '../packages/dsh-social-bridge-plugin/prompt-context.mjs';
 import {buildPrivatePrompt,buildSocialPrompt} from '../components/qq-bridge/src/core/social-engine.js';
 import {wakeContextHint} from '../packages/dsh-social-bridge-plugin/request-window.mjs';
 import {HistoryStore} from '../packages/dsh-social-bridge-plugin/history-store.mjs';
@@ -21,6 +21,21 @@ import {AssistantFeedback} from '../packages/dsh-social-bridge-plugin/assistant-
 import {DshPluginClient} from '../components/qq-bridge/src/dsh/plugin-client.js';
 import {WechatOneBotAdapter} from '../components/qq-bridge/src/adapters/wechat/wechat-onebot-adapter.js';
 import {createAssistantNoticeDelivery} from '../components/qq-bridge/src/core/assistant-notice-delivery.js';
+
+test('named-song planning uses the configured model and local persona without chat followup or delivery',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+ fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ fs.mkdirSync(path.join(f.dir,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/voice-output/capabilities.json'),JSON.stringify({singing:{provider:'feiyu-rvc',enabled:true,chats:[key]}}));
+ const r=await f.start(),{BlockAssembler}=await import(pathToFileURL(path.join(f.dir,'node_modules/@deepseek-ai/dsh-llm/index.js')).href);
+ BlockAssembler.prototype.push=function(chunk){if(chunk.type==='text-delta')this.text=(this.text??'')+chunk.text;};BlockAssembler.prototype.blocks=function(){return [{type:'text',text:this.text??''}];};Object.defineProperty(BlockAssembler.prototype,'finish',{get:()=>({kind:'stop'})});
+ const performance={version:'score-performance-v1',emotion:'tender',intention:'结合实际歌词，先轻后强。',phrases:[{start:0,end:20,articulation:'flowing',timingMs:12,tail:'hold',gainDb:.6,contour:'build'}]},calls=[];
+ r.ctx.llm.stream=async function*(options){calls.push(options);yield {type:'text-delta',text:JSON.stringify(performance)};};
+ const body={analysis:{phrases:[{start:0,end:20}],lyrics:[{start:0,end:20,text:'实际识别的歌词'}]},seconds:20,song:{title:'朋友的酒'},direction:'先轻后强',conversationKey:key};
+ assert.deepEqual((await r.request('/singing-performance',body)).performance,performance);
+ assert.equal(calls.length,1);assert.deepEqual(calls[0].tools,[]);assert.match(calls[0].messages[0].content[0].text,/实际识别的歌词/);assert.equal(r.calls.create.length,0);assert.equal(r.calls.model.length,0);
+ await r.request('/singing-performance',{...body,conversationKey:'wechat:private:456'},403);assert.equal(calls.length,1);
+ r.ctx.llm.stream=async function*(){yield {type:'text-delta',text:'not JSON'};};await r.request('/singing-performance',body,503);
+});
 
 test('fish notebook uses tool-free persona utilities and discloses only on the third distinct question without a native agent',async t=>{
  const f=await fixture(t),account='b'.repeat(64),viewer='c'.repeat(64),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));const settings={wechat:{whitelist:{private:['123'],groups:[]},fishNotebook:{enabled:true,writeTime:'23:59',chats:{}}}};fs.writeFileSync(file,JSON.stringify(settings));
@@ -103,6 +118,16 @@ test('assistant native tool messages expose only explicit public AI feedback and
    for(let i=0;i<200;i++){done=await r.request('/assistant-task/result',{...body,taskId:next.task.id});if(done.task.state==='completed')break;await new Promise(resolve=>setTimeout(resolve,5));}
    assert.equal(done.task.output.text,'RESPOND: 原文已读，这是最终结果。');assert.equal(r.calls.model.length,2);
  }finally{AssistantTasks.prototype.progressMessage=original;}
+});
+
+test('selective group participation reaches the actual native model prefix and preserves its session across turns',async t=>{
+ const f=await fixture(t),group='wechat:group:456',file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+ fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:['456']}}}));const r=await f.start();
+ const body={...info,conversationKey:group,message:'新的群聊消息。\n<untrusted_chat>群友：今天下雨了</untrusted_chat>'};
+ const first=await r.request('/followup',body);assert.equal(r.calls.model.at(-1).split(GROUP_PARTICIPATION_NOTICE).length-1,1);
+ const next=await r.request('/followup',{...body,message:'新的群聊消息。\n<untrusted_chat>另一个群友：[图片]</untrusted_chat>'});
+ assert.equal(next.sessionId,first.sessionId);assert.equal(r.calls.model.at(-1).split(GROUP_PARTICIPATION_NOTICE).length-1,1);
+ await r.request('/followup',{...info,message:'私聊照常回应'});assert(!r.calls.model.at(-1).includes(GROUP_PARTICIPATION_NOTICE));
 });
 
 test('group members chat in an isolated tool-free session while admin task sessions remain unchanged',async t=>{
@@ -277,7 +302,7 @@ async function fixture(t) {
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
-  for(const name of ['persona-proposal-tools.mjs','console-client.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
+  for(const name of ['persona-evolution.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['public/console/persona-files.mjs','components/qq-bridge/src/role-card.js']){fs.mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});fs.copyFileSync(name,path.join(dir,name));}
   for(const name of ['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-feedback.mjs','assistant-notifications.mjs','social-tool-restrict.mjs','assistant-tasks.mjs','assistant-control.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','singing-tools.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['web-reader.mjs','web-reader-policy.mjs','web-reader-fetch.mjs','web-reader-content.mjs','web-reader-zxsj.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
@@ -861,6 +886,58 @@ test('enabled singing is bound to the conversation model and included in its ins
   const text=JSON.stringify(f.store.get(result.sessionId).snapshotEvents());assert.match(text,/\[唱歌能力\]/);assert.match(text,/不要求用户选择歌手/);
 });
 
+test('a native video turn analyzes acoustic evidence before the model submits its own executable performance',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json'),videoId='b'.repeat(64),received=[];
+ fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ fs.mkdirSync(path.join(f.dir,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/voice-output/capabilities.json'),JSON.stringify({singing:{provider:'feiyu-rvc',enabled:true,chats:[key]}}));
+ const server=http.createServer(async(req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url==='/api/info')return res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'reference-fixture'}));
+  let raw='';for await(const chunk of req)raw+=chunk;received.push({route:req.url,body:JSON.parse(raw)});
+  res.end(JSON.stringify(req.url.endsWith('/video-reference')?{referenceId:'ref-native',videoId,startSeconds:0,seconds:12,analysis:{phrases:[{start:0,end:12}],tempo_bpm_estimate:120}}:{id:'job-native',state:'running',sent:false}));
+ });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ const r=await f.start({beforeAssistant:async agent=>{
+  assert(agent.ctx[Symbol.for('wechatagent.singing.v1')].names().has('wechat_analyze_singing'));
+  const reference=JSON.parse((await agent.registeredTools.get('wechat_analyze_singing').execute({videoId})).content);
+  assert.equal(reference.analysis.tempo_bpm_estimate,120);
+  const performance={version:'score-performance-v1',emotion:'warm',intention:'结合画面与节拍估计，以温暖连贯的方式演唱。',phrases:[{start:0,end:12,articulation:'flowing',timingMs:10,tail:'hold',gainDb:.5,contour:'build'}]};
+  assert.equal((await agent.registeredTools.get('wechat_sing_video').execute({videoId,referenceId:reference.referenceId,performance})).isError,false);
+ }});
+ await r.request('/followup',{...info,message:'看看这个视频，学着这样唱给我听。',videos:[{id:videoId}]});
+ assert.equal(received.length,2);assert(received[0].route.endsWith('/video-reference'));assert(received[1].route.endsWith('/video-request'));
+ assert.equal(received[1].body.performance.phrases[0].articulation,'flowing');assert.equal(received[1].body.conversationKey,key);
+ assert.match(r.calls.model.at(-1),/AI|自主决定情绪与分句演唱编排/);
+});
+
+test('native final output and its idempotent cache use the real voice outcome even if the model claims success',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+ fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ fs.mkdirSync(path.join(f.dir,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
+ const server=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(req.url==='/api/info'?{project:'WeChatAgent Console',root:f.dir,token:'voice-fixture'}:{id:'a'.repeat(64),state:'failed',sent:false,code:'VOICE_PREVIOUS_DELIVERY_UNCONFIRMED'}));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ const r=await f.start({assistantMessages:[[{type:'text',text:'RESPOND: 语音在发了，自己听'}]],beforeAssistant:async agent=>{const result=await agent.registeredTools.get('wechat_voice_reply').execute({text:'你好，我来介绍一下自己。'});assert(result.isError);}});
+ const body={...info,message:'用语音介绍一下自己',batchId:'8'.repeat(64)},first=await r.request('/followup',body);
+ assert.match(first.text,/暂时没发出去/);assert(!first.text.includes('自己听'));
+ const second=await r.request('/followup',body);assert.equal(second.text,first.text);assert(second.cached);assert.equal(r.calls.model.length,1);
+ await r.stop();const resumed=await f.start(),third=await resumed.request('/followup',body);assert.equal(third.text,first.text);assert(third.cached);assert.equal(resumed.calls.model.length,0);
+});
+
+test('native singing failures replace invented recording progress and retain the corrected receipt across cache and restart',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+ fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ fs.mkdirSync(path.join(f.dir,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/voice-output/capabilities.json'),JSON.stringify({singing:{provider:'feiyu-rvc',enabled:true,chats:[key]}}));
+ const server=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(req.url==='/api/info'?{project:'WeChatAgent Console',root:f.dir,token:'singing-fixture'}:{id:'job-fixture',state:'failed',sent:false}));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ const r=await f.start({assistantMessages:[[{type:'text',text:'RESPOND: 正在录，等几分钟出片'}]],beforeAssistant:async agent=>{assert((await agent.registeredTools.get('wechat_sing_song').execute({title:'朋友的酒'})).isError);}});
+ const body={...info,message:'唱给我听',batchId:'9'.repeat(64)},first=await r.request('/followup',body);
+ assert.match(first.text,/翻唱生成失败/);assert(!first.text.includes('正在录'));
+ const second=await r.request('/followup',body);assert.equal(second.text,first.text);assert(second.cached);assert.equal(r.calls.model.length,1);
+ await r.stop();const resumed=await f.start(),third=await resumed.request('/followup',body);assert.equal(third.text,first.text);assert(third.cached);assert.equal(resumed.calls.model.length,0);
+});
+
 test('a native model can propose its persona through a bound approval tool but cannot approve it',async t=>{
   const f=await fixture(t),account='e'.repeat(64);
   fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
@@ -871,6 +948,40 @@ test('a native model can propose its persona through a bound approval tool but c
   const result=await r.request('/followup',{...info,message:'你可以根据聊天为自己设定人格，先让管理员同意'});
   assert.deepEqual(visible,['wechat_propose_persona','wechat_persona_proposal_status']);
   const text=JSON.stringify(f.store.get(result.sessionId).snapshotEvents());assert.match(text,/人格调整与审批/);assert.match(text,/不能自称已获同意/);
+});
+
+test('completed inbox turns feed automatic persona review once per effective batch outside the chat model',async t=>{
+  const f=await fixture(t),account='e'.repeat(64),requests=[];
+  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
+  fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},assistant:{administrators:['wxid_admin']}}}));
+  fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));
+  const consoleServer=http.createServer(async(req,res)=>{
+    res.setHeader('Content-Type','application/json');
+    if(req.url==='/api/info'){res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'fixture-console'}));return;}
+    assert.equal(req.headers['x-console-token'],'fixture-console');
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);requests.push({route:req.url,body:JSON.parse(Buffer.concat(chunks))});
+    res.end(JSON.stringify({pending:{id:'123456abcdef'}}));
+  });
+  await new Promise(resolve=>consoleServer.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>consoleServer.close(resolve)));
+  fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:consoleServer.address().port}));
+  let reason='completed';const options={assistantMessages:[[{type:'text',text:'SILENT'}]],turnReason:()=>reason},r=await f.start(options);
+  const body=n=>({...info,message:'有效聊天 '+n,batchId:crypto.createHash('sha256').update(String(n)).digest('hex')});
+  await r.request('/followup',body(0));
+  options.assistantMessages=[[{type:'text',text:'RESPOND: 你好'}]];
+  reason='failed';await r.request('/followup',body(-1),502);reason='completed';
+  for(let n=1;n<=19;n++)await r.request('/followup',body(n));
+  await r.request('/followup',body(1));
+  assert.equal(requests.length,0);
+  await r.request('/followup',body(20));
+  const ledger=path.join(f.dir,'state/persona-evolution',account+'.json');
+  for(let n=0;n<100;n++){
+    if(JSON.parse(fs.readFileSync(ledger)).chats[key].state==='pending')break;
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  assert.equal(JSON.parse(fs.readFileSync(ledger)).chats[key].interactions,20);
+  assert.equal(requests.length,1);assert.equal(requests[0].route,'/api/persona-proposals/review-context');
+  assert.deepEqual(requests[0].body,{conversationKey:key,accountScope:account});
+  assert.equal((await r.request('/health')).pendingTurns,0);
 });
 
 test('single-turn network opt-out preserves the stable instruction slot while execution stays denied',async t=>{

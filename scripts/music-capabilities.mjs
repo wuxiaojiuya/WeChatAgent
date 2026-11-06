@@ -6,6 +6,7 @@ import {validateMusicQuery} from '../packages/music-source/kugou.mjs';
 import {searchMusic,resolveMusic,fetchMusicAudio} from '../packages/music-source/providers.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
 import {mediaFfmpeg,probeMedia} from './media-tools.mjs';
+import {validatePerformance} from '../packages/dsh-social-bridge-plugin/singing-performance.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 const LIMIT = 64 * 1024 * 1024;
@@ -37,11 +38,14 @@ function execute(executable, args, {signal, cwd, timeoutMs = 120000, onData = ()
   });
 }
 
-export function createMusicCapabilities({root, fetchImpl = fetch, settings = () => ({musicSource: 'kugou'}), probeAudio, runCover, models, now = Date.now} = {}) {
+export function createMusicCapabilities({root, fetchImpl = fetch, settings = () => ({musicSource: 'kugou'}), probeAudio, runCover, runReference, planPerformance, models, now = Date.now} = {}) {
   const directory = path.join(root, 'state', 'music-library');
   const runtime = path.join(root, 'state', 'maintenance', 'audio-capabilities', 'feiyu-cover');
   const python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
+  const singer = path.join(root, 'state/maintenance/audio-capabilities/soulx-singer');
   const tickets = new Map(), jobs = new Map(), controllers = new Set();
+  const references=new Map(),referenceDirectory=path.join(root,'state/music-references');
+  const readerScope=()=>crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'state/wechat-io-config.json'))).digest('hex');
   let active = false, closed = false, preparing = false;
   const probe = probeAudio ?? (async file => {
     const value = await probeMedia(file, {root});
@@ -130,7 +134,9 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   async function requestSong(body,{signal,isAllowed=()=>true}={}) {
     const check=()=>{signal?.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);};
     check();
-    const wanted=songRequest(body);
+    const {conversationKey,direction='',...query}=body??{};
+    if(conversationKey!==undefined&&!/^wechat:(private|group):[1-9]\d*$/.test(conversationKey)||typeof direction!=='string'||direction.length>240||/[\0\r\n]/.test(direction))throw fault('点歌演绎要求无效。');
+    const wanted=songRequest(query);
     if(wanted.intent!=='sing')return {state:wanted.intent,message:wanted.intent==='ability'?'会呀，想听哪首歌？':'想听哪首歌？告诉我歌名就好。',sent:false};
     if(closed)throw fault('音乐服务已关闭。',503);
     if(active||preparing)throw fault('已有歌曲正在处理，请稍后再试。',429);
@@ -158,12 +164,15 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
       }
       check();
       if(!selected)throw fault(lastError?.message??'没有取得可以使用的音频，暂时唱不了这首歌。',422);
-      const job=start({songId:'local:'+selected.key,seconds:settings().clipSeconds??30});
+      preparing=false;
+      const job=start({songId:'local:'+selected.key,seconds:settings().clipSeconds??30,conversationKey,direction,requestedTitle:wanted.title,requestedVersion:wanted.version},undefined,{isAllowed});
       return {...job,selectionAutomatic:true,requestedTitle:wanted.title,requestedVersion:wanted.version,sent:false};
     }finally{preparing=false;}
   }
-  const runtimeAvailable = () => fs.existsSync(python) && fs.existsSync(path.join(runtime, 'runtime.cpu.json')) && fs.existsSync(path.join(runtime, 'cover_demo.py'));
-  async function requestVideo(body,{signal,isAllowed=()=>true}={}){
+  const runtimeAvailable = () => fs.existsSync(python) && fs.existsSync(path.join(runtime, 'runtime.cpu.json')) && fs.existsSync(path.join(runtime, 'cover_demo.py')) &&
+    fs.existsSync(path.join(singer,'venv/Scripts/python.exe')) && fs.existsSync(path.join(singer,'runtime.cpu.json')) &&
+    fs.existsSync(path.join(singer,'source/pretrained_models/SoulX-Singer/model.pt'));
+  async function fetchVideoAudio(body,{signal,isAllowed=()=>true}={}){
     const {videoId,conversationKey,startSeconds=0,seconds=settings().clipSeconds??30,localOnly=false}=body??{};
     if(Object.keys(body??{}).some(key=>!['videoId','conversationKey','startSeconds','seconds','localOnly'].includes(key))||typeof localOnly!=='boolean'||!/^[a-f0-9]{64}$/.test(videoId??'')||!/^wechat:(private|group):[1-9]\d*$/.test(conversationKey??'')||!Number.isFinite(startSeconds)||startSeconds<0||startSeconds>14400||!Number.isInteger(seconds)||seconds<10||seconds>30)throw fault('请选择当前聊天中已收到的视频，片段长度为 10～30 秒。');
     if(!isAllowed())throw fault('当前聊天的唱歌能力未开启。',403);
@@ -179,12 +188,57 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     const bytes=Buffer.from(audio.b64,'base64');
     if(bytes.length<44||bytes.toString('base64')!==audio.b64||bytes.toString('ascii',0,4)!=='RIFF'||bytes.toString('ascii',8,12)!=='WAVE'||crypto.createHash('sha256').update(bytes).digest('hex')!==audio.sha256)throw fault('视频音轨完整性校验失败。',422);
     signal?.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
+    return {audio,bytes};
+  }
+  function cleanupReferences(){
+    fs.mkdirSync(referenceDirectory,{recursive:true});
+    for(const name of fs.readdirSync(referenceDirectory)){
+      if(!uuid(name))continue;
+      const dir=path.join(referenceDirectory,name),entry=references.get(name);
+      if(entry?.inUse)continue;
+      if(now()-fs.statSync(dir).mtimeMs>30*60*1000){fs.rmSync(dir,{recursive:true,force:true});references.delete(name);}
+    }
+  }
+  async function prepareVideoReference(body,{signal,isAllowed=()=>true}={}){
+    if(closed)throw fault('音乐服务已关闭。',503);
+    if(active||preparing)throw fault('已有音频正在处理，请稍后再试。',429);
+    if(!runReference&&!runtimeAvailable())throw fault('本地翻唱环境尚未准备。',503);
+    preparing=true;const controller=new AbortController();controllers.add(controller);
+    const combined=AbortSignal.any([controller.signal,...(signal?[signal]:[])]);
+    let dir;
+    try{
+      cleanupReferences();
+      const scope=readerScope();
+      const {audio,bytes}=await fetchVideoAudio(body,{signal:combined,isAllowed});
+      if(references.size>=10)throw fault('参考音轨过多，请稍后再试。',429);
+      const id=crypto.randomUUID();dir=path.join(referenceDirectory,id);fs.mkdirSync(dir,{recursive:false});
+      const input=path.join(dir,'video-source.wav');fs.writeFileSync(input,bytes,{flag:'wx',mode:0o600});
+      if(runReference)await runReference({input,output:dir,seconds:audio.seconds,signal:combined});
+      else await execute(python,[path.join(root,'scripts/music-reference.py'),'--input',input,'--output',dir,'--seconds',String(audio.seconds)],{cwd:runtime,signal:combined,timeoutMs:150000});
+      combined.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
+      if(scope!==readerScope())throw fault('微信读取账号已变化，请重新分析视频。',409);
+      const record=JSON.parse(fs.readFileSync(path.join(dir,'reference.json'),'utf8'));
+      if(record.schema!=='singing-reference-v1'||record.source_sha256!==audio.sha256||Math.abs(record.seconds-audio.seconds)>.05||!record.analysis?.phrases?.length)throw fault('参考音轨分析校验失败。',502);
+      const entry={id,dir,videoId:body.videoId,conversationKey:body.conversationKey,startSeconds:body.startSeconds??0,seconds:record.seconds,createdAt:now(),analysis:record.analysis,readerScope:scope};
+      references.set(id,entry);
+      return {referenceId:id,videoId:entry.videoId,startSeconds:entry.startSeconds,seconds:entry.seconds,analysis:record.analysis,expiresInSeconds:1800,sent:false};
+    }catch(error){if(dir)fs.rmSync(dir,{recursive:true,force:true});throw error;}
+    finally{preparing=false;controllers.delete(controller);}
+  }
+  async function requestVideo(body,{signal,isAllowed=()=>true}={}){
+    if(!body||Object.keys(body).some(k=>!['videoId','conversationKey','startSeconds','seconds','localOnly','referenceId','performance'].includes(k)))throw fault('视频演唱请求无效。');
+    signal?.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
+    const entry=references.get(body.referenceId);
+    if(!entry||entry.inUse||now()-entry.createdAt>30*60*1000||entry.readerScope!==readerScope()||entry.videoId!==body.videoId||entry.conversationKey!==body.conversationKey||entry.startSeconds!==(body.startSeconds??0)||body.seconds!==undefined&&Math.abs(Math.min(body.seconds,entry.seconds)-entry.seconds)>.05)throw fault('请先分析当前视频音轨，再提交对应的演唱编排。',409);
+    const performance=validatePerformance(body.performance,entry.seconds);
     const input=async output=>{
       if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
-      fs.mkdirSync(output,{recursive:true});const file=path.join(output,'video-source.wav');fs.writeFileSync(file,bytes,{flag:'wx',mode:0o600});
-      return {file,title:'视频片段翻唱',artist:'视频音轨',durationSeconds:audio.seconds,previewOnly:false};
+      const file=path.join(entry.dir,'video-source.wav');
+      return {file,title:'视频参考演唱',artist:'AI 自主编排',durationSeconds:entry.seconds,previewOnly:false};
     };
-    return {...start({songId:'video:'+videoId,seconds,startSeconds:0},{input,conversationKey,videoId,sourceStartSeconds:startSeconds,isAllowed}),sourceKind:'video',sent:false};
+    const job=start({songId:'video:'+entry.videoId,seconds:Math.max(10,Math.ceil(entry.seconds)),startSeconds:0,performance},{input,conversationKey:entry.conversationKey,videoId:entry.videoId,sourceStartSeconds:entry.startSeconds,isAllowed,reference:entry});
+    entry.inUse=true;
+    return {...job,sourceKind:'video',sent:false};
   }
   function cleanup() {
     if(active)return {deleted:0};let deleted=0;
@@ -200,23 +254,27 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   function status() {cleanup();const entries=readEntries();return {source:settings().musicSource ?? 'kugou', cachedSongs:entries.length,
     cacheBytes:entries.reduce((sum,e)=>sum+fs.statSync(audioPath(e.key)).size,0),retentionDays:7,localCoverAvailable:runtimeAvailable(),
     latestJob:jobs.size?publicJob([...jobs.values()].at(-1)):null};}
-  function start(body,source) {
+  function start(body,source,{isAllowed=()=>true}={}) {
     cleanup();
     if (closed) throw fault('音乐服务已关闭。', 503);
-    if (active) throw fault('已有歌曲正在处理，请稍后再试。', 429);
+    if (active||preparing) throw fault('已有歌曲正在处理，请稍后再试。', 429);
     const startSeconds = body?.startSeconds ?? 0, seconds = body?.seconds ?? 30;
     if (!body || typeof body.songId !== 'string' || !Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 14400 ||
         !Number.isInteger(seconds) || seconds < 10 || seconds > 30) throw fault('请选择歌曲，试听长度为 10～30 秒，开始时间不能为负数。');
-    if (!runCover && !runtimeAvailable()) throw fault('本地肥鱼翻唱环境尚未准备，仍可搜歌和缓存音频。', 503);
+    if(body.performance&&!source?.reference)throw fault('演唱编排必须绑定已分析的参考。',409);
+    if(!source?.reference&&typeof planPerformance!=='function')throw fault('AI 演唱编排服务尚未就绪，请启动 DSH 并启用项目插件。',503);
+    if (!runCover && !runtimeAvailable()) throw fault('SoulX 翻唱环境尚未准备，请在设置中安装或修复翻唱环境；仍可搜歌和缓存音频。', 503);
     if (!source && !findCached(body.songId) && !tickets.has(body.songId)) throw fault('请重新搜索并选择歌曲。', 409);
     while (jobs.size >= 30) jobs.delete(jobs.keys().next().value);
     const config=structuredClone(settings()),model=models?.get(config.modelId);
     if(models&&!model)throw fault('当前音色没有可用的翻唱模型，请在“语音回复”中补充配套 RVC 模型。',409);
+    const accountScope=()=>fs.existsSync(path.join(root,'state/wechat-io-config.json'))?readerScope():null,scope=accountScope();
     const id = crypto.randomUUID(), output = path.join(root, 'state', 'music-jobs', id);
-    const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,...(source?{sourceKind:'video',conversationKey:source.conversationKey,sourceStartSeconds:source.sourceStartSeconds}:{})};
+    const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
     jobs.set(id, job); active = true;
     const controller = new AbortController(); controllers.add(controller);
-    let processLog='';
+    let processLog='',reference=source?.reference,performance=body.performance;
+    const check=()=>{controller.signal.throwIfAborted();if(!isAllowed()||source&&!source.isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);if(scope!==accountScope())throw fault('微信账号已变化，本次演唱已取消。',409);};
     job.finished = (async () => {
       try {
         const song = source?await source.input(output):await cacheSong(body.songId, controller.signal);
@@ -225,23 +283,49 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
         const duration = Math.min(seconds, available);
         Object.assign(job, {title:song.title, artist:song.artist, seconds:duration, previewOnly:song.previewOnly});
         job.stage = '正在分离人声和伴奏';
-        if(source&&!source.isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
+        check();
         const inputFile=source?song.file:audioPath(song.key);
-        if (runCover) await runCover({input:inputFile, output, seconds:duration, startSeconds, model,pitch:config.pitch,accompaniment:config.accompaniment,signal:controller.signal});
-        else await execute(python, [path.join(root,'scripts','music-cover.py'), '--input', inputFile, '--start', String(startSeconds),
+        if(!reference){
+          cleanupReferences();
+          const referenceId=crypto.randomUUID(),dir=path.join(referenceDirectory,referenceId);fs.mkdirSync(dir,{recursive:false});
+          reference={id:referenceId,dir,inUse:true};references.set(referenceId,reference);
+          job.stage='正在分析歌词、旋律、节奏与分句';
+          if(runReference)await runReference({input:inputFile,output:dir,seconds:duration,startSeconds,withScore:true,signal:controller.signal});
+          else await execute(python,[path.join(root,'scripts/music-reference.py'),'--input',inputFile,'--output',dir,'--start',String(startSeconds),'--seconds',String(duration),'--soulx-runtime',singer],{cwd:runtime,signal:controller.signal,timeoutMs:10*60*1000,onData:chunk=>{processLog=(processLog+chunk).slice(-64000);}});
+          check();
+          const record=JSON.parse(fs.readFileSync(path.join(dir,'reference.json'),'utf8'));
+          if(record.schema!=='singing-reference-v1'||record.source_sha256!==crypto.createHash('sha256').update(fs.readFileSync(inputFile)).digest('hex')||Math.abs(record.seconds-duration)>.05||!record.analysis?.phrases?.length||!record.analysis?.lyrics?.length)throw fault('歌曲参考分析未完成，未生成演唱。',502);
+          job.stage='AI 正在结合歌词与人格编排演唱';
+          performance=validatePerformance(await planPerformance({analysis:record.analysis,seconds:duration,song:{title:song.title,artist:song.artist,requestedTitle:body.requestedTitle??song.title,version:body.requestedVersion??''},direction:body.direction??'',conversationKey:body.conversationKey,signal:controller.signal}),duration);
+          check();job.performance=performance;
+        }
+        let performanceFile;
+        fs.mkdirSync(output,{recursive:true});performanceFile=path.join(output,'performance.json');atomic(performanceFile,performance);
+        if (runCover) await runCover({input:inputFile, output, seconds:duration, startSeconds:0, model,pitch:config.pitch,accompaniment:config.accompaniment,signal:controller.signal,performance,reference:reference.dir});
+        else await execute(python, [path.join(root,'scripts','music-cover.py'), '--input', inputFile, '--start', '0',
           '--seconds', String(duration), '--output', output,'--model',model?.directory??path.join(runtime,'models','FeiyuVoice-RVC'),
-          '--pitch',String(config.pitch??0),...(config.accompaniment===false?['--vocals-only']:[])], {cwd:runtime, signal:controller.signal, timeoutMs:10 * 60 * 1000,
-          onData(chunk) {processLog=(processLog+chunk).slice(-64000);if (chunk.includes('Converting with')) job.stage = '正在优化换声音质并混音';}});
+          '--pitch',String(config.pitch??0),'--performance',performanceFile,'--reference',reference.dir,...(config.accompaniment===false?['--vocals-only']:[])], {cwd:runtime, signal:controller.signal, timeoutMs:45 * 60 * 1000,
+          onData(chunk) {processLog=(processLog+chunk).slice(-64000);
+            if(chunk.includes('soulx_preprocess'))job.stage='正在提取歌词、旋律与节奏';
+            if(chunk.includes('soulx_loading'))job.stage='正在加载 SoulX 演唱模型';
+            if(chunk.includes('performance_arranged'))job.stage='AI 编排已应用，正在按谱重新演唱';
+            if(chunk.includes('soulx_singing'))job.stage='SoulX 正在重新演唱（CPU 处理需要数分钟）';
+            if(chunk.includes('Converting with'))job.stage='正在用所选 .pth 音色换声';
+            if(chunk.includes('"mixing"'))job.stage='正在混入原歌曲伴奏并优化音量';}});
         const receipt = JSON.parse(fs.readFileSync(path.join(output, 'result.json'), 'utf8'));
         if (receipt.status !== 'success' || Math.abs(receipt.seconds - duration) > 0.05) throw fault('翻唱结果校验失败。', 502);
+        if(!runCover&&(receipt.route!=='SoulX -> selected RVC -> accompaniment remix'||receipt.original_vocals_mixed!==false))throw fault('翻唱链路校验失败，未返回 SoulX 演唱结果。',502);
+        check();
+        if(!runCover&&(receipt.performance_sha256!==crypto.createHash('sha256').update(fs.readFileSync(performanceFile)).digest('hex')||receipt.performance?.control!=='score'||receipt.performance?.source_f0_used!==false||receipt.performance?.dynamics?.applied!==true))throw fault('演唱编排未实际执行，未返回音频。',502);
         const wav = path.join(output, 'feiyu-cover-' + Number(duration).toString() + 's.wav');
         job.stage = '正在准备试听文件';
         await execute(mediaFfmpeg(root), ['-hide_banner', '-loglevel', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '256k', path.join(output, 'preview.mp3')], {signal:controller.signal});
+        check();
         Object.assign(job, {state:'success', stage:'试听已生成', seconds:receipt.seconds, completedAt:new Date().toISOString()});
       } catch (error) {
         if(processLog){fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output+'.log',processLog,{mode:0o600});}
         Object.assign(job, {state:'failed', stage:'未生成试听', error:error.status ? error.message : '歌曲处理失败，请检查音源与本地翻唱环境。'});}
-      finally {if(source){const temporary=path.join(output,'video-source.wav');if(fs.existsSync(temporary))fs.unlinkSync(temporary);}active = false; controllers.delete(controller);}
+      finally {if(reference){fs.rmSync(reference.dir,{recursive:true,force:true});references.delete(reference.id);}active = false; controllers.delete(controller);}
     })();
     return publicJob(job);
   }
@@ -254,7 +338,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     return {audio:fs.readFileSync(file).toString('base64'), mime:'audio/mpeg', seconds:job.seconds, title:job.title};
   }
   const cleanupTimer=setInterval(()=>{try{cleanup();}catch{}},3600000);cleanupTimer.unref();cleanup();
-  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,isBusy:()=>!!active,
+  return {search, cache, importFile, status, start, getJob, preview,cleanup,requestSong,requestVideo,prepareVideoReference,isBusy:()=>!!active||preparing,
     async settled(id) {await jobs.get(id)?.finished; return getJob(id);},
     close() {closed = true;clearInterval(cleanupTimer); for (const controller of controllers) controller.abort();}};
 }

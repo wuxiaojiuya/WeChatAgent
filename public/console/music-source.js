@@ -1,12 +1,12 @@
 const base='/api/audio-capabilities/music';
 export function musicMarkup({settings}) {
   return `<section class="audio-section music-section"><h3>对话点歌</h3>
-    <div class="music-conversation-note"><strong>想听什么，直接和 AI 说</strong><p>AI 理解歌名和你指定的版本，自动查找歌曲、选择可用音源并翻唱。不需要你查看歌手或挑选搜索结果。</p>
+    <div class="music-conversation-note"><strong>想听什么，直接和 AI 说</strong><p>AI 理解歌名和你指定的版本，自动查找歌曲，分析歌词、旋律与节奏，编排自己的演唱，再用已选音色唱给你听。不需要你查看歌手或挑选搜索结果。</p>
     <div class="music-example">你会唱歌吗？<span>会呀，想听哪首？</span></div><div class="music-example">你会唱朋友的酒 DJ 版吗？<span>按 DJ 版找歌，用已选音色翻唱。</span></div></div>
     <div class="field"><label for="music-source">歌曲来源</label><select id="music-source">${[['kugou','酷狗音乐'],['netease','网易云音乐'],['qq','QQ 音乐'],['local','仅本地曲库']].map(([id,name])=>`<option value="${id}" ${settings.musicSource===id?'selected':''}>${name}</option>`).join('')}</select><small>优先复用匹配的本地歌曲。找不到可用音源时会说明，不会用其他版本替代你指定的版本。</small></div>
     <p class="music-retention">下载缓存保存 7 天，到期自动删除。手动导入的歌曲和上传的模型会保留。</p><span id="music-cache-info" class="subtle"></span></section>
     <section class="audio-section music-section audio-preview-section"><details class="music-import" id="music-test"><summary>本机点歌测试与歌曲导入（可选）</summary>
-      <p class="subtle">这里可以用一句话测试自动找歌和翻唱；聊天中由 AI 结合上下文理解你的话。</p>
+      <p class="subtle">这里可用一句话测试自动找歌、AI 编排与重新演唱，仅在本机生成试听。请保持 DSH 项目插件运行，使用已配置的模型和默认人格；聊天中会结合当前人格与语境。</p>
       <div class="field"><label for="music-request">想听什么</label><input id="music-request" maxlength="180" placeholder="你会唱朋友的酒 DJ 版吗"></div>
       <div class="audio-preview-actions"><button type="button" class="button primary" id="music-generate">保存并试着点歌</button></div>
       <p id="music-job-status" class="subtle" role="status" aria-live="polite"></p><audio id="music-player" aria-label="翻唱试听播放器" controls hidden></audio><a id="music-download" class="music-download" hidden>下载试听音频</a>
@@ -24,7 +24,7 @@ export function bindMusic({form,api,save,state,signal,showError}) {
   async function refresh(restore=false) {
     const info=await request('/status');if(closed)return;
     field('music-cache-info').textContent=`本地曲库 ${info.cachedSongs} 首 · ${(info.cacheBytes/1048576).toFixed(1)} MB`;
-    if(!info.localCoverAvailable)field('music-job-status').textContent='本地 RVC 运行环境尚未准备。';
+    if(!info.localCoverAvailable)field('music-job-status').textContent='SoulX / RVC 翻唱环境尚未准备，请前往设置安装或修复。';
     if(restore&&info.latestJob&&['running','success'].includes(info.latestJob.state)){
       setBusy(true);field('music-test').open=true;await poll(info.latestJob.id);
     }
@@ -56,7 +56,7 @@ export function bindMusic({form,api,save,state,signal,showError}) {
   }
   field('music-generate').addEventListener('click',()=>action(async()=>{
     const message=field('music-request').value.trim();if(!message)throw new Error('告诉我想听哪首歌就好。');
-    field('music-job-status').textContent='正在理解点歌并自动寻找可用音源…';
+    field('music-job-status').textContent='正在自动找歌；随后分析歌词和谱面，由 AI 编排演唱…';
     await save();const result=await request('/request',{message});if(closed)return;
     if(!result.id){field('music-job-status').textContent=result.message;return;}
     await poll(result.id);

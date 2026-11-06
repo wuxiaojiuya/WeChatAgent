@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import {Readable} from 'node:stream';
 import {searchMusic,resolveMusic,musicMediaUrl,fetchMusicAudio} from '../packages/music-source/providers.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
@@ -10,9 +11,11 @@ import {createRvcModels} from './rvc-models.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
 const kgHash='A'.repeat(32);
 const kgResult={status:1,data:{lists:[{FileHash:kgHash,AlbumID:'123',SongName:'同名歌（DJ版）',SingerName:'歌手甲',Duration:120,PayType:3}]}};
+const plan={version:'score-performance-v1',emotion:'warm',intention:'前段轻唱，后段逐渐加强。',phrases:[{start:0,end:30,articulation:'flowing',timingMs:12,tail:'hold',gainDb:.6,contour:'build'}]};
+const referenceFixture=async({input,output,seconds})=>fs.writeFileSync(path.join(output,'reference.json'),JSON.stringify({schema:'singing-reference-v1',source_sha256:crypto.createHash('sha256').update(fs.readFileSync(input)).digest('hex'),seconds,analysis:{phrases:[{start:0,end:seconds}],lyrics:[{start:0,end:seconds,text:'测试歌词'}]}}));
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'music-source-'));let clock=Date.now();
-  const service=createMusicCapabilities({root,probeAudio:async()=>120,now:()=>clock,...options});
+  const service=createMusicCapabilities({root,probeAudio:async()=>120,now:()=>clock,runReference:referenceFixture,planPerformance:async()=>plan,...options});
   t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});return {root,service,advance:days=>clock+=days*86400000};
 }
 
@@ -22,6 +25,32 @@ test('conversational requests distinguish a capability question from a DJ song r
   assert.equal(songRequest({message:'唱一段《朋友的酒》DJ版给我听'}).version,'DJ版');
   assert.equal(songRequest({message:'随便一首'}).intent,'needs_title');
   assert.throws(()=>songRequest({title:'朋友的酒',unknown:'override'}));
+});
+
+test('direct requests and local jobs analyze once, obtain a real model plan, then synthesize from that score',async t=>{
+  const calls=[];let options;
+  const {root,service}=fixture(t,{settings:()=>({musicSource:'local'}),
+    runReference:async value=>{calls.push('analysis');assert(value.withScore);assert.equal(value.startSeconds,5);await referenceFixture(value);},
+    planPerformance:async value=>{calls.push('plan');assert.equal(value.analysis.lyrics[0].text,'测试歌词');assert.equal(value.direction,'先轻后强');assert.equal(value.conversationKey,'wechat:private:123');return plan;},
+    runCover:async value=>{calls.push('sing');options=value;throw Error('fixture stops after score handoff');}});
+  const file=path.join(root,'歌.mp3');fs.writeFileSync(file,'audio');const song=await service.importFile({path:file});
+  const job=service.start({songId:song.id,startSeconds:5,seconds:30,direction:'先轻后强',conversationKey:'wechat:private:123'});
+  await service.settled(job.id);assert.deepEqual(calls,['analysis','plan','sing']);assert.deepEqual(options.performance,plan);assert.equal(options.startSeconds,0);
+  assert.equal(fs.existsSync(options.reference),false,'prepared stems are removed after completion');
+  assert.deepEqual(service.getJob(job.id).performance,plan);
+});
+
+test('planning failure, invalid score, missing lyrics, account switches and scope revocation never fall back to vocal conversion',async t=>{
+  for(const failure of ['model','invalid','lyrics','account','scope']){
+    let allowed=true;
+    const f=fixture(t,{settings:()=>({musicSource:'local'}),runCover:async()=>assert.fail('must not synthesize without verified planning'),
+      runReference:async options=>{await referenceFixture(options);if(failure==='lyrics'){const file=path.join(options.output,'reference.json'),record=JSON.parse(fs.readFileSync(file));delete record.analysis.lyrics;fs.writeFileSync(file,JSON.stringify(record));}},
+      planPerformance:async()=>{if(failure==='model')throw Error('secret upstream details');if(failure==='invalid')return {...plan,phrases:[{...plan.phrases[0],end:31}]};if(failure==='account')fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),'{}');if(failure==='scope')allowed=false;return plan;}});
+    const file=path.join(f.root,'测试歌曲.mp3');fs.writeFileSync(file,'audio');await f.service.importFile({path:file});
+    const job=await f.service.requestSong({title:'测试歌曲'},{isAllowed:()=>allowed});const result=await f.service.settled(job.id);
+    assert.equal(result.state,'failed',failure);assert(!result.error.includes('secret'));
+    assert.equal(fs.readdirSync(path.join(f.root,'state/music-references')).length,0);
+  }
 });
 
 test('automatic selection preserves explicit versions and rejects unrelated songs',()=>{

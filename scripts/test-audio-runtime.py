@@ -17,6 +17,12 @@ installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installe
 
 
 class InstallerTests(unittest.TestCase):
+    def test_singing_install_and_repair_never_select_tts_environment(self):
+        self.assertEqual(installer.targets_for('singing'),['rvc','soulx'])
+        self.assertEqual(installer.targets_for('voice'),['tts','rvc'])
+        self.assertEqual(installer.targets_for('soulx'),['soulx'])
+        self.assertEqual(installer.targets_for('all'),['tts','rvc','soulx'])
+
     def test_verified_model_cache_survives_staging_and_is_reused(self):
         with tempfile.TemporaryDirectory() as temp,contextlib.redirect_stdout(io.StringIO()):
             root=Path(temp);config=installer.MANIFEST['models']['tts']

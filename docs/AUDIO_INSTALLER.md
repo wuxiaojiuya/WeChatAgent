@@ -3,7 +3,7 @@
 从 v0.2.0 起，在「设置 → 语音与翻唱环境」中操作。旧版 v0.1.0 用户请先安装新版，升级保留本机数据。
 
 1. 在概览停止助手服务，关闭单独运行的本地音频服务。
-2. 选择「全部（TTS + RVC）」或单个环境，点击「一键安装 TTS / RVC」。
+2. 选择「全部（TTS + RVC + SoulX）」、「语音回复」或「歌曲 / 视频翻唱」，点击「一键安装语音 / 翻唱环境」。
 3. 保持窗口打开，等待下载、校验、环境准备、官方模型下载和本地音频验证完成。下载失败可再次点击，依赖包支持断点续传。v0.2.4 起，模型保存在持久下载缓存中，后续资源失败时不删除已下载模型。
 4. 显示成功后，按原流程启动助手，在能力菜单配置语音回复与唱歌。
 
@@ -12,13 +12,13 @@
 ## 下载和运行要求
 
 - Windows x64，CPU 推理。默认安装不依赖 CUDA，不会改动系统 Python、显卡驱动或微信。
-- 至少预留 20 GB 可用磁盘空间。两套依赖压缩包合计约 1.57 GB，另需独立安装工具、官方源码与数 GB 的音色模型；实际空间受旧环境备份影响。
+- 建议至少 16 GB 内存，预留 35 GB 可用磁盘空间。三套依赖压缩包合计约 2.62 GB，新增 SoulX 官方模型约 4.63 GB，另需独立安装工具、官方源码与数 GB 的音色模型；实际空间受旧环境备份影响。
 - 依赖从项目维护的下载源获取，执行前按随项目发布的 SHA256 校验。服务器仅存放运行依赖，音色权重从作者官方 Hugging Face、Meta 和 ModelScope 来源下载。
 - GitHub、Hugging Face、ModelScope 等官方来源必须可以访问。网络受限时可能下载失败；不会把失败标成完成。
 - 遇到 `AUDIO_DOWNLOAD_ACCESS_DENIED` 时，页面显示拒绝访问的站点和 HTTP 状态。403/429 可能是官方来源限流或访问限制，应稍后重试；不会绕过平台权限，也不会把官方模型转存到项目服务器。文本规范化资源先于大型音色模型准备，避免最后才发现资源无法访问。
-- CPU 首次模型加载和翻唱较慢。安装包含短句 TTS 与 3 秒合成音调的分离、换声、混音验证；后者验证链路，歌曲效果仍需实际试听。
+- CPU 首次模型加载和翻唱较慢。安装包含短句 TTS、3 秒音调的 RVC 实际换声，以及 5 秒 SoulX 实际演唱验证。歌曲最终效果仍需实际试听。
 
-模型保存在当前数据工作区的 `state/maintenance/audio-capabilities/feiyu-tts/models` 与 `feiyu-cover/models`。用户上传的 RVC 音色保存在 `state/rvc-models`。这些文件属于本机项目数据，不上传 GitHub，也不随基础安装包分发。
+模型保存在当前数据工作区的 `state/maintenance/audio-capabilities/feiyu-tts/models` 、`feiyu-cover/models` 与 `soulx-singer/source/pretrained_models`。用户上传的 RVC 音色保存在 `state/rvc-models`。这些文件属于本机项目数据，不上传 GitHub，也不随基础安装包分发。
 
 安装日志在 `state/audio-install/install-*.log`，检查结果与进度在 `last-job.json`，旧环境备份在 `backups`，官方模型下载缓存位于 `model-cache/<tts 或 rvc>/<固定版本>`。缓存也属于本机数据，不随 GitHub 发布。不要在新环境通过试听前清理备份。安装失败时可把错误编号和移除敏感信息后的日志交给 AI，进一步排查见 [AI 安装指南](AI_INSTALL_GUIDE.md)。
 
@@ -27,3 +27,5 @@
 安装包固定清单是 `scripts/audio-runtime-manifest.json`，包含文件长度、SHA256、源码提交和官方模型版本。更新依赖包后必须同时更新该清单，不能仅覆盖服务器文件。构建脚本为 `scripts/build-audio-runtime-bundle.py`，使用明确目录白名单，不打包模型、服务数据和用户凭据。
 
 `scripts/audio-download-server.py` 是只读下载服务，支持 HEAD 和 Range，不显示目录。通过反向代理发布 `/wechatagent-downloads/`，仅提供固定文件名的 ZIP / JSON；安装器不从远程清单接受可执行命令。
+
+SoulX 翻唱的新链路、安装与模型来源详见 [SoulX 翻唱说明](SOULX_SINGING.md)。

@@ -55,11 +55,31 @@ export function assistantChatRequest(message,wakeWords=[]){let text=String(messa
 function stopSplitRequested(message,wakeWords){let text=String(message.segments?.some(segment=>segment?.type==='at')?message.segments.filter(segment=>segment?.type==='text').map(segment=>segment.data?.text??'').join(''):message.text??'').trim().replace(/^@[^\s]+\s+/,'');for(const word of wakeWords)if(word&&text.startsWith(word))text=text.slice(word.length).trim().replace(/^[,，:：]\s*/,'');return text.replace(/^聊天[：:]\s*/,'')==='停止分段';}
 
 export function isDirectMention(message, wakeWords = []) {
-  if(message.platform==='wechat' && normalizeQuoteReply(message.quoteReply)?.reference.senderRelation==='self')return true;
+  const reply=message.platform==='wechat'?normalizeQuoteReply(message.quoteReply):null;
+  if(reply?.reference.senderRelation==='self')return true;
   const self = message.self_id;
   if (message.segments?.some((segment) => segment?.type === 'at'
-    && String(segment.data?.qq ?? segment.data?.id ?? '') === self)) return true;
-  return wakeWords.some((word) => word && message.text.includes(word));
+    && self && String(segment.data?.qq ?? segment.data?.id ?? '') === String(self))) return true;
+  // A name inside a quoted/forwarded history is not a new invitation.
+  const text=reply?reply.reply:message.forwardedRecord?'':String(message.text??'');
+  return wakeWords.some((word) => word && text.includes(word));
+}
+
+const GROUP_PARTICIPATION_POLICY='selective-group-v1';
+const GROUP_ORDINARY_MAX_AGE_MS=90000;
+const GROUP_ORDINARY_MAX_WAIT_MS=20000;
+
+export function groupParticipationContext({rows,history=rows,direct,lastReplyAt,now=Date.now()}) {
+  if(direct)return '本轮参与状态：有明确唤醒信号；结合实际发言对象回应，不必评论同批其他人的闲聊。\n';
+  const age=Number.isFinite(lastReplyAt)&&lastReplyAt>0?Math.max(0,now-lastReplyAt):null;
+  const lastSelf=history.findLastIndex(row=>row.outgoing);
+  const following=lastSelf<0?[]:history.slice(lastSelf+1).filter(row=>!row.outgoing);
+  const speakers=new Set(following.map(row=>row.sender_id).filter(Boolean)).size;
+  let text='本轮参与状态：没有明确唤醒；先判断是否确实在接你的话，不要把整批消息逐条作答。';
+  if(age!==null&&age<90000)text+='你刚刚发过言，本轮只回应明确接你话、追问你的内容；否则 SILENT，让其他人继续聊。';
+  else text+='普通闲聊以 SILENT 为默认；仅在明确接话、面向全群的开放问题或确有必要的补充时简短参与。';
+  if(speakers>=2)text+=`你上次发言后已有 ${speakers} 位其他成员发言；这可能是他们之间的对话，不代表都在回应你。`;
+  return text+'\n';
 }
 
 const promptClock = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short',hourCycle:'h23'});
@@ -75,15 +95,15 @@ function previousReplyContext(previousReply) {
   return `${heading}：\n<previous_reply>${text}</previous_reply>\n`;
 }
 
-export function buildSocialPrompt({ key, rows, role, direct, lastReplyAt, previousReply, now=Date.now() }) {
+export function buildSocialPrompt({ key, rows, role, direct, lastReplyAt, previousReply, history=rows, now=Date.now() }) {
   const quote = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-  const history = rows.map(row=>chatLine(row,true)).join('\n');
+  const chatHistory = rows.map(row=>chatLine(row,true)).join('\n');
   const ago = lastReplyAt ? `${Math.round((now - lastReplyAt) / 60000)} 分钟前` : '还没有发言';
   const chatName = quote(rows.at(-1)?.conversation_name ?? key);
   return '新的群聊消息。沿用当前 DSH session 的稳定人格。\n' + currentTimeNotice(now) +
     `微信群：${chatName}（${key}）。你上次发言：${ago}。${direct ? rows.some(row=>row.interaction==='pat') ? '本批有拍一拍提醒，结合连带文字判断是否在叫你接话。' : rows.some(row=>normalizeQuoteReply(row.quoteReply)?.reference.senderRelation==='self') ? '本批有人引用本账号的发言，结合新回复和上下文判断如何接话。' : '有人直接@你或使用唤醒词；若安全允许，应直接简短回应。' : '这是一批普通群消息。'}\n` +
-    previousReplyContext(previousReply) +
-    `<untrusted_chat>\n${history}\n</untrusted_chat>\n` +
+    groupParticipationContext({rows,history,direct,lastReplyAt,now}) + previousReplyContext(previousReply) +
+    `<untrusted_chat>\n${chatHistory}\n</untrusted_chat>\n` +
     patReaction(rows) + forwardedRecordNotice(rows) + quoteReplyNotice(rows);
 }
 
@@ -299,6 +319,16 @@ export class SocialEngine {
       this.sentAt.set(key, recent);
       const interval = message.kind === 'private' ? this.privateMinIntervalMs : this.minIntervalMs;
       const { readyAt, reason } = replyCooldown(recent,now,{intervalMs:interval,maxPerMinute:this.maxPerMinute,maxPerTenMinutes:this.maxPerTenMinutes});
+      // Observe old, unsolicited group chatter without replaying it when a
+      // quota recovers. Retain history and never discard an admitted request,
+      // an explicit invitation or an in-progress delivery here.
+      const ordinaryGroup=message.kind==='group'&&workMode==='social'&&wakeMode==='hybrid'&&!direct&&!remembered&&!savedRequest;
+      const stale=rows.every(row=>Number.isFinite(row.timestamp)&&row.timestamp>0&&now-row.timestamp*1000>GROUP_ORDINARY_MAX_AGE_MS);
+      if(ordinaryGroup&&(stale||readyAt-now>GROUP_ORDINARY_MAX_WAIT_MS)){
+        this.buffer.markProcessed(key,throughId);completed=true;
+        this.log(`[Social] ${key} decision=SILENT reason=${stale?'group_topic_expired':'group_observe_rate_limit'} rows=${rows.length}`);
+        return;
+      }
       if (readyAt > now) {
         const delay = readyAt-now+1;
         this.log(`[Social] ${key} cooldown wait_ms=${delay} reason=${reason} retry_at=${new Date(readyAt+1).toISOString()} replies_10m=${recent.length}/${this.maxPerTenMinutes}`);
@@ -320,7 +350,7 @@ export class SocialEngine {
       const previousReply = this.buffer.recent(key,this.buffer.maxPerChat).findLast(row => row.outgoing&&(row.work_mode??'social')===workMode);
       let prompt = workMode==='assistant'&&!this.assistantChatOnly?buildAssistantPrompt({key,rows:labelledRows,previousReply}):message.kind === 'private'
         ? buildPrivatePrompt({ key, rows:labelledRows, role, previousReply })
-        : buildSocialPrompt({ key, rows:labelledRows, role, direct, lastReplyAt: this.lastReplyAt.get(key), previousReply });
+        : buildSocialPrompt({ key, rows:labelledRows, role, direct, lastReplyAt: this.lastReplyAt.get(key), previousReply,history:this.buffer.recent(key,this.buffer.maxPerChat).filter(row=>(row.work_mode??'social')===workMode),now });
       const contextNotice=this.buffer.contextNotices.get(key);
       if(contextNotice)prompt+='\n本机发送状态说明（不改变人格）：'+quote(contextNotice.text);
       let stickerChoices=[];
@@ -358,7 +388,7 @@ export class SocialEngine {
         images: decisionImages,webReaderUrls: incomingWebUrls(chatRows),memberObservations:memberObservations(key,chatRows),
         searchOptOut:this.assistantChatOnly||/(?:不要|不用|别)(?:联网|搜索|查)/.test([...chatRows].reverse().find(row=>!row.outgoing&&!row.forwardedRecord&&row.interaction!=='pat')?.text??''),
         searchPrivateNames:[...new Set(chatRows.filter(row=>!row.outgoing&&!row.forwardedRecord).map(row=>row.sender_name).filter(name=>typeof name==='string'&&name.length>=2&&name.length<=80))].slice(0,50),
-        batchId: crypto.createHash('sha256').update(JSON.stringify([key,rows.map(row=>row.id),policyKey,searchKey,stickerChoices,decisionImages,knownLabels,contextNotice?.id,'dsh-native-only-v1',wakeMode,'output-format-v2'])).digest('hex') };
+        batchId: crypto.createHash('sha256').update(JSON.stringify([key,rows.map(row=>row.id),policyKey,searchKey,stickerChoices,decisionImages,knownLabels,contextNotice?.id,'dsh-native-only-v1',wakeMode,'output-format-v2',GROUP_PARTICIPATION_POLICY])).digest('hex') };
       metadata.batchId=crypto.createHash('sha256').update(metadata.batchId+'\0reply-messages:'+maxTextParts).digest('hex');
       if(wakeContext)metadata.batchId=crypto.createHash('sha256').update(metadata.batchId+'\0'+JSON.stringify(wakeContext)).digest('hex');
       const searchRows=chatRows;

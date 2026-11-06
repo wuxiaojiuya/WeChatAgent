@@ -45,10 +45,20 @@ export function createPersonaApprovals({root,configFor,saveConfig,now=Date.now,a
     }
     return p;
   }
-  function propose({conversationKey:key,content,reason,accountScope}) {
+  function reviewContext({conversationKey:key,accountScope}) {
+    const config=configFor(),account=accountFor();
+    if(!account||accountScope!==account||!allowedConversation(config.wechat,key))fail('当前账号或聊天未就绪。',403);
+    if(!admins(config).length)fail('请先添加一位好友为管理员，并保存到聊天范围。',400);
+    const currentBase=base(config,key);
+    const pending=all().filter(p=>p.account===account&&p.key===key).map(p=>refresh(p,config)).find(p=>p.state==='pending');
+    const content=fs.readFileSync(path.join(root,'roles',currentBase.name+'.md'),'utf8');
+    return {base:currentBase,content,effectiveContent:selectRoleText(content,'v2'),pending:pending?publicProposal(pending):null};
+  }
+  function propose({conversationKey:key,content,reason,accountScope,expectedBase}) {
     const config=configFor(),recipients=admins(config),account=accountFor();
     if(!account||accountScope!==account||!allowedConversation(config.wechat,key))fail('当前账号或聊天未就绪。',403);
     if(!recipients.length)fail('请先添加一位好友为管理员，并保存到聊天范围。',400);
+    if(expectedBase!==undefined&&JSON.stringify(expectedBase)!==JSON.stringify(base(config,key)))fail('回顾期间人格设置已改变，请重新回顾。');
     const error=personaError('AI人格',content);
     if(error||typeof reason!=='string'||!reason.trim()||reason.length>200||content.length>6000||!selectRoleText(content,'v2').trim())fail(error||'人格草案最多 6,000 字，修改理由为 1–200 字。',400);
     for(const p of all().filter(p=>p.account===account&&p.key===key)) {
@@ -111,5 +121,5 @@ export function createPersonaApprovals({root,configFor,saveConfig,now=Date.now,a
     }
     return {...publicProposal(p),message:'已同意，新人格从该会话的下一轮对话开始生效，其他会话不受影响。'};
   }
-  return {propose,list,notifications,acknowledge,decide};
+  return {propose,list,notifications,acknowledge,decide,reviewContext};
 }

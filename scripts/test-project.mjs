@@ -51,6 +51,10 @@ try {
   fs.appendFileSync(path.join(fixturePlugin,'deadline.mjs'),'\n// fixture image timeout revision\n');prepare(fixture);
   const mediaPluginPatch=fs.readFileSync(path.join(fixturePlugin,'cordis.patch.yml'),'utf8');assertPluginEntry(mediaPluginPatch);
   assert.notEqual(mediaPluginPatch,memePluginPatch,'image deadline changes must invalidate the bridge revision');
+  fs.appendFileSync(path.join(fixturePlugin,'singing-performance.mjs'),'\n// fixture performance schema revision\n');prepare(fixture);
+  const performancePluginPatch=fs.readFileSync(path.join(fixturePlugin,'cordis.patch.yml'),'utf8');
+  assertPluginEntry(performancePluginPatch);
+  assert.notEqual(performancePluginPatch,mediaPluginPatch,'performance controls must invalidate the loaded bridge module');
   const bridge = JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'bridge-config.json'), 'utf8'));
   const io = JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'wechat-io-config.json'), 'utf8'));
   assert.equal(bridge.role, '# Test role');

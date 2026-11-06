@@ -111,7 +111,11 @@ test('console API verifies friend admin changes and persists the complete approv
   const previous=(await request('/api/config')).value,snapshot=chatSettingsSnapshot(config,adminKey);
   const saved=await request('/api/chat-settings',{revision:previous.revision,key:adminKey,...snapshot,administrator:true});
   assert.equal(saved.status,200);assert.deepEqual(saved.value.config.wechat.assistant.administrators,[admin]);
+  const progress=await request('/api/persona-proposals');assert.equal(progress.value.evolution.policy.interactions,20);assert.deepEqual(progress.value.evolution.chats,[]);
+  const context=await request('/api/persona-proposals/review-context',{conversationKey:key,accountScope:account});assert.equal(context.status,200);assert.equal(context.value.base.name,'Original');assert.equal(context.value.pending,null);
+  assert.equal((await request('/api/persona-proposals/review-context',{conversationKey:key,accountScope:'b'.repeat(64)})).status,403);
   const p=await request('/api/persona-proposals/propose',{conversationKey:key,accountScope:account,content:'# 新人格\n开朗自然',reason:'互动习惯调整'});assert.equal(p.status,200);
+  assert.equal((await request('/api/persona-proposals/review-context',{conversationKey:key,accountScope:account})).value.pending.id,p.value.id);
   const notices=(await request('/api/persona-proposals/notifications')).value.notifications;for(const n of notices)assert.equal((await request('/api/persona-proposals/ack',{id:n.id})).status,200);
   const approved=await request('/api/persona-proposals/decide',{message:message(p.value.id),accountScope:account});assert.equal(approved.status,200);assert.equal(approved.value.state,'approved');
   const next=JSON.parse(fs.readFileSync(path.join(f.root,'config/wechatagent.json'),'utf8'));assert.equal(next.persona.chats[key],approved.value.personaName);

@@ -18,8 +18,8 @@ from wechat_files import FileCatalog, file_policy, media_file_policy, hashes, MA
 from wechat_voice_input import MAX_SILK_BYTES
 from wechat_image_normalize import normalize_image
 from wechat_sticker import resolve_sticker
-from wechat_video import MAX_VIDEO_BYTES
 from supplier_images import download_image
+from supplier_videos import download_video
 
 
 def xml_root(text):
@@ -218,27 +218,7 @@ def create_reader(Base):
             return {**result, 'imageId': image_id, 'conversationKey': 'wechat:'+('group:' if '@chatroom' in descriptor['talker'] else 'private:')+self.conversation_id(descriptor['talker'])}
 
         def video_source(self, video_id, item, row):
-            self.active_identity()
-            folder = runtime_directory(self.root)/'incoming-video'
-            folder.mkdir(parents=True, exist_ok=True)
-            file = folder/(video_id+'.mp4')
-            if not file.exists():
-                with self.callback_lock:
-                    callback = self.callback_messages.get(item['serverId'], {})
-                msg_id = callback.get('msgId')
-                if callback.get('type') != 43 or callback.get('from') != item['talker'] or callback.get('to') != self.own_wxid or not isinstance(msg_id,int) or not 0 < msg_id <= 0xffffffff:
-                    raise RuntimeError('VIDEO_CALLBACK_METADATA_REQUIRED')
-                self.api.post('/api/download_video', {'total_len':item['size'], 'NewMsgId':int(item['serverId']), 'MsgId':msg_id, 'path':str(file)})
-            deadline = time.monotonic()+8
-            while not file.is_file() or file.stat().st_size != item['size']:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError('VIDEO_DOWNLOAD_PENDING')
-                time.sleep(.2)
-            source_file(file, MAX_VIDEO_BYTES)
-            if item['md5'] and hashes(file)[0] != item['md5']:
-                raise RuntimeError('VIDEO_INTEGRITY_FAILED')
-            self.active_identity()
-            return file
+            return download_video(self, video_id, item, xml_root(row['fullText']).find('videomsg'))
 
         def pump_sticker_collection(self):
             # Shared pool still learns message-bound stickers through register_image.

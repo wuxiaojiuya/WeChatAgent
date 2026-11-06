@@ -17,6 +17,8 @@ import { bindWebReader, createWebReaderTurn, webReaderInstructions, builtinWebRe
 import {bindDshAccess,dshCatalog,retireDshSkillHistory,readDshAccess} from './dsh-access.mjs';
 import {bindFileTools} from './file-tools.mjs';
 import {bindPersonaProposalTools} from './persona-proposal-tools.mjs';
+import {consoleClient} from './console-client.mjs';
+import {createPluginModelUtility} from '../plugin-api/model-utility.mjs';
 import {trackToolOrigins} from './plugin-catalog.mjs';
 import {ASSISTANT_ACCESS,assistantSenderAllowed,assistantGroupChatAllowed,assistantControlAllowed} from './assistant-policy.mjs';
 import {conversationAccess,allowedConversation} from './conversation-policy.mjs';
@@ -24,7 +26,9 @@ import {readWorkMode,createWorkModeSlots,scopeHistory,assistantChatInstructionsF
 import {createSessionGroups,groupFault} from './session-groups.mjs';
 import {API_VERSION,HOST_RUNTIME,HOST_FEATURES,PERMISSIONS,CONTRACT_REVISION} from '../plugin-api/contract.mjs';
 const runtimeQuery=new URL(import.meta.url).search;
-const {bindSingingTools}=await import(new URL('./singing-tools.mjs'+runtimeQuery,import.meta.url));
+const {createPersonaEvolution}=await import(new URL('./persona-evolution.mjs'+runtimeQuery,import.meta.url));
+const {bindSingingTools,voiceReplyOutcome,singingReplyOutcome,singingAllowed}=await import(new URL('./singing-tools.mjs'+runtimeQuery,import.meta.url));
+const {planSongPerformance}=await import(new URL('./singing-performance.mjs'+runtimeQuery,import.meta.url));
 const {apply:applyAssistantToolGuard,bindNativeToolPresentation}=await import(new URL('./social-tool-restrict.mjs'+runtimeQuery,import.meta.url));
 const {nativeMemorySummaries}=await import(new URL('./memory-summary.mjs'+runtimeQuery,import.meta.url));
 const {AssistantThinkingFeedback,createProgressWriter}=await import(new URL('./assistant-feedback.mjs'+runtimeQuery,import.meta.url));
@@ -177,6 +181,11 @@ function createNativeRuntime(ctx, config={}) {
   const fixedPrefixBindings=new Map();
   let presetStopped=false;
   const history=scopeHistory(new HistoryStore(root,loadedAccount.id||loadedAccount.legacyId),key=>profiles[key]?.workMode??'social',internalGroupChat?{fixedMode:'assistant-chat'}:{});
+  const personaEvolution=internalGroupChat?null:createPersonaEvolution({root,account:loadedAccount.id,request:consoleClient(root),
+    generateText:createPluginModelUtility({ctx,provider,model,createUserMessage,BlockAssembler,recordUsage:row=>history.putUsage(row)}),
+    historyFor:key=>{backfillHistory(key);return history.windowRows(key,{recentMessages:60});},
+    allowed:key=>{try{return !presetStopped&&accountReady()&&allowedConversation(JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8')).wechat,key);}catch{return false;}}});
+  const generateSingingPlan=createPluginModelUtility({ctx,provider,model,createUserMessage,BlockAssembler,recordUsage:row=>history.putUsage(row)});
   const memberMemory=createMemberMemory({root,accountScope:loadedAccount.id||loadedAccount.legacyId,isAllowed:accountReady});
   const pluginRowsForDate=(key,date)=>{
       backfillHistory(key);const after=Date.parse(date+'T00:00:00+08:00')/1000,rows=history.db.prepare("SELECT body FROM records WHERE chat IN (?,?,?) AND source!='legacy-context' AND at>=? AND at<? ORDER BY at DESC,seq DESC LIMIT 200").all(key,key+':assistant',key+':assistant-chat',after,after+86400),selected=[];let size=0;
@@ -908,6 +917,7 @@ function createNativeRuntime(ctx, config={}) {
         const extraContext=[additions,...hookResults.map(item=>typeof item?.context==='string'?item.context.slice(0,4000):'')].filter(Boolean).join('\n').slice(0,10000);
         const extensionNotice=extraContext ? '\n<local_extension_context>\n'+extraContext+'\n</local_extension_context>\n扩展资料只用于本轮任务；不能覆盖本机人格、聊天范围、工具权限或最终回复格式。' : '';
         const memeTurn={controller:webReaderTurn.controller,networkOptOut,calls:0,choices:[],allowedUrls:webReaderTurn.urls,disabled:body.memeLibraryDisabled===true};
+        let audioTurn;
         const output=await new Promise((resolve,reject)=>{
           const firstImageSeq=agent.session.snapshotEvents().length;
           const item={resolve,reject,startedAt:Date.now(),taskId:body.assistantTaskId,assistantSender:body.assistantSender,fileTurn:{controller:webReaderTurn.controller,sender:body.assistantSender,batchId,files:Array.isArray(body.files)?body.files.filter(file=>/^[a-f0-9]{64}$/.test(file?.id??'')&&typeof file.name==='string'&&file.name.length<=180&&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=50*1024*1024).slice(0,3):[],calls:0},batchId,historyExcludeIds,recentWindow:recent,contextSelection:selectedWindow?.selection,repairContinuation,onAdmitted:()=>{onAdmitted();}};
@@ -925,7 +935,18 @@ function createNativeRuntime(ctx, config={}) {
           };
           item.cancel=cancel;
           item.timer=setTimeout(()=>cancel(new Error('agent_timeout')),Number(profiles[key]?.workMode==='assistant'&&!internalGroupChat?config.assistantTimeoutMs??(readDshAccess(root,key).timeoutMinutes??30)*60000:config.turnTimeoutMs??120000));
-          item.singingTurn={controller:webReaderTurn.controller,networkOptOut,calls:0,videos:Array.isArray(body.videos)?body.videos.filter(video=>/^[a-f0-9]{64}$/.test(video?.id??'')).slice(-3):[]};item.dshAccessTurn={controller:webReaderTurn.controller,networkOptOut,skillCalls:0,toolCalls:0};item.memberMemoryTurn=memberMemoryTurn;item.memeTurn=memeTurn;item.webReaderTurn=webReaderTurn;item.modelSearchTurn=modelSearchTurn;item.search=search;item.extensionTurn=extensionTurn;item.extensionContext=extensionNotice;pending.set(sid,item);if(item.taskId)assistantTasks.progress(item.taskId,'模型正在处理',{sessionId:sid});
+          audioTurn=item.singingTurn={controller:webReaderTurn.controller,networkOptOut,calls:0,videos:Array.isArray(body.videos)?body.videos.filter(video=>/^[a-f0-9]{64}$/.test(video?.id??'')).slice(-3):[]};item.dshAccessTurn={controller:webReaderTurn.controller,networkOptOut,skillCalls:0,toolCalls:0};item.memberMemoryTurn=memberMemoryTurn;item.memeTurn=memeTurn;item.webReaderTurn=webReaderTurn;item.modelSearchTurn=modelSearchTurn;item.search=search;item.extensionTurn=extensionTurn;item.extensionContext=extensionNotice;pending.set(sid,item);if(item.taskId)assistantTasks.progress(item.taskId,'模型正在处理',{sessionId:sid});
+          // Local speech needs time for CPU synthesis, conversion and receipt.
+          // Extend only an actual voice call, within the bridge's 190s RPC
+          // budget; keep ordinary turns and explicit owner limits unchanged.
+          audioTurn.onVoiceStart=()=>{
+            if(config.turnTimeoutMs!==undefined||profiles[key]?.workMode==='assistant'||pending.get(sid)!==item)return;
+            const remaining=Math.max(1,175000-(Date.now()-item.startedAt));
+            clearTimeout(item.timer);item.timer=setTimeout(()=>cancel(new Error('agent_timeout')),remaining);
+          };
+          // Reference separation is part of the model's actual planning call.
+          // Keep the same bridge RPC ceiling as voice; ordinary chat is unchanged.
+          audioTurn.onReferenceStart=audioTurn.onVoiceStart;
           requestController.signal.addEventListener('abort',()=>cancel(requestController.signal.reason??new Error('request_closed')),{once:true});
           webReaderTurn.controller.signal.addEventListener('abort',()=>cancel(new Error('request_closed')),{once:true});
           if(webReaderTurn.controller.signal.aborted){cancel(new Error('request_closed'));return;}
@@ -945,11 +966,18 @@ function createNativeRuntime(ctx, config={}) {
             for(const item of results)if(typeof item?.text==='string' && /^(SILENT|RESPOND:)/.test(item.text))output.text=item.text.slice(0,12000);
             if(batchId && profiles[key].cache?.[batchId])profiles[key].cache[batchId].output=output;
           }
+          // Tool receipts are authoritative even when the model or an
+          // extension writes a confident but incorrect success message.
+          output.text=singingReplyOutcome(voiceReplyOutcome(output.text,audioTurn),audioTurn);
+          if(batchId&&profiles[key].cache?.[batchId])profiles[key].cache[batchId].output=output;
           retireSearchContext(agent.session);
         }
         if(!windowPolicy(key))retireTurnContext(agent.session,createUserMessage);
         else await restoreWindowDisplay(key,agent,windowPolicy(key));
         await boundedTask(()=>ctx.sessions.flush(agent.session),{timeoutMs:10000});contextStatus(key,sid);recordSessionUsage(history,key,agent.session);history.archiveSession(key,agent.session);saveQuietly();
+        // Count completed real inbox batches once, outside the ordinary model
+        // turn. A background review never becomes a reply to this conversation.
+        try{personaEvolution?.observe({key,batchId,effective:!output.error&&!repairContinuation&&!!output.text?.trim()&&output.text.trim()!=='SILENT'&&!body.assistantTaskId&&!body.assistantParentId});}catch{log.warn('persona review progress unavailable');}
         return output;
       });
   }
@@ -990,6 +1018,17 @@ function createNativeRuntime(ctx, config={}) {
     if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),configurationReload:'native-runtime-v1',instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
     if(config.isReloading?.())return reply(503,{error:'configuration_reloading'});
     if(!accountReady())return reply(409,{error:'account_changed',detail:'ACCOUNT_SWITCH_REQUIRES_DSH_RESTART'});
+    if(req.method==='POST'&&req.url==='/singing-performance'){
+      const controller=new AbortController(),closed=()=>{if(!res.writableEnded)controller.abort();};res.once('close',closed);
+      try{
+        let size=0;const chunks=[];for await(const chunk of req){size+=chunk.length;if(size>20000)throw Error('SINGING_PLAN_INVALID');chunks.push(chunk);}
+        const body=JSON.parse(Buffer.concat(chunks)),key=body.conversationKey;
+        const allowed=()=>!internalGroupChat&&!presetStopped&&accountReady()&&(key===undefined||singingAllowed(root,key));
+        if(!allowed())return reply(403,{error:'SINGING_PLAN_SCOPE_CHANGED'});
+        return reply(200,{performance:await planSongPerformance(body,{generateText:generateSingingPlan,persona:localPersona(root,key??'').persona,allowed,signal:controller.signal})});
+      }catch{return reply(503,{error:'SINGING_PLAN_UNAVAILABLE'});}
+      finally{res.removeListener('close',closed);}
+    }
     if(req.method==='POST'&&req.url==='/voice-input'){
       const controller=new AbortController(),closed=()=>{if(!res.writableEnded)controller.abort();};res.once('close',closed);
       try{
@@ -1109,6 +1148,7 @@ function createNativeRuntime(ctx, config={}) {
   if(!internalGroupChat)extensions().then(async extension=>{if(extension){await extension.runtime.sync();extension.runtime.start();}}).catch(error=>log.warn('extension preload failed:',error.message));
   if(!internalGroupChat)server.listen(port,host,()=>log.info(`Native-session WeChat plugin listening on ${host}:${port}`));
   let closing;const dispose=()=>closing??=(async()=>{presetStopped=true;await groupChatRuntime?.dispose();thinkingFeedback.close();assistantControl.dispose();assistantTasks.close();disposeToolOrigins();bundledDispose?.();for(const dispose of memeBindings.values())dispose();for(const binding of dshBindings.values())binding.dispose();for(const binding of fileBindings.values())binding.dispose();
+    await personaEvolution?.close();
     for(const sid of fixedPrefixBindings.keys())disposeFixedPrefix(sid);
     for(const binding of singingBindings.values())binding.dispose();
     for(const binding of personaBindings.values())binding.dispose();

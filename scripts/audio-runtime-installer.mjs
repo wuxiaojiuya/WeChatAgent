@@ -6,9 +6,16 @@ import net from 'node:net';
 import {prepareAudioBootstrap,assertAudioProcessesStopped} from './audio-bootstrap.mjs';
 
 const fault=(message,status=400)=>Object.assign(Error(message),{status});
-const kinds={tts:'feiyu-tts',rvc:'feiyu-cover'};
+const kinds={tts:'feiyu-tts',rvc:'feiyu-cover',soulx:'soulx-singer'};
 const messages={AUDIO_DISK_SPACE_LOW:'可用磁盘空间不足，请至少保留 20 GB 后重试。',AUDIO_DOWNLOAD_HASH_MISMATCH:'下载文件校验失败，请重试。',AUDIO_REPAIR_REQUIRED:'现有环境未通过检查，请点击一键修复。',AUDIO_SERVICES_RUNNING:'请先停止助手及本地音频服务，再安装或修复。',AUDIO_SUBPROCESS_FAILED:'官方源码、模型下载或推理验证失败，请查看本机安装日志。',AUDIO_MODEL_HASH_MISMATCH:'模型未通过官方摘要校验，请重试修复。'};
 const listening=port=>new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port});const finish=value=>{s.destroy();resolve(value);};s.once('connect',()=>finish(true));s.once('error',()=>finish(false));s.setTimeout(500,()=>finish(false));});
+Object.assign(messages,{
+  AUDIO_DISK_SPACE_LOW:'可用空间不足：完整语音与翻唱环境请至少预留 35 GB。',
+  AUDIO_SOULX_SOURCE_INVALID:'SoulX 固定源码或参考资源校验失败，请修复翻唱环境。',
+  AUDIO_SOULX_MODEL_INVALID:'SoulX 演唱或预处理模型不完整，请修复翻唱环境。',
+  AUDIO_SOULX_RESOURCE_INVALID:'SoulX 词典资源不完整，请修复翻唱环境。',
+  AUDIO_DOWNLOAD_RANGE_INVALID:'下载源返回了错误的文件分段，请重试；已有下载进度会保留。',
+});
 
 export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPath,launch=spawn,platform=process.platform,arch=process.arch,portProbe=listening,bootstrap=prepareAudioBootstrap,processCheck=assertAudioProcessesStopped}={}){
   const folder=path.join(root,'state/audio-install'),lock=path.join(folder,'operation.lock'),stateFile=path.join(folder,'last-job.json');
@@ -20,7 +27,7 @@ export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPat
       const target=path.join(root,'state/maintenance/audio-capabilities',name);let installed=null;
       try{installed=JSON.parse(fs.readFileSync(path.join(target,'installed.json'),'utf8'));}catch{}
       const present=fs.existsSync(path.join(target,'venv/Scripts/python.exe'))&&fs.existsSync(path.join(target,'runtime.cpu.json'));
-      return {kind,name:kind==='tts'?'TTS 语音回复':'RVC 歌曲翻唱',present,verifiedAt:present?installed?.verifiedAt??null:null,version:installed?.version??null,label:present?installed?'已安装 · 可检查':'已有环境 · 待检查':'尚未安装'};
+      return {kind,name:{tts:'TTS 语音合成',rvc:'RVC 共享音色换声',soulx:'SoulX 演唱干声'}[kind],present,verifiedAt:present?installed?.verifiedAt??null:null,version:installed?.version??null,label:present?installed?'已安装 · 可检查':'已有环境 · 待检查':'尚未安装'};
     });
     return {supported:platform==='win32'&&arch==='x64',busy,job,environments,modelsFromOfficial:true};
   }
@@ -39,7 +46,7 @@ export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPat
     if(!busy)return;child=null;busy=false;
     if(/^AUDIO_[A-Z_]+$/.test(error?.message??''))job.code=error.message;
     job.state=code===0?'success':'failed';job.finishedAt=Date.now();
-    const downloadMessages={AUDIO_DOWNLOAD_ACCESS_DENIED:'资源下载站暂时拒绝访问或限制请求（'+(job.sourceHost??'官方来源')+'，HTTP '+(job.httpStatus??403)+'）。请稍后重试；已下载的模型和资源会保留。',AUDIO_DOWNLOAD_FAILED:'安装资源下载失败，请检查网络后重试；已有下载进度会保留。',AUDIO_DOWNLOAD_TOOL_FAILED:'下载工具未正常启动，请从托盘完整退出助手并重新打开；仍失败请升级修复版。',AUDIO_ENVIRONMENT_NOT_INSTALLED:'所选音频环境尚未安装，请先点击“一键安装 TTS / RVC”。'};
+    const downloadMessages={AUDIO_DOWNLOAD_ACCESS_DENIED:'资源下载站暂时拒绝访问或限制请求（'+(job.sourceHost??'官方来源')+'，HTTP '+(job.httpStatus??403)+'）。请稍后重试；已下载的模型和资源会保留。',AUDIO_DOWNLOAD_FAILED:'安装资源下载失败，请检查网络后重试；已有下载进度会保留。',AUDIO_DOWNLOAD_TOOL_FAILED:'下载工具未正常启动，请从托盘完整退出助手并重新打开；仍失败请升级修复版。',AUDIO_ENVIRONMENT_NOT_INSTALLED:'所选音频环境尚未安装，请先点击“一键安装语音 / 翻唱环境”。'};
     job.message=code===0?(job.action==='check'?'环境检查通过。':'音频环境及本地音频验证完成。'):messages[job.code]??downloadMessages[job.code]??'操作未完成，请查看 state/audio-install 中的本机日志后重试。';
     save();try{fs.unlinkSync(lock);}catch{}
   }
@@ -62,7 +69,7 @@ export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPat
   }
   async function start(body){
     if(closed)throw fault('音频安装服务已关闭。',503);
-    if(!body||Object.keys(body).some(k=>!['kind','action'].includes(k))||!['all','tts','rvc'].includes(body.kind)||!['install','repair','check'].includes(body.action))throw fault('请选择有效的音频环境和操作。');
+    if(!body||Object.keys(body).some(k=>!['kind','action'].includes(k))||!['all','voice','singing','tts','rvc','soulx'].includes(body.kind)||!['install','repair','check'].includes(body.action))throw fault('请选择有效的音频环境和操作。');
     if(platform!=='win32'||arch!=='x64')throw fault('一键安装目前支持 Windows x64 CPU。');
     if(busy)throw fault('已有音频环境操作正在执行，请等待完成。',409);
     fs.mkdirSync(folder,{recursive:true});
@@ -81,5 +88,10 @@ export function createAudioRuntimeInstaller({root,nodeExecutable=process.execPat
     busy=true;job={id:crypto.randomUUID(),kind:body.kind,action:body.action,state:'running',phase:'starting',message:'正在准备音频环境操作',startedAt:Date.now(),events:[]};save();
     void work(body);return status();
   }
-  return {status,start,isBusy:()=>busy,close(){closed=true;if(child)child.kill();}};
+  return {status,start,isBusy:()=>busy,close(){closed=true;if(child){
+    if(process.platform==='win32'&&Number.isSafeInteger(child.pid)){
+      const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});
+      killer.on('error',()=>child?.kill());
+    }else child.kill();
+  }}};
 }

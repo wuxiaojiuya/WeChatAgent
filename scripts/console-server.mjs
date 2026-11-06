@@ -34,6 +34,7 @@ import {applyChatSettings} from '../public/console/conversation-settings.mjs';
 import { runReaderSetup, readerSetupMessage } from './reader-setup.mjs';
 import { dshConfigurationMatches,sameProjectPath } from './dsh-configuration.mjs';
 import {refreshDsh} from './dsh-refresh.mjs';
+import {personaEvolutionStatus} from '../packages/dsh-social-bridge-plugin/persona-evolution.mjs';
 import { createProcessRecovery,startupConflictPorts } from './process-recovery.mjs';
 import { readerAccountId, cachedReaderAccount, applyReaderAccount,activeReaderAccount } from './reader-account-state.mjs';
 import {verifyWeChatAccount} from './wechat-account-check.mjs';
@@ -111,7 +112,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const audioInstaller=createAudioRuntimeInstaller({root,nodeExecutable,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
   const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles,speechRvc:speechRvc??createSpeechRvc({root,models:rvcModels})});
-  const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels});
+  const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings.singing,models:rvcModels,
+    planPerformance:async({signal,...body})=>(await plugin('/singing-performance',body,{signal})).performance});
   const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
   const voiceRequests=new Map(),musicDeliveries=new Map();
   const personaCategories=createPersonaCategories(root);
@@ -199,7 +201,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     }
     return data;
   }
-  async function plugin(route,body) {
+  async function plugin(route,body,{signal}={}) {
     const { config } = snapshot();
     const tokenFile = path.join(root, 'state', 'social-dsh-token.txt');
     if (!fs.existsSync(tokenFile)) throw fault('模型连接尚未准备，请先打开 DSH 并启用本项目插件。', 503);
@@ -207,8 +209,9 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     const health = await remote(`http://127.0.0.1:${config.ports.dshPlugin}/health`, token);
     if (health.project !== 'WeChatAgent' || !sameProjectPath(health.projectRoot,root)) throw fault('DSH 插件连接到其他项目，请启用当前项目插件。', 503);
     if(body===undefined)return remote(`http://127.0.0.1:${config.ports.dshPlugin}${route}`, token, 5000);
-    const response=await fetchImpl(`http://127.0.0.1:${config.ports.dshPlugin}${route}`,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(60000)});
+    const response=await fetchImpl(`http://127.0.0.1:${config.ports.dshPlugin}${route}`,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.any([AbortSignal.timeout(60000),...(signal?[signal]:[])])});
     const result=await response.json();
+    if(!response.ok&&route==='/singing-performance')throw fault('AI 演唱编排未完成，请确认 DSH 已启用新版项目插件，稍后重试。',503);
     if(!response.ok){const messages={ACCOUNT_SWITCH_REQUIRES_DSH_RESTART:'微信账号已切换，请重开 DSH 后重试。',session_busy:'此聊天正在回复，请等待完成后再修复。',HISTORY_REPAIR_SESSION_CHANGED:'当前会话已变化，请刷新后重试。',HISTORY_REPAIR_CHAT_NOT_ALLOWED:'聊天范围已变化，请刷新后重试。',HISTORY_REPAIR_CONFIRM_REQUIRED:'请先确认修复这个聊天的上下文。',HISTORY_REPAIR_UNAVAILABLE:'此会话不使用原生人格前缀，无需执行此项修复。',HISTORY_ACCOUNT_CHANGED:'微信账号已切换，请重开 DSH 后重试。',HISTORY_NATIVE_PREFIX_UNAVAILABLE:'DSH 提示词服务尚未就绪，请完整退出并重新打开 DSH。',SESSION_GROUP_SERVICE_UNAVAILABLE:'DSH 工作区服务尚未就绪，请从托盘完整退出并重开 DSH。',SESSION_GROUP_INVALID_NAME:'分组名称需要 1–60 个字符。',SESSION_GROUP_INVALID_PATH:'请选择一个已存在、可访问的完整目录。',SESSION_GROUP_CHANGED:'工作区列表已变化，请刷新会话页面后重试。',SESSION_GROUP_NOT_FOUND:'工作区已被移除，请刷新后重新选择。',SESSION_GROUP_DUPLICATE_NAME:'DSH 中已有同名工作区，请换一个名称。',SESSION_GROUP_NOT_EMPTY:'此工作区仍有未归档的 DSH 会话，请先移走它们。',SESSION_GROUP_SESSION_BUSY:'此聊天正在回复或维护，请稍后再移动。',SESSION_GROUP_SESSION_CHANGED:'当前会话已变化，请刷新后重新移动。',SESSION_GROUP_ACCOUNT_CHANGED:'微信账号已切换，请重开 DSH 后重试。',SESSION_GROUP_CHAT_NOT_ALLOWED:'请选择聊天范围中已保存的聊天。',SESSION_GROUP_CONFIRM_REQUIRED:'请确认跨目录移动时保留历史的方式。',SESSION_GROUP_SOURCE_UNAVAILABLE:'原会话的工作目录无法访问，请恢复该目录后再移动。'};throw fault(messages[result.error]??(route==='/repair-context'?(messages[result.detail]??'上下文修复未完成，原会话已保留。请检查 DSH 运行日志。'):route.startsWith('/plugin-actions/')||route.startsWith('/fish-notebook/')?'插件操作暂未完成，请检查插件授权并确认 DSH 已加载新版宿主。':'工作区操作未完成，原会话仍保留。请检查 DSH 运行日志后重试。'),[400,404,409].includes(response.status)?response.status:503);}
     return result;
   }
@@ -478,7 +481,11 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if(req.method==='GET'&&route==='/api/memory/summaries')return reply(200,await memoryView.summaries(url.searchParams));
       if (req.method === 'GET' && route === '/api/config') return reply(200, { ...snapshot(), ...optionalJson(preferenceFile) });
       if(req.method==='GET'&&route==='/api/chat-administrator')return reply(200,{administrator:await chatAdministrator(url.searchParams.get('key'),snapshot().config)});
-      if(req.method==='GET'&&route==='/api/persona-proposals')return reply(200,{proposals:personaApprovals.list()});
+      if(req.method==='GET'&&route==='/api/persona-proposals'){
+        const evolution=personaEvolutionStatus(root,activeReaderAccount(root).id),wechat=snapshot().config.wechat;
+        evolution.chats=evolution.chats.filter(row=>allowedConversation(wechat,row.conversationKey));
+        return reply(200,{proposals:personaApprovals.list(),evolution});
+      }
       if(req.method==='GET'&&route==='/api/persona-proposals/notifications')return reply(200,{notifications:personaApprovals.notifications()});
       if(req.method==='GET'&&route==='/api/audio-capabilities'){voiceTransport=await nativeVoice.check();return reply(200,audioCapabilities.snapshot());}
       const deliveryRoute=/^\/api\/audio-capabilities\/voice\/deliveries\/([a-f0-9]{64})$/.exec(route);
@@ -594,6 +601,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         return reply(202,await audioInstaller.start(body));
       }
       if(route==='/api/persona-proposals/propose')return reply(200,personaApprovals.propose(body));
+      if(route==='/api/persona-proposals/review-context')return reply(200,personaApprovals.reviewContext(body));
       if(route==='/api/persona-proposals/decide')return reply(200,personaApprovals.decide(body.message,body.accountScope));
       if(route==='/api/persona-proposals/ack')return reply(200,personaApprovals.acknowledge(body.id));
       const audioRoute=/^\/api\/audio-capabilities\/(voice|singing)$/.exec(route);
@@ -603,7 +611,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(Object.keys(body).some(k=>!['conversationKey','text','requestId','emotion'].includes(k))||typeof text!=='string'||!text.trim()||text.length>500||typeof requestId!=='string'||!/^[a-f0-9-]{36}$/.test(requestId))throw fault('语音请求格式无效。');
         const isAllowed=()=>{const value=audioCapabilities.snapshot().settings.voice;return value.enabled&&value.chats.includes(key)&&allowedConversation(snapshot().config.wechat,key);};
         if(!isAllowed())throw fault('当前聊天的语音回复能力未开启。',403);
-        const prior=nativeVoice.lookup(key,'voice',requestId);if(prior)return reply(200,prior);
+        const prior=nativeVoice.lookup(key,'voice',requestId);if(prior)return reply(200,await nativeVoice.settled(prior.id,key));
         const operation=key+':'+requestId;if(voiceRequests.has(operation))return reply(202,await voiceRequests.get(operation));
         if(voiceRequests.size>=4)throw fault('已有语音正在准备，请稍后再试。',429);
         const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort();};res.once('close',cancel);
@@ -612,15 +620,27 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
           const generated=await audioCapabilities.preview({revision:saved.revision,text,emotion},{signal:controller.signal});
           if(!isAllowed()||audioCapabilities.snapshot().revision!==saved.revision)throw fault('语音设置或聊天授权已变化，未发送。',409);
           const dir=path.join(root,'state/voice-output/generated');fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,hash(operation)+'.wav');fs.writeFileSync(file,Buffer.from(generated.audio,'base64'),{mode:0o600});
-          return nativeVoice.enqueue({key,kind:'voice',sourceId:requestId,file,context,signal:controller.signal});
+          const delivery=await nativeVoice.enqueue({key,kind:'voice',sourceId:requestId,file,context,signal:controller.signal});
+          return nativeVoice.settled(delivery.id,key);
         })();voiceRequests.set(operation,pending);
-        try{return reply(202,await pending);}finally{voiceRequests.delete(operation);res.removeListener('close',cancel);}
+        try{return reply(202,await pending);}catch(error){
+          if(error.message==='VOICE_PREVIOUS_DELIVERY_UNCONFIRMED')return reply(409,{error:'上一条语音还在等待发送确认，这次未开始合成，请稍后再试。',code:error.message});
+          throw error;
+        }finally{voiceRequests.delete(operation);res.removeListener('close',cancel);}
       }
       if(route==='/api/audio-capabilities/music/search'){
         const controller=new AbortController(),cancel=()=>controller.abort();res.once('close',cancel);
         try{return reply(200,await musicCapabilities.search(body,{signal:controller.signal}));}finally{res.removeListener('close',cancel);}
       }
       if(route==='/api/audio-capabilities/music/cache')return reply(200,await musicCapabilities.cache(body));
+      if(route==='/api/audio-capabilities/music/video-reference'){
+        const key=body.conversationKey;
+        const isAllowed=()=>{const value=audioCapabilities.snapshot().settings.singing;return typeof key==='string'&&value.enabled&&value.chats.includes(key)&&allowedConversation(snapshot().config.wechat,key);};
+        if(!isAllowed())throw fault('当前聊天的唱歌能力未开启。',403);
+        const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort();};res.once('close',cancel);
+        try{return reply(200,await musicCapabilities.prepareVideoReference(body,{signal:controller.signal,isAllowed}));}
+        finally{res.removeListener('close',cancel);}
+      }
       if(route==='/api/audio-capabilities/music/request'||route==='/api/audio-capabilities/music/video-request'){
         const {conversationKey,...request}=body;
         const isAllowed=()=>{if(conversationKey===undefined)return true;const value=audioCapabilities.snapshot().settings.singing;
@@ -630,7 +650,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort();};res.once('close',cancel);
         try{
           const context=conversationKey===undefined?null:await nativeVoice.capture(conversationKey,'singing',controller.signal);
-          const job=await (route.endsWith('/video-request')?musicCapabilities.requestVideo({...request,conversationKey},{signal:controller.signal,isAllowed}):musicCapabilities.requestSong(request,{signal:controller.signal,isAllowed}));
+          const job=await (route.endsWith('/video-request')?musicCapabilities.requestVideo({...request,conversationKey},{signal:controller.signal,isAllowed}):musicCapabilities.requestSong({...request,conversationKey},{signal:controller.signal,isAllowed}));
           if(context&&job.id){
             while(musicDeliveries.size>=30)musicDeliveries.delete(musicDeliveries.keys().next().value);
             const entry={key:conversationKey};musicDeliveries.set(job.id,entry);

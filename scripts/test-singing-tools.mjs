@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {bindSingingTools,SINGING_POLICY} from '../packages/dsh-social-bridge-plugin/singing-tools.mjs';
+import {bindSingingTools,SINGING_POLICY,voiceReplyOutcome,singingReplyOutcome} from '../packages/dsh-social-bridge-plugin/singing-tools.mjs';
 import {consoleClient,consolePort} from '../packages/dsh-social-bridge-plugin/console-client.mjs';
 
 const key='wechat:private:123';
+const plan={version:'score-performance-v1',emotion:'warm',intention:'结合歌词从容起句，后半句稍加强，再自然收尾。',phrases:[{start:0,end:20,articulation:'flowing',timingMs:10,tail:'hold',gainDb:.5,contour:'build'}]};
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'singing-tools-')),tools=new Map();
   fs.mkdirSync(path.join(root,'config'),{recursive:true});fs.mkdirSync(path.join(root,'state/voice-output'),{recursive:true});
@@ -55,20 +56,33 @@ test('video requests use only current-turn references, reuse submissions and sha
   f=fixture(t,{fetchImpl:async(url,options)=>{
     if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
     calls.push({url,body:options.body&&JSON.parse(options.body)});
+    if(url.endsWith('/video-reference'))return Response.json({referenceId:'ref-fixture',videoId,startSeconds:4,seconds:20,analysis:{phrases:[{start:0,end:20}]}});
     return Response.json({id:'11111111-1111-1111-1111-111111111111',state:'running'});
   }});
   const tool=f.tools.get('wechat_sing_video');
   assert(!f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
   f.setTurn({videos:[{id:videoId}],networkOptOut:true});
   assert(f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
-  assert.match(f.binding.instructions(),/直接使用对应视频音轨/);
+  assert.match(f.binding.instructions(),/先理解.*wechat_analyze_singing/);
   assert.equal((await tool.execute({videoId:'a'.repeat(64)})).isError,true);assert.equal(calls.length,0);
-  const result=JSON.parse((await tool.execute({videoId,startSeconds:4})).content);
-  await tool.execute({videoId,startSeconds:4});assert.equal(calls.length,1);assert.equal(result.sent,false);
-  assert(calls[0].url.endsWith('/music/video-request'));
-  assert.deepEqual(calls[0].body,{videoId,startSeconds:4,conversationKey:key,localOnly:true});
+  await f.tools.get('wechat_analyze_singing').execute({videoId,startSeconds:4});
+  const result=JSON.parse((await tool.execute({videoId,referenceId:'ref-fixture',performance:plan})).content);
+  await tool.execute({videoId,referenceId:'ref-fixture',performance:plan});assert.equal(calls.length,2);assert.equal(result.sent,false);
+  assert(calls[1].url.endsWith('/music/video-request'));
+  assert.deepEqual(calls[1].body,{videoId,referenceId:'ref-fixture',performance:plan,startSeconds:4,conversationKey:key,localOnly:true});
   f.setTurn();assert(!f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
   assert.equal(JSON.parse((await tool.execute({videoId})).content).state,'failed');
+});
+
+test('the model cannot skip reference analysis or submit overlapping expressive phrases',async t=>{
+ const videoId='c'.repeat(64);let calls=0;
+ const f=fixture(t,{fetchImpl:async url=>{if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});calls++;return Response.json({referenceId:'ref',videoId,startSeconds:0,seconds:20,analysis:{phrases:[{start:0,end:20}]}});}});
+ const turn=f.setTurn({videos:[{id:videoId}]}),sing=f.tools.get('wechat_sing_video');
+ assert((await sing.execute({videoId,referenceId:'forged',performance:plan})).isError);assert.equal(calls,0);
+ await f.tools.get('wechat_analyze_singing').execute({videoId});
+ const invalid={...plan,phrases:[...plan.phrases,{...plan.phrases[0],start:10}]};
+ assert((await sing.execute({videoId,referenceId:'ref',performance:invalid})).isError);assert.equal(calls,1);
+ assert.equal(turn.singingOutcome.sent,false);
 });
 
 test('voice-only scope exposes AI voice tools, preserves one request per turn and reports real delivery status',async t=>{
@@ -80,9 +94,9 @@ test('voice-only scope exposes AI voice tools, preserves one request per turn an
   }});
   fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',endpoint:'http://127.0.0.1:9880',enabled:true,chats:[key],mode:'ai-choice'},singing:{enabled:false}}));
   assert.deepEqual([...f.ctx[SINGING_POLICY].names()],['wechat_voice_reply','wechat_voice_status']);assert.match(f.binding.instructions(),/自然决定/);
-  const send=f.tools.get('wechat_voice_reply');
+  let starts=0;f.setTurn({onVoiceStart:()=>starts++});const send=f.tools.get('wechat_voice_reply');
   assert.equal(JSON.parse((await send.execute({text:'你好'})).content).sent,false);
-  await send.execute({text:'你好'});assert.equal(calls.length,1);assert.equal(calls[0].body.conversationKey,key);assert.match(calls[0].body.requestId,/^[a-f0-9-]{36}$/);
+  await send.execute({text:'你好'});assert.equal(calls.length,1);assert.equal(starts,1);assert.equal(calls[0].body.conversationKey,key);assert.match(calls[0].body.requestId,/^[a-f0-9-]{36}$/);
   f.setTurn();const status=JSON.parse((await f.tools.get('wechat_voice_status').execute({})).content);assert.equal(status.sent,true);
   assert.match(calls[1].url,/conversationKey=wechat%3Aprivate%3A123/);
 });
@@ -109,5 +123,45 @@ test('voice and shared console clients discover the live project port again afte
 test('voice connection errors name the failed local stage instead of reporting a singing failure',async t=>{
   const f=fixture(t,{fetchImpl:async()=>{throw Error('ECONNREFUSED');}});
   fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
-  const result=await f.tools.get('wechat_voice_reply').execute({text:'测试'});assert(result.isError);assert.match(result.content,/语音控制台连接失败/);assert(!result.content.includes('唱歌'));
+  const turn=f.setTurn(),result=await f.tools.get('wechat_voice_reply').execute({text:'测试'});assert(result.isError);assert.match(result.content,/语音控制台连接失败/);assert(!result.content.includes('唱歌'));
+  assert.equal(turn.voiceOutcome.sent,false);assert.equal(turn.voiceOutcome.state,'failed');
+  assert.match(voiceReplyOutcome('RESPOND: 语音发了',turn),/没发出去/);
+});
+
+test('voice receipts override false success claims without carrying failure into an unrelated turn',async t=>{
+  let f,outcome={state:'unconfirmed',sent:false};
+  f=fixture(t,{fetchImpl:async url=>Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root:f.root,token:'fixture-token'}:outcome)});
+  fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
+  const tool=f.tools.get('wechat_voice_reply'),claim='RESPOND: 语音在发了，自己听';
+  for(const state of ['queued','unconfirmed','failed','confirmed']){
+    outcome={state,sent:state==='confirmed'};const turn=f.setTurn();await tool.execute({text:'你好'});
+    const text=voiceReplyOutcome(claim,turn);if(state==='confirmed')assert.equal(text,claim);else{assert.notEqual(text,claim);assert.match(text,/没发出去|还没确认|没有确认发出/);}
+  }
+  assert.equal(voiceReplyOutcome('RESPOND: 普通文字',f.setTurn()),'RESPOND: 普通文字');
+});
+
+test('a disconnected voice submission remains uncertain rather than being reported as definitely unsent',async t=>{
+ let f;f=fixture(t,{fetchImpl:async url=>{if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});throw Error('socket lost');}});
+ fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
+ const turn=f.setTurn(),result=await f.tools.get('wechat_voice_reply').execute({text:'你好'});
+ assert(result.isError);assert.equal(JSON.parse(result.content).state,'unconfirmed');assert.match(voiceReplyOutcome('RESPOND: 发了',turn),/送达情况还没确认/);
+});
+
+test('failed singing status replaces invented progress while confirmed delivery and unrelated turns retain their text',async t=>{
+ let f,outcome={id:'job-fixture',state:'running',sent:false};
+ f=fixture(t,{fetchImpl:async url=>Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root:f.root,token:'fixture-token'}:outcome)});
+ await f.tools.get('wechat_sing_song').execute({title:'朋友的酒'});
+ const claim='RESPOND: 正在录，等几分钟出片';
+ for(const state of ['failed','running','success','confirmed']){
+   outcome={id:'job-fixture',state:state==='confirmed'?'success':state,sent:state==='confirmed'};
+   const turn=f.setTurn();await f.tools.get('wechat_singing_status').execute({});
+   assert.equal(turn.singingOutcome.state,outcome.state);
+   const text=singingReplyOutcome(claim,turn);
+   if(state==='failed'){assert.match(text,/生成失败/);assert(!text.includes('正在录'));}
+   if(state==='success'){assert.match(text,/已生成.*还没有确认送达/);assert.notEqual(text,claim);}
+   if(state==='running'||state==='confirmed')assert.equal(text,claim);
+ }
+ assert.equal(singingReplyOutcome('RESPOND: 普通文字',f.setTurn()),'RESPOND: 普通文字');
+ const other=fixture(t),turn=other.setTurn();await other.tools.get('wechat_singing_status').execute({});
+ assert.match(singingReplyOutcome(claim,turn),/没有已启动/);
 });

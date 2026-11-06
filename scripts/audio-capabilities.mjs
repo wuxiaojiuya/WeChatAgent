@@ -8,7 +8,7 @@ import {DEFAULT_VOICE,GENTLE_VOICE} from './voice-profiles.mjs';
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
 export const AUDIO_FEATURES = Object.freeze([
   {id:'native-voice-output', audioKind:'voice', name:'语音回复', description:'先合成带情绪的语音，再用所选 RVC 音色换声。语音与翻唱共用音色，由 AI 自然选择回复方式。'},
-  {id:'native-singing', audioKind:'singing', name:'唱歌', description:'对话点歌，支持 QQ 音乐、网易云、酷狗、微信视频及抖音片段。自动沿用语音回复中音色的 RVC 模型，保留旋律和伴奏。'},
+  {id:'native-singing', audioKind:'singing', name:'唱歌', description:'支持 QQ 音乐、网易云、酷狗点歌、微信视频及抖音片段。SoulX 演唱干声，再用语音回复中选择的 .pth 音色换声，混入原曲伴奏。'},
 ]);
 export const audioDefaults = () => ({
   voice:{enabled:false, provider:'feiyu', endpoint:'http://127.0.0.1:9880', style:'cute', voiceId:DEFAULT_VOICE, mode:'ai-choice', emotionMode:'auto', emotionStrength:'natural', chats:[], apiKey:''},

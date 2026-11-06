@@ -29,7 +29,7 @@ function fixture(t){
       state.posts++;
       const saved=JSON.parse(fs.readFileSync(body.path.replace(/\.silk$/,'.json'),'utf8'));assert.equal(saved.state,'dispatching');assert.ok(Array.isArray(saved.baseline));
       if(state.confirm)state.rows=[{localId:2,localType:34,isSend:state.integerIsSend?1:true,fullText:`<msg><voicemsg voicelength="1000"/></msg>`,createTime:Math.floor(Date.now()/1000),serverId:'8047442179716189588'}];
-      if(state.failReply)throw Error('socket lost');return Response.json({ret:0});
+      if(state.failReply)throw Error('socket lost');return Response.json({ret:state.rejectReply?-1:0});
     }};
   const service=createNativeVoiceDelivery(options);t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
   return {root,key,settings,state,config,options,service,send:async(sourceId='test',extra={})=>{const result=await service.enqueue({key,kind:'voice',file:'fixture.wav',sourceId,...extra});return service.settled(result.id,key);}};
@@ -61,6 +61,23 @@ test('timeout and restart never resubmit; late receipt can be reconciled',async 
   await recovered.enqueue({key:f.key,kind:'voice',sourceId:'test',file:'unused'});assert.equal(f.state.posts,1);
   f.state.rows=[{localId:8,localType:34,isSend:true,fullText:`<msg><voicemsg voicelength="1000"/></msg>`,createTime:Math.floor(Date.now()/1000),serverId:'999999999999999999'}];
   assert.equal((await recovered.refresh(result.id,f.key)).sent,true);assert.equal(f.state.posts,1);
+});
+
+test('recent ambiguous delivery is rejected before generation, while old ambiguity does not permanently block new requests',async t=>{
+  const f=fixture(t);f.state.confirm=false;f.state.failReply=true;
+  const prior=await f.send('old-cover');assert.equal(prior.state,'unconfirmed');
+  await assert.rejects(f.service.capture(f.key,'voice'),/VOICE_PREVIOUS_DELIVERY_UNCONFIRMED/);
+  assert.equal(f.state.posts,1);
+  f.service.close();const file=path.join(f.root,'state/voice-output/deliveries',prior.id+'.json'),record=JSON.parse(fs.readFileSync(file));
+  record.startedAt=Date.now()-120000;fs.writeFileSync(file,JSON.stringify(record));
+  const before=fs.readFileSync(file,'utf8'),recovered=createNativeVoiceDelivery(f.options);t.after(()=>recovered.close());
+  const context=await recovered.capture(f.key,'voice');assert.equal(context.account,f.state.own.accountDirectory);
+  f.state.confirm=true;f.state.failReply=false;
+  const next=await recovered.enqueue({key:f.key,kind:'voice',sourceId:'fresh-request',file:'fixture.wav',context});
+  assert.equal((await recovered.settled(next.id,f.key)).sent,true);assert.equal(f.state.posts,2);
+  assert.equal((await recovered.enqueue({key:f.key,kind:'voice',sourceId:'old-cover',file:'unused'})).state,'unconfirmed');
+  assert.equal(f.state.posts,2);assert.equal(fs.readFileSync(file,'utf8'),before);
+  assert.equal((await recovered.enqueue({key:f.key,kind:'voice',sourceId:'fresh-request',file:'unused'})).sent,true);assert.equal(f.state.posts,2);
 });
 
 test('supplier final upload acknowledgement confirms without a local SQL row only when all bound fields match',async t=>{
@@ -136,6 +153,7 @@ test('console voice endpoint generates, converts and confirms a scoped reply, wh
   assert.equal((await fetch(origin+'/api/audio-capabilities/voice/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).status,401);
   assert.equal((await post('/api/audio-capabilities/voice/request',{...body,conversationKey:'wechat:private:999'})).status,403);
   const response=await post('/api/audio-capabilities/voice/request',body),result=await response.json();assert.equal(response.status,202,JSON.stringify(result));assert.match(result.id,/^[a-f0-9]{64}$/);
+  assert.equal(result.state,'confirmed');assert.equal(result.sent,true,'the tool must receive the final delivery receipt in its initial response');
   let status;
   for(let i=0;i<80;i++){
     status=await fetch(origin+'/api/audio-capabilities/voice/deliveries/'+result.id+'?conversationKey='+encodeURIComponent(key),{headers:{'X-Console-Token':token}}).then(r=>r.json());
@@ -145,4 +163,8 @@ test('console voice endpoint generates, converts and confirms a scoped reply, wh
   assert.equal((await (await post('/api/audio-capabilities/voice/request',body)).json()).sent,true);assert.equal(f.state.posts,1);assert.equal(generated,1);assert.equal(converted,1);
   const saved=await fetch(origin+'/api/audio-capabilities',{headers:{'X-Console-Token':token}}).then(r=>r.json());
   const preview=await post('/api/audio-capabilities/voice/preview',{revision:saved.revision,text:'Preview'});assert.equal(preview.status,200);assert.equal((await preview.json()).sent,false);assert.equal(f.state.posts,1);assert.equal(converted,2);
+  f.state.confirm=false;f.state.rejectReply=true;
+  const failedBody={...body,requestId:crypto.randomUUID()},failed=await (await post('/api/audio-capabilities/voice/request',failedBody)).json();
+  assert.equal(failed.state,'failed');assert.equal(failed.sent,false);assert.equal(failed.code,'NATIVE_VOICE_REJECTED');
+  const count=generated;assert.equal((await (await post('/api/audio-capabilities/voice/request',failedBody)).json()).state,'failed');assert.equal(generated,count);assert.equal(f.state.posts,2);
 });

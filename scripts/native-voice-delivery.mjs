@@ -12,6 +12,9 @@ import {mediaFfmpeg} from './media-tools.mjs';
 const idPattern=/^[a-f0-9]{64}$/;
 const serverId=value=>typeof value==='string'&&/^[1-9]\d{0,19}$/.test(value);
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
+// Old ambiguous submissions are never retried. Only the interval in which
+// their late receipt could overlap a NEW operation needs to hold the lane.
+const AMBIGUOUS_VOICE_WINDOW_MS=90000;
 const fail=code=>{throw Error(code);};
 export function voiceHookOrigin(value){
   let url;try{url=new URL(value);}catch{fail('VOICE_HOOK_ENDPOINT_INVALID');}
@@ -41,6 +44,10 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
   const origin=()=>{const h=config().hook;if(h?.backend==='supplier-http'&&h.expectedVersion==='4.1.8.27')return voiceHookOrigin(h.baseUrl);if(h?.expectedVersion!=='4.1.10.27'||!h.voiceBaseUrl)fail('VOICE_HOOK_DISABLED');return voiceHookOrigin(h.voiceBaseUrl);};
   const binding=()=>hash(JSON.stringify([config().hook,token()]));
   const policy=kind=>hash(JSON.stringify([config().wechat,settings()[kind]]));
+  function assertNoRecentAmbiguous(key,account,exceptId){
+    const now=Date.now();
+    if([...records.values()].some(prior=>prior.id!==exceptId&&prior.key===key&&prior.account===account&&prior.state==='unconfirmed'&&prior.startedAt&&!prior.candidateId&&now-prior.startedAt<AMBIGUOUS_VOICE_WINDOW_MS))fail('VOICE_PREVIOUS_DELIVERY_UNCONFIRMED');
+  }
   function assertScope(key,kind){
     if(closed)fail('VOICE_SERVICE_CLOSED');
     if(!/^wechat:(private|group):[1-9]\d*$/.test(key)||!['voice','singing'].includes(kind)||!allowedConversation(config().wechat,key)||settings()[kind]?.enabled!==true||!settings()[kind]?.chats?.includes(key))fail('VOICE_SCOPE_DENIED');
@@ -113,7 +120,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
           const file=path.join(directory,r.id+'.silk');if(hash(fs.readFileSync(file))!==r.silkHash)fail('VOICE_SETTINGS_CHANGED');
           r.baseline=(await rowsFor(r)).map(row=>String(row.localId));
           signal.throwIfAborted();assertScope(r.key,r.kind);if(r.binding!==binding()||r.origin!==origin()||r.policy!==policy(r.kind))fail('VOICE_SETTINGS_CHANGED');
-          if([...records.values()].some(prior=>prior.id!==r.id&&prior.key===r.key&&prior.account===r.account&&prior.state==='unconfirmed'&&prior.startedAt&&!prior.candidateId))fail('VOICE_PREVIOUS_DELIVERY_UNCONFIRMED');
+          assertNoRecentAmbiguous(r.key,r.account,r.id);
           r.state='dispatching';r.startedAt=Date.now();persist(r); // Must precede the native call; never resubmit after a crash/timeout.
           try{
             const result=await api(r.origin,'/SendVoiceMsg',{wxidorgid:r.wxid,path:file,duration:r.durationMs},signal,r.account);
@@ -130,7 +137,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     });
     tasks.set(r.id,task);lane=task;void task.finally(()=>tasks.delete(r.id));return task;
   }
-  async function capture(key,kind,signal=new AbortController().signal){assertScope(key,kind);const own=await identity(signal),wxid=await targetFor(key);if(wxid===own.wxid)fail('VOICE_TARGET_UNRESOLVED');return {...own,target:wxid,binding:binding(),policy:policy(kind)};}
+  async function capture(key,kind,signal=new AbortController().signal){assertScope(key,kind);const own=await identity(signal),wxid=await targetFor(key);if(wxid===own.wxid)fail('VOICE_TARGET_UNRESOLVED');assertNoRecentAmbiguous(key,own.account);return {...own,target:wxid,binding:binding(),policy:policy(kind)};}
   async function enqueue({key,kind,sourceId,file,signal,context}){
     assertScope(key,kind);if(typeof sourceId!=='string'||!sourceId||sourceId.length>200)fail('VOICE_SETTINGS_CHANGED');
     const id=hash(JSON.stringify([key,kind,sourceId]));if(records.has(id))return publicRecord(records.get(id));

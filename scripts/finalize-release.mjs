@@ -35,9 +35,12 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
   for(const relative of ['state','config/wechatagent.json','config/plugins.json','config/extensions.json'])if(fs.existsSync(path.join(directory,relative)))throw Error('PACKAGED_PRIVATE_DATA_REJECTED');
   for(const relative of ['scripts/audio-runtime-installer.mjs','scripts/install-audio-runtime.py','scripts/audio-runtime-manifest.json','public/console/audio-runtime.js','docs/AUDIO_INSTALLER.md',
     'scripts/voice-profiles.mjs','scripts/voice-reference.py','scripts/direct-tts.mjs','scripts/direct-tts-worker.py','scripts/feiyu_voice_reference.py','public/console/voice-profiles.js',
-    'scripts/speech-rvc.mjs','scripts/speech-rvc-worker.py','scripts/music-rvc-worker.py',
-    'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','docs/VIDEO_SINGING.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
-  for(const relative of ['scripts/supplier_images.py','components/qq-bridge/src/core/image-context.js','components/qq-bridge/src/core/live-settings.js',
+    'scripts/speech-rvc.mjs','scripts/speech-rvc-worker.py','scripts/music-rvc-worker.py','scripts/feiyu_speech_pool.py','scripts/feiyu_tts_cache.py',
+    'scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md',
+    'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','scripts/music-reference.py','scripts/music-performance.py','scripts/music-soulx-worker.py',
+    'packages/dsh-social-bridge-plugin/singing-performance.mjs','docs/SINGING_PERFORMANCE.md','docs/VIDEO_SINGING.md',
+    'packages/dsh-social-bridge-plugin/persona-evolution.mjs','docs/PERSONA_EVOLUTION.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
+  for(const relative of ['scripts/supplier_images.py','scripts/supplier_videos.py','components/qq-bridge/src/core/image-context.js','components/qq-bridge/src/core/live-settings.js',
     'scripts/dsh-refresh.mjs','packages/dsh-social-bridge-plugin/console-client.mjs','docs/IMAGE_INPUT.md','docs/LIVE_SETTINGS.md'])if(!deployment.sourceHashes[relative])throw Error('IMAGE_OR_LIVE_SETTINGS_FEATURE_NOT_PACKAGED: '+relative);
 }
 const desktop=JSON.parse(fs.readFileSync(path.join(output,'win-unpacked/resources/app/package.json')));
@@ -54,7 +57,7 @@ const identity=spawnSync('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true,e
 if(identity.status!==0)throw Error('SOURCE_REVISION_UNAVAILABLE');
 Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,installedChecks,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),
-  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC pipeline checks were performed separately with verified cached official models; full first-time model downloads require access to official sources.','Video singing was tested using synthetic media; the supplied live Douyin link requires fresh cookies and has not completed real download/cover validation.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
+  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC/SoulX pipeline checks are separate from packaging; full first-time model downloads require access to official sources.','Packaging checks do not generate singing audio or verify arbitrary third-party links. Real local song/video singing preview evidence is described in the release notes; platform downloads may require valid cookies.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
 fs.writeFileSync(path.join(output,'VERIFICATION.json'),JSON.stringify(manifest,null,2)+'\n');
 const sums=assets.map(name=>sha(path.join(output,name))+'  '+name).join('\n')+'\n';
 fs.writeFileSync(path.join(output,'SHA256SUMS.txt'),sums);

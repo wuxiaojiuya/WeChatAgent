@@ -1,8 +1,4 @@
-"""Original recording -> CPU Demucs -> pinned Feiyu RVC -> FFmpeg remix.
-
-This is a local experiment, not an endpoint provided by the upstream plugin.
-No TTS or cloud API is used. Every run needs a new output directory.
-"""
+"""Source accompaniment + SoulX dry singing -> selected RVC voice -> remix."""
 import argparse
 import hashlib
 import json
@@ -12,10 +8,14 @@ import subprocess
 import sys
 import time
 import importlib.util
+import shutil
 
 quality_module = importlib.util.spec_from_file_location("music_quality", Path(__file__).with_name("music-quality.py"))
 quality = importlib.util.module_from_spec(quality_module)
 quality_module.loader.exec_module(quality)
+performance_module = importlib.util.spec_from_file_location('music_performance', Path(__file__).with_name('music-performance.py'))
+performance_tools = importlib.util.module_from_spec(performance_module)
+performance_module.loader.exec_module(performance_tools)
 
 ROOT = Path(__file__).resolve().parents[1] / "state/maintenance/audio-capabilities/feiyu-cover"
 SERVER = ROOT / "source/astrbot_plugin_feiyu_voice-76774b499f7d306454562d56348dd63399b6d7e8/server"
@@ -36,6 +36,21 @@ def sha(path):
 
 def run(args):
     subprocess.run([str(a) for a in args], check=True)
+
+
+def selected_model_hash(directory):
+    directory = Path(directory)
+    if (directory / 'model.json').is_file():
+        record = json.loads((directory / 'model.json').read_text('utf-8'))
+        file, expected = directory / 'model.pth', record['modelSha256']
+    else:
+        record = json.loads((directory / 'manifest.json').read_text('utf-8'))['model']
+        file, expected = directory / record['pth'], record['pth_sha256']
+        if not file.resolve().is_relative_to(directory.resolve()):
+            raise ValueError('Invalid selected model path')
+    if sha(file) != expected:
+        raise ValueError('Selected voice model checksum mismatch')
+    return expected
 
 
 def separate(source, out, enhanced=True):
@@ -92,16 +107,38 @@ def main():
     p.add_argument("--pitch", default=0, type=int)
     p.add_argument("--vocals-only", action="store_true")
     p.add_argument("--quality", choices=["standard", "enhanced"], default="enhanced")
+    p.add_argument("--soulx-runtime", type=Path, default=ROOT.parent / "soulx-singer")
+    p.add_argument('--performance', type=Path)
+    p.add_argument('--reference', type=Path)
     a = p.parse_args()
     if a.start < 0 or not 0 < a.seconds <= 30:
         p.error("Use a nonnegative start and 0 < seconds <= 30")
     source = a.input.resolve(strict=True)
+    a.model = a.model.resolve(strict=True)
+    expected_hash = selected_model_hash(a.model)
     out = a.output.resolve()
-    out.mkdir(parents=True, exist_ok=False)
+    # Video requests put their verified input in the job folder before launch.
+    out.mkdir(parents=True, exist_ok=True)
+    if any((out / name).exists() for name in ["source-clip.wav", "result.json", "soulx", "rvc"]):
+        raise ValueError("Output directory contains a previous audio job")
     started = time.monotonic()
     clip = out / "source-clip.wav"
-    run([FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", a.start, "-i", source,
-         "-t", a.seconds, "-vn", "-ac", "2", "-ar", "44100", "-c:a", "pcm_f32le", clip])
+    plan = performance_tools.validate_plan(json.loads(a.performance.read_text('utf-8')), a.seconds) if a.performance else None
+    reference = None
+    if a.reference:
+        if not plan or a.start != 0: raise ValueError('Reference requires a performance plan and zero start')
+        ref = a.reference.resolve(strict=True)
+        reference = json.loads((ref/'reference.json').read_text('utf-8'))
+        if reference.get('schema') != 'singing-reference-v1' or reference.get('source_sha256') != sha(source) or abs(reference['seconds']-a.seconds) > .05:
+            raise ValueError('Reference source or timing mismatch')
+        for name in ['source-clip.wav', 'original-vocals.wav', 'accompaniment.wav']:
+            file = ref/name
+            if not file.resolve().is_relative_to(ref) or sha(file) != reference['files'].get(name):
+                raise ValueError('Reference stem checksum mismatch')
+            shutil.copyfile(file, out/name)
+    else:
+        run([FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", a.start, "-i", source,
+             "-t", a.seconds, "-vn", "-ac", "2", "-ar", "44100", "-c:a", "pcm_f32le", clip])
     import numpy as np
     import soundfile as sf
     info = sf.info(clip)
@@ -109,14 +146,31 @@ def main():
         raise ValueError("Source is too short for the requested excerpt")
     print("Separating vocals and accompaniment on CPU", flush=True)
     enhanced = a.quality == "enhanced"
-    separation = separate(clip, out, enhanced)
+    separation = reference['separation'] if reference else separate(clip, out, enhanced)
     (out / "separation.json").write_text(json.dumps(separation, indent=2), encoding="utf-8")
     if a.separate_only:
         print(out / "original-vocals.wav", flush=True)
         return
     os.environ["PATH"] = os.pathsep.join([str(ROOT / "git/cmd"), str(ROOT / "tools/mingit/cmd"), str(FFMPEG.parent), os.environ.get("PATH", "")])
     os.environ["PYTHONIOENCODING"] = "utf-8"
-    rvc_input = out / "original-vocals.wav"
+    soulx_runtime = a.soulx_runtime.resolve(strict=True)
+    print(json.dumps({"stage": "soulx_preprocess"}), flush=True)
+    prepared_score = reference.get('score') if reference else None
+    if prepared_score:
+        metadata = ref/'soulx/preprocess/metadata.json'
+        if prepared_score.get('vocal_sha256') != sha(out/'original-vocals.wav') or prepared_score.get('metadata_sha256') != sha(metadata):
+            raise ValueError('Prepared score checksum mismatch')
+        (out/'soulx/preprocess').mkdir(parents=True)
+        shutil.copyfile(metadata, out/'soulx/preprocess/metadata.json')
+    run([soulx_runtime / "venv/Scripts/python.exe", Path(__file__).with_name("music-soulx-worker.py"),
+         "--runtime", soulx_runtime, "--input", out / "original-vocals.wav",
+         "--output", out / "soulx", "--seconds", a.seconds,
+         *(['--phase', 'sing'] if prepared_score else []),
+         *(['--performance', a.performance.resolve()] if plan else [])])
+    singer = json.loads((out / "soulx/result.json").read_text("utf-8"))
+    rvc_input = out / "soulx/soulx-vocals.wav"
+    if singer.get("status") != "success" or singer.get("actual_inference") is not True or singer.get("output_sha256") != sha(rvc_input) or abs(singer["seconds"]-a.seconds) > .05:
+        raise ValueError("SoulX did not generate a verified dry vocal")
     reference, reference_rate = sf.read(rvc_input, always_2d=True)
     if enhanced:
         rvc_input = out / "conditioned-vocals.wav"
@@ -125,6 +179,26 @@ def main():
     run([sys.executable, Path(__file__).with_name("music-rvc-worker.py"),
          "--model", a.model.resolve(), "--pitch", a.pitch, "--profile", ROOT / "runtime.cpu.json",
          "--input", rvc_input, "--output-dir", out / "rvc", "--quality", a.quality])
+    rvc_receipt = json.loads((out / "rvc/cover_result.json").read_text("utf-8"))
+    if rvc_receipt.get("status") != "success" or rvc_receipt.get("model_sha256") != expected_hash or not rvc_receipt.get("actual_synth_calls"):
+        raise ValueError("Selected RVC model inference was not verified")
+    finish_cover(a, out, source, expected_hash, separation, singer, started)
+
+
+def finish_cover(a, out, source, expected_hash, separation, singer, started):
+    """Finish verified inference separately so tail/mix repairs need no resynthesis."""
+    import numpy as np
+    import soundfile as sf
+    if (out/'result.json').exists():
+        raise ValueError('Output directory contains a previous audio job')
+    rvc_receipt = json.loads((out/'rvc/cover_result.json').read_text('utf-8'))
+    if rvc_receipt.get('status') != 'success' or rvc_receipt.get('model_sha256') != expected_hash or not rvc_receipt.get('actual_synth_calls'):
+        raise ValueError('Selected RVC model inference was not verified')
+    if singer.get('actual_inference') is not True or singer.get('input_sha256') != sha(out/'original-vocals.wav') or singer.get('output_sha256') != sha(out/'soulx/soulx-vocals.wav'):
+        raise ValueError('SoulX inference checksum mismatch')
+    reference, reference_rate = sf.read(out/'soulx/soulx-vocals.wav', always_2d=True)
+    plan = performance_tools.validate_plan(json.loads(a.performance.read_text('utf-8')), a.seconds) if a.performance else None
+    enhanced = a.quality == 'enhanced'
     converted, rate = sf.read(out / "rvc/rvc_native.wav")
     vocal_report = None
     mix_vocal = out / "rvc/rvc_native.wav"
@@ -132,11 +206,17 @@ def main():
         converted, vocal_report = quality.finish_vocals(converted, rate, reference, reference_rate)
         mix_vocal = out / "cleaned-vocals.wav"
         sf.write(mix_vocal, converted, rate, subtype="FLOAT")
+    dynamics = None
+    if plan:
+        converted, dynamics = performance_tools.apply_dynamics(converted, rate, plan, a.seconds)
+        mix_vocal = out/'arranged-vocals.wav'
+        sf.write(mix_vocal, converted, rate, subtype='FLOAT')
     rms = float(np.sqrt(np.mean(converted.astype("float64") ** 2)))
     if rms < 1e-7:
         raise ValueError("Converted vocal is silent")
     gain = float(np.clip(separation["vocal_rms"] / rms, 0.25, 2.0 if enhanced else 4.0))
     result = out / f"feiyu-cover-{a.seconds:g}s.wav"
+    print(json.dumps({"stage": "mixing"}), flush=True)
     graph = (f"[0:a]aresample=44100,volume={gain}[voice];"
              "[voice][1:a]amix=inputs=2:duration=longest:normalize=0,"
              f"atrim=duration={a.seconds},afade=t=in:d=0.03,"
@@ -182,15 +262,22 @@ def main():
     duration = len(audio) / rate
     if abs(duration - a.seconds) > 0.05 or not np.isfinite(audio).all() or peak < 1e-7 or peak >= 1:
         raise ValueError("Final audio validation failed")
-    receipt = dict(status="success", route="separation -> Feiyu RVC -> remix",
+    receipt = dict(status="success", route="SoulX -> selected RVC -> accompaniment remix",
                    source=str(source), source_sha256=sha(source), start=a.start,
                    seconds=duration, separation=separation, rvc_receipt="rvc/cover_result.json",
+                   singer_receipt="soulx/result.json", model_sha256=expected_hash,
+                   original_vocals_mixed=False, accompaniment_source="Demucs source separation",
                    vocal_gain=gain, output_sha256=sha(result), peak=peak,
                    sample_rate=rate, channels=audio.shape[1],
                    wall_seconds=time.monotonic() - started, listening_approved=False)
     receipt["quality"] = dict(profile=a.quality, vocal_conditioning=vocal_report,
                            output=quality.audio_stats(audio),
                            mastering="two-pass -16 LUFS / -2.5 dBTP" if enhanced else "legacy single-pass")
+    if plan:
+        if singer.get('performance_sha256') != sha(a.performance) or singer.get('performance', {}).get('control') != 'score':
+            raise ValueError('SoulX performance plan was not executed')
+        receipt['performance_sha256'] = sha(a.performance)
+        receipt['performance'] = {**singer['performance'], 'dynamics': dynamics}
     (out / "result.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     print(result, flush=True)
 

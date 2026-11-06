@@ -1,5 +1,6 @@
 """Loopback-only Whisper ASR. Models are installed explicitly, never during a chat."""
 import base64
+import array
 import hashlib
 import hmac
 import io
@@ -23,6 +24,23 @@ def valid_wav(data):
     with wave.open(io.BytesIO(data)) as wav:
         if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != 16000 or not 0 < wav.getnframes() <= 16000*60:
             raise ValueError('VOICE_AUDIO_FORMAT_INVALID')
+
+
+def transcribe_wav(model, data):
+    options = dict(beam_size=3, condition_on_previous_text=False, temperature=0, language=None)
+    segments, info = model.transcribe(io.BytesIO(data), vad_filter=True, **options)
+    text = ''.join(segment.text for segment in segments if segment.no_speech_prob < .8).strip()[:4000]
+    if not text:
+        # Speech VAD can discard every word in music-backed singing. Retry the
+        # bounded WAV once, avoiding silence and rejecting weak/noisy decodes.
+        with wave.open(io.BytesIO(data)) as wav:
+            samples = array.array('h', wav.readframes(wav.getnframes()))
+        rms_squared = sum(sample*sample for sample in samples)/max(1, len(samples))
+        if rms_squared >= (32768*.003)**2:
+            segments, info = model.transcribe(io.BytesIO(data), vad_filter=False, **options)
+            text = ''.join(segment.text for segment in segments if segment.no_speech_prob < .8
+                and segment.avg_logprob >= -1 and segment.compression_ratio <= 2.4).strip()[:4000]
+    return text, info.language
 
 
 def run():
@@ -85,12 +103,10 @@ def run():
                 if len(files) != 1:
                     raise ValueError('VOICE_REQUEST_INVALID')
                 valid_wav(files[0])
-                segments, info = model.transcribe(io.BytesIO(files[0]), beam_size=3, vad_filter=True,
-                    condition_on_previous_text=False, temperature=0, language=None)
-                text = ''.join(segment.text for segment in segments if segment.no_speech_prob < .8).strip()[:4000]
+                text, language = transcribe_wav(model, files[0])
                 if not text:
                     return self.reply(422, {'error': 'VOICE_NO_SPEECH'})
-                return self.reply(200, {'text': text, 'language': info.language, 'local': True})
+                return self.reply(200, {'text': text, 'language': language, 'local': True})
             except Exception as error:
                 code = str(error) if isinstance(error, ValueError) and str(error).startswith('VOICE_') else 'VOICE_ASR_FAILED'
                 return self.reply(400, {'error': code})

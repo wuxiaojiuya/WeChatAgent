@@ -35,6 +35,21 @@ test('official HTTP rejection is distinct from connection failure and preserves 
   assert.equal(fs.readFileSync(target+'.partial','utf8'),'partial');assert(!fs.existsSync(target));
 });
 
+test('large official assets continue bounded ranges and resume without losing validated bytes',async t=>{
+  const root=fixture(t),bytes=Buffer.from('official model ranged payload'),target=path.join(root,'model.pt'),requests=[];
+  const sha=crypto.createHash('sha256').update(bytes).digest('hex');
+  fs.writeFileSync(target+'.partial',bytes.subarray(0,3));
+  await downloadAudioAsset('https://huggingface.co/official/model.pt',target,sha,bytes.length,{rangeBytes:7,fetchImpl:async(url,options)=>{
+    const match=/bytes=(\d+)-(\d+)/.exec(options.headers.Range),start=Number(match[1]),end=Number(match[2]);requests.push([start,end]);
+    assert.equal(new URL(url).searchParams.get('range_start'),String(start));
+    return new Response(bytes.subarray(start,end+1),{status:206,headers:{'Content-Range':`bytes ${start}-${end}/${bytes.length}`}});
+  }});
+  assert.equal(requests[0][0],3);assert(requests.length>1);assert.deepEqual(fs.readFileSync(target),bytes);
+  fs.unlinkSync(target);
+  await assert.rejects(downloadAudioAsset('https://huggingface.co/official/model.pt',target,sha,bytes.length,{rangeBytes:7,fetchImpl:async()=>new Response(bytes.subarray(0,7),{status:206,headers:{'Content-Range':`bytes 7-13/${bytes.length}`}})}),/RANGE_INVALID/);
+  assert(!fs.existsSync(target));
+});
+
 test('official download denial reports the source and HTTP status in the console job',async t=>{
   const root=fixture(t),c=worker();const service=createAudioRuntimeInstaller({...options(root),launch:()=>c});
   await service.start({kind:'tts',action:'install'});await waitUntil(()=>service.status().job.state==='running'&&fs.existsSync(path.join(root,'state/audio-install/operation.lock')));

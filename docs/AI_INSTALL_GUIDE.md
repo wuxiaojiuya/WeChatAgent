@@ -4,7 +4,7 @@
 
 当前源码已提供「设置 → 语音与翻唱环境」的一键安装、修复和检查。Windows x64 CPU 用户优先使用该入口，操作说明见 [音频环境安装](AUDIO_INSTALLER.md)。下文保留手动部署与排障方法，适用于旧版、下载失败或需要自行适配 GPU 的环境。
 
-本指南以 **Windows x64、原生 CPU 推理**为基线，覆盖肥鱼 TTS 和「人声分离 → RVC 换声 → 伴奏混音」。维护机已验证这条路线；本文不是已在所有全新 Windows 系统验证过的一键安装器。NVIDIA、AMD、Intel GPU 路线需要另外适配和实际验收，不能仅更换 PyTorch 下载地址就声称可用。
+本指南以 **Windows x64、原生 CPU 推理**为基线，覆盖肥鱼 TTS 和「SoulX 演唱干声 → 所选 .pth 换声 → 原曲伴奏混音」。维护机已验证这条路线；本文不是已在所有全新 Windows 系统验证过的一键安装器。NVIDIA、AMD、Intel GPU 路线需要另外适配和实际验收，不能仅更换 PyTorch 下载地址就声称可用。
 
 ## 直接交给 AI 的提示词
 
@@ -22,9 +22,9 @@ docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
 模型从原发布方下载，保留许可、校验文件并记录实际下载版本。
 已有安装先检查和复用，不覆盖我的账号配置、模型或 API Key。
 
-不要把 TTS、RVC、微信读取器的 Python 环境混装。
+不要把 TTS、RVC、SoulX、微信读取器的 Python 环境混装。优先使用设置页一键安装；SoulX 固定依赖、官方模型清单及验收见 docs/SOULX_SINGING.md。
 不要仅凭 pip 安装成功或 HTTP health 成功就报告完成。
-必须验证短句 TTS，以及一段本地音源的分离、RVC、伴奏混音，
+必须验证短句 TTS，以及一段本地音源的分离、SoulX 实际演唱、所选 RVC 换声和伴奏混音，
 报告音频位置、实际时长、推理设备与失败项。
 如果缺少音源，可先完成 TTS，再向我索取本地音频。
 本次安装不自动向微信联系人发送消息，也不自行启用新的聊天权限。
@@ -177,7 +177,7 @@ if ($LASTEXITCODE -ne 0) { throw 'TTS Torch installation failed' }
 }
 ```
 
-这里的 TTS 服务只负责说话。唱歌由本项目本地分离/RVC/混音入口完成，不要求另外安装 SoulX-Singer、制作 MIDI 或调用上游 `/v1/singing`。
+这里的 TTS 服务只负责说话。唱歌由本项目本地 SoulX/RVC/混音入口完成。设置页安装 SoulX 后，自动提取歌词与旋律，无需手工制作 MIDI，也不调用上游 `/v1/singing`。
 
 Windows 文本规范化还需安装 AI 准备可由 `wetext==0.0.4` 使用的本地资源，确认数字、中文短句能正常处理。`feiyu-tts/normalizer.json` 的格式为 `{"directory":"<本机 WeText 资源绝对路径>"}`。该目录的 `verified-files.json` 必须是资源相对文件名到 SHA256 的映射，覆盖实际使用的资源，并在确认下载来源后生成；集成入口 `scripts/feiyu-site/sitecustomize.py` 会按此校验。不要把其他电脑的 AppData 路径写进配置，也不要依赖聊天时临时下载资源。
 
@@ -187,6 +187,7 @@ Windows 文本规范化还需安装 AI 准备可由 `wetext==0.0.4` 使用的本
 | --- | --- |
 | TTS 服务 | `scripts/feiyu-service.py`，使用固定服务并生成本项目情绪覆盖层 |
 | 翻唱编排 | `scripts/music-cover.py` |
+| SoulX 预处理与演唱 | `scripts/music-soulx-worker.py`，独立 CPU 环境；固定文件清单 `scripts/soulx-assets.json` |
 | RVC 实际推理 | `scripts/music-rvc-worker.py`，含中文路径的 FAISS 字节读取适配 |
 | 模型上传与检查 | 能力页，以及 `scripts/rvc-inspect.py` |
 | 可选 ASR | `scripts/local-speech-service.py`，与 TTS 不是同一服务 |
@@ -271,3 +272,5 @@ PowerShell 5.1 发送包含中文的 JSON 时，应显式使用 UTF-8 字节，�
 | 视频下载失败 | 检查平台访问条件，或改发本地视频，不能用其他歌曲冒充该片段 |
 
 进一步阅读：[音频运行环境](AUDIO_RUNTIME.md)、[首次使用](QUICK_START.md)、[许可与来源](../LICENSES.md)。
+
+SoulX 翻唱的新链路、安装与模型来源详见 [SoulX 翻唱说明](SOULX_SINGING.md)。

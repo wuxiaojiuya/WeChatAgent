@@ -13,6 +13,10 @@
 | yt-dlp | [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)，固定 2026.10.26；解析抖音视频元数据。PyPI 源码按 Unlicense；可选依赖适用各自许可，源代码及包保留其许可证。项目不分发平台视频内容 |
 | 有权独立授权的本项目新增代码、桌面界面及已授权人格预设 | 依根目录许可的适用范围，不扩大到维护者无权授权的内容 |
 | 安装时获取的 SDK 和 Python 包 | 各自原许可与依赖声明；副本不包含 node_modules 或解释器环境 |
+| SoulX 演唱及预处理源码 | [Soul-AILab/SoulX-Singer](https://github.com/Soul-AILab/SoulX-Singer)，Apache-2.0；安装器从固定提交获取并保留 LICENSE，版本及摘要见 `scripts/audio-runtime-manifest.json`、`scripts/soulx-assets.json` |
+| SoulX 演唱与预处理模型 | 从 Soul-AILab 官方 Hugging Face 仓库按固定版本下载；不存入 Git 仓库或项目下载服务器，使用遵循各模型仓库声明 |
+
+独立预部署 CPU 依赖包包含 Python、Git 和第三方 Python 库，保留原许可文件与包元数据；不包含私有音色、歌曲、生成音频或模型权重。包内 `DEPENDENCIES.json` 记录实际依赖版本。
 
 来源记录见 [components.json](components.json)。原作者版权和完整许可文本保留，代码子集及修改范围单独标记。
 
