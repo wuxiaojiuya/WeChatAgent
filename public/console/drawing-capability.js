@@ -9,7 +9,8 @@ export function createDrawingCapabilityUI({api,modal,closeModal,escapeHtml:esc,s
     const input=(label,id,value,attrs='',help='')=>`<div class="field"><label for="${id}">${label}</label><input id="${id}" value="${esc(value)}" ${attrs}>${help?`<small>${help}</small>`:''}</div>`;
     const select=(label,id,value,options)=>`<div class="field"><label for="${id}">${label}</label><select id="${id}">${options.map(([id,name])=>`<option value="${id}" ${id===value?'selected':''}>${name}</option>`).join('')}</select></div>`;
     modal('GPT 绘画',`<form id="drawing-form" class="audio-capability-form"><div class="audio-scroll">
-      <div class="audio-intro"><span class="audio-feature-icon" aria-hidden="true">✦</span><div><strong>把想象画出来</strong><p>在聊天里说“帮我画一张雨夜的猫咪”，AI 会生成图片并发到当前聊天。</p></div></div>
+      <div class="audio-intro"><span class="audio-feature-icon" aria-hidden="true">✦</span><div><strong>把想象画出来</strong><p>在聊天里说“帮我画一张雨夜的猫咪”，DSH 中的 AI 会调用绘画插件生成图片，并由 WeChatAgent 发到当前聊天。</p></div></div>
+      <p class="subtle">在这里管理设置与密钥。接口检查和试画需要 DSH 能力插件已加载。</p>
       <label class="switch-row audio-enable"><div><strong>启用 GPT 绘画</strong><p>只在下方勾选的聊天中使用。保存即生效。</p></div><span class="switch-control"><input id="drawing-enabled" type="checkbox" role="switch" aria-label="启用 GPT 绘画" ${settings.enabled?'checked':''}><span class="switch-track"></span></span></label>
       <section class="audio-section"><h3>绘画服务</h3><div class="form-grid">
       ${input('API 基础地址','drawing-endpoint',settings.endpoint,'type="url" required maxlength="2048"','OpenAI 官方地址为 https://api.openai.com/v1，也可使用兼容 GPT Image 的服务。')}

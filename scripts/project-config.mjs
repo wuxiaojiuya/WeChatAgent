@@ -7,6 +7,8 @@ import { selectRoleText } from '../components/qq-bridge/src/role-card.js';
 import {personaError} from '../public/console/persona-files.mjs';
 import {upsertToolCatalogPatch} from '../packages/dsh-social-bridge-plugin/plugin-catalog.mjs';
 import {upsertAssistantPresetPatch} from '../packages/dsh-social-bridge-plugin/assistant-preset.mjs';
+import {upsertCapabilitiesPatch} from '../packages/dsh-capabilities-plugin/configuration.mjs';
+import {CAPABILITY_PLUGIN_FILES} from '../packages/dsh-capabilities-plugin/contract.mjs';
 import { migrateConnections } from './migrate-io-config.mjs';
 import { validateStickerSettings } from '../components/qq-bridge/src/core/sticker-policy.js';
 import { validateSearchSettings } from '../packages/dsh-social-bridge-plugin/search-policy.mjs';
@@ -165,11 +167,13 @@ export function prepare(root = projectRoot) {
   const patchFile = path.join(root, 'packages', 'dsh-social-bridge-plugin', 'cordis.patch.yml');
   if (fs.existsSync(patchFile)) {
     const existingPatch=fs.readFileSync(patchFile,'utf8');
-    const before=upsertAssistantPresetPatch(upsertToolCatalogPatch(existingPatch,root),root);
+    const hasCapabilities=fs.existsSync(path.join(root,'packages/dsh-capabilities-plugin/index.mjs'));
+    const before=upsertAssistantPresetPatch(upsertToolCatalogPatch(hasCapabilities?upsertCapabilitiesPatch(existingPatch,root):existingPatch,root),root);
     let after = before.replace(/^(        provider:).*/m, `$1 ${JSON.stringify(config.dsh.provider)}`).replace(/^(        model:).*/m, `$1 ${JSON.stringify(config.dsh.model)}`);
     const moduleDir=path.dirname(patchFile),sources=['persona-evolution.mjs','persona-generation.mjs','persona-proposal-tools.mjs','console-client.mjs','fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-notifications.mjs','assistant-feedback.mjs','assistant-tasks.mjs','singing-tools.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','plugin-catalog.mjs','work-modes.mjs','assistant-preset.mjs','local-policy.mjs','image-input.mjs','deadline.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','native-context.mjs','session-groups.mjs','conversation-policy.mjs','dsh-access.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','web-reader.mjs','web-reader-policy.mjs','web-reader-content.mjs','web-reader-fetch.mjs','web-reader-zxsj.mjs','skills/web-reader/skill.json','skills/web-reader/SKILL.md','skills/web-reader/references/quotes.md','skills/web-reader/references/video.md','model-search.mjs','dsh-search.mjs','search-provider.mjs','skills/search/skill.json','skills/search/SKILL.md','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','social-tool-restrict.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'].map(name=>path.join(moduleDir,name));
     sources.push(path.join(moduleDir,'singing-performance.mjs'));
     sources.push(path.join(moduleDir,'drawing-tools.mjs'));
+    if(hasCapabilities)for(const name of CAPABILITY_PLUGIN_FILES)sources.push(path.join(root,'packages/dsh-capabilities-plugin',name));
     for(const name of ['index.mjs','catalog.mjs','snapshots.mjs']){const file=path.join(root,'packages/extension-runtime',name);if(fs.existsSync(file))sources.push(file);}
     if(fs.existsSync(path.join(root,'packages/plugin-api')))for(const name of PLUGIN_HOST_FILES){const file=path.join(root,name);if(!fs.existsSync(file))throw new Error('插件宿主文件不完整，请更新 WeChatAgent：'+name);sources.push(file);}
     if(sources.every(file=>fs.existsSync(file))){

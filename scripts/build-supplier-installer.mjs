@@ -32,7 +32,7 @@ fs.cpSync(dependencies,path.join(project,'packages/dsh-social-bridge-plugin/node
 const bundledDependencies=path.join(project,'packages/dsh-social-bridge-plugin/node_modules');
 for(const entry of fs.readdirSync(bundledDependencies,{recursive:true}))if(fs.statSync(path.join(bundledDependencies,entry)).isFile())files.push('packages/dsh-social-bridge-plugin/node_modules/'+entry.replaceAll('\\','/'));
 const template=path.join(project,'packages/dsh-social-bridge-plugin/cordis.patch.yml');
-fs.writeFileSync(template,fs.readFileSync(template,'utf8').replace(/file:\/\/\/[^"'\r\n]*\/dsh-social-bridge-plugin\/([A-Za-z0-9_-]+\.mjs)(?:\?[^"'\r\n]*)?/g,'dsh-social-bridge-plugin/$1'));
+fs.writeFileSync(template,fs.readFileSync(template,'utf8').replace(/file:\/\/\/[^"'\r\n]*\/dsh-social-bridge-plugin\/([A-Za-z0-9_-]+\.mjs)(?:\?[^"'\r\n]*)?/g,'dsh-social-bridge-plugin/$1').replace(/file:\/\/\/[^"'\r\n]*\/dsh-capabilities-plugin\/index\.mjs(?:\?[^"'\r\n]*)?/g,'wechat-capabilities-plugin/index.mjs').replace(/,"config":\{"projectRoot":"[^"\r\n]*"\}(?=\})/g,''));
 await assertPluginHost(project,{compareRoot:root});
 const runtime=path.join(stage,'runtime');fs.mkdirSync(runtime,{recursive:true});copy(process.execPath,path.join(runtime,'node.exe'));
 if(!fs.existsSync(path.join(runtime,'python/python.exe')))throw Error('Run npm run installer:runtime first.');

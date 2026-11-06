@@ -6,6 +6,7 @@ import os from 'node:os';
 import {neteaseCookie,neteaseRequest,checkNeteaseLogin} from '../packages/music-source/netease.mjs';
 import {searchMusic,resolveMusic} from '../packages/music-source/providers.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
+import {createSingingExecutor} from '../packages/dsh-capabilities-plugin/singing.mjs';
 
 const cookie='MUSIC_U=fixture-login-secret; __csrf=fixture-csrf';
 const song={id:123,name:'测试歌曲',artists:[{name:'测试歌手'}],duration:120000};
@@ -41,7 +42,7 @@ test('NetEase resolves authenticated audio with a web request and preserves plat
 
 test('saved credentials apply dynamically to NetEase metadata, never to other providers, downloads or cache records',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'netease-source-'));let current={musicSource:'netease',neteaseCookie:cookie},requests=[];
-  const service=createMusicCapabilities({root,settings:()=>current,probeAudio:async()=>120,fetchImpl:async(url,options)=>{
+  const fetchImpl=async(url,options)=>{
     const address=new URL(url);requests.push({host:address.hostname,cookie:options.headers.Cookie});
     if(address.hostname==='music.163.com'){
       assert.equal(options.headers.Cookie,current.neteaseCookie||undefined);
@@ -49,7 +50,8 @@ test('saved credentials apply dynamically to NetEase metadata, never to other pr
     }
     assert.equal(options.headers.Cookie,undefined);
     return address.hostname==='c.y.qq.com'?Response.json({code:0,data:{song:{list:[]}}}):new Response('ID3fixture');
-  }});t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
+  };
+  const service=createMusicCapabilities({root,settings:()=>current,probeAudio:async()=>120,fetchImpl,execution:createSingingExecutor({root,fetchImpl})});t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
   const result=await service.search({query:'测试歌曲'});current={...current,neteaseCookie:'MUSIC_U=rotated-fixture'};
   await service.cache({songId:result.songs[0].id});assert.equal(requests[1].cookie,current.neteaseCookie);assert.equal(requests[2].cookie,undefined);
   for(const name of fs.readdirSync(path.join(root,'state/music-library')))assert(!fs.readFileSync(path.join(root,'state/music-library',name),'utf8').includes('fixture-login-secret'));

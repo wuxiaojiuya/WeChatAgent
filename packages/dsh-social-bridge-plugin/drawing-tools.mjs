@@ -17,8 +17,8 @@ export function drawingReplyOutcome(text,turn){
   const outcome=turn?.drawingOutcome;if(!outcome||outcome.sent===true)return text;
   const body=typeof text==='string'?text.replace(/^\s*RESPOND:\s*/,''):'';
   const claims=body.replace(/(?:还没|没有|没|尚未|无法|不能|未)(?:确认|确定)?(?:成功)?(?:发出|发送|送达|生成|画好|完成)(?:了)?/g,'');
-  const successClaim=/(?:已经|刚刚|已)(?:发|发送|发出|送达)|(?:图|图片|画)(?:发给你了|发你了|已发|发出)|(?:发送|送达)(?:成功|完成)|(?:发给你|发你|发过去|发出)(?:了|啦|咯)|你(?:看|收下)(?:这张|这幅)/.test(claims);
-  const generatedClaim=/(?:已经|刚刚|已)(?:画好|生成|完成)|(?:图|图片|画)(?:做好了|画好了)|画好了/.test(claims);
+  const successClaim=/(?:已经|刚刚|已)(?:发|发送|发出|送达)|(?:图|图片|画|照片|自拍|形象照)(?:发给你了|发你了|已发|发出)|(?:发送|送达)(?:成功|完成)|(?:发给你|发你|发过去|发出)(?:了|啦|咯)|你(?:看|收下)(?:这张|这幅)/.test(claims);
+  const generatedClaim=/(?:已经|刚刚|已)(?:画好|生成|完成)|(?:图|图片|画|照片|自拍|形象照)(?:做好了|画好了)|画好了/.test(claims);
   if(outcome.state==='failed'||['interrupted','cancelled'].includes(outcome.state)){
     if(!successClaim&&!generatedClaim&&/失败|没画成|还没|没生成|没有生成|没发出|没有发|出了问题|未能|无法|没能|取消|中断/.test(body))return text;
     return 'RESPOND: 这次图片没能生成或发送，'+(outcome.error??'绘画服务处理失败了，请稍后再试。');
@@ -49,7 +49,7 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
     })();return turn.drawingCapabilityPromise;
   }
   const definitions=[
-    {name:'wechat_draw_image',description:'仅在用户明确要求你画图、生成图片时使用。根据当前对话整理完整绘画要求；看图、理解图片、描述内容不等于要求画图，需求不清楚先问清。仅生成新图片，不读取本地路径或替用户更改设置。每轮最多提交一次生成，后台异步完成后向当前微信聊天发送图片；任务启动或生成成功均不等于送达。超时结果未知时不重复提交，用 wechat_drawing_status 查询。',parameters:{type:'object',properties:{prompt:{type:'string',minLength:1,maxLength:4000,description:'用户明确请求的完整绘画内容、构图与风格；不是路径、接口参数或接收者。'}},required:['prompt'],additionalProperties:false}},
+    {name:'wechat_draw_image',description:'用户明确要求画图、生成图片，或说“发张你的照片”“给我一张自拍”“让我看看你的样子”时使用。自拍、形象照应结合当前人格与已知外貌生成虚拟角色图片，不声称真实拍照；未指定外貌可合理设计，不必要求用户改说画图。根据当前对话整理完整绘画要求；看图、理解图片、描述内容不等于要求画图，其他需求不清楚先问清。仅生成新图片，不读取本地路径或替用户更改设置。每轮最多提交一次生成，后台异步完成后向当前微信聊天发送图片；必须实际调用工具，不能仅口头承诺已经发图。任务启动或生成成功均不等于送达。超时结果未知时不重复提交，用 wechat_drawing_status 查询。',parameters:{type:'object',properties:{prompt:{type:'string',minLength:1,maxLength:4000,description:'用户请求的完整画面、构图与风格；自拍或形象照结合当前人格和本会话已知外貌，不虚构现实拍摄。不是路径、接口参数或接收者。'}},required:['prompt'],additionalProperties:false}},
     {name:'wechat_drawing_status',description:'查询当前微信聊天的绘画任务及发送状态。可省略 jobId 查询最近任务。只查询，不启动生成；不要连续轮询，只有 sent:true 才表示图片微信发送已确认。',parameters:{type:'object',properties:{jobId:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'}},additionalProperties:false}},
   ].map(def=>({...def,output:{schema:{type:'object',properties:{content:{type:'string'},isError:{type:'boolean'}},required:['content','isError'],additionalProperties:false},render:(_args,value)=>[{type:'text',text:value.content}]},
     async execute(args,exec){
@@ -94,6 +94,9 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
       }
     }}));
   Object.defineProperty(agentCtx,DRAWING_POLICY,{configurable:true,value:{names:()=>new Set(active()?definitions.map(tool=>tool.name):[]),definitions:()=>active()?definitions:[],check:name=>active()&&definitions.some(tool=>tool.name===name)}});
-  const disposers=definitions.map(tool=>agentCtx.tools.register(tool));
-  return {refresh,instructions:()=>active()?'[GPT 绘画]\n用户明确要求画图或生成图片时，调用 wechat_draw_image。只看图、辨认、描述图片时不能擅自画图；需求模糊先问清。结合用户要求整理 prompt，不让用户提供内部接口、文件路径或接收者。每轮最多生成一次，后台异步生成并向当前聊天发送图片，先回复真实的已启动状态；后续追问使用 wechat_drawing_status，不连续轮询、不因响应超时再生成。只有 sent:true 才能说图片已发送，success 仅表示图片已生成；失败或发送未确认要自然说明，不编造成功、进度或图片细节。':'',dispose(){for(const dispose of disposers)dispose?.();delete agentCtx[DRAWING_POLICY];}};
+  // DSH resolves tools and snapshots their schemas before agent/pre-step.
+  // Await this turn's eligibility here so describe sees the same capability
+  // as the later instructions; both tools share refresh's per-turn promise.
+  const disposers=definitions.map(tool=>agentCtx.tools.register(tool,{when:()=>refresh()}));
+  return {refresh,instructions:()=>active()?'[GPT 绘画]\n用户明确要求画图或生成图片时，调用 wechat_draw_image。“发张你的照片给我看看”“给我一张自拍”“看看你的样子”也属于图片生成请求，结合当前人格与本会话已知外貌生成虚拟角色自拍或形象照；未指定外貌可合理设计，不必追问用户是否要画图，不冒称真实拍照。必须实际调用工具，不能仅口头承诺发图或在没有任务时说正在画。只看图、辨认、描述图片时不能擅自画图；其他需求模糊先问清。结合用户要求整理 prompt，不让用户提供内部接口、文件路径或接收者。每轮最多生成一次，后台异步生成并向当前聊天发送图片，先回复真实的已启动状态；后续追问使用 wechat_drawing_status，不连续轮询、不因响应超时再生成。只有 sent:true 才能说图片、照片或自拍已发送，success 仅表示图片已生成；失败或发送未确认要自然说明，不编造成功、进度或图片细节。':'',dispose(){for(const dispose of disposers)dispose?.();delete agentCtx[DRAWING_POLICY];}};
 }

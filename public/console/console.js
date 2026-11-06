@@ -179,7 +179,7 @@ function paintStatus() {
   $('#connection-label').setAttribute('aria-label',statusText+'，查看连接详情');
   $('#updated-label').textContent = '更新于 ' + new Date(s.updatedAt).toLocaleTimeString('zh-CN', { hour12: false });
   $('#pending-banner').hidden = !s.pendingApply && !s.dshRestartRequired;
-  $('#pending-message').textContent = s.activeJob?.action==='apply-settings' ? '正在自动应用设置，请稍候…' : '设置尚未完成应用，请点击“重新应用”查看处理结果。';
+  $('#pending-message').textContent = s.activeJob?.action==='apply-settings' ? '正在自动应用设置，请稍候…' : s.dshRestartRequired ? 'DSH 尚未加载当前插件和能力服务。请从托盘完整退出并重开 DSH，然后重新应用。' : '设置尚未完成应用，请点击“重新应用”查看处理结果。';
   $('#pending-banner button').disabled=!!s.activeJob;
   if (state.page !== 'overview') return;
   const runningJob = state.job?.state === 'running';

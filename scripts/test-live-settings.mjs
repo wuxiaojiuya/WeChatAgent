@@ -50,7 +50,8 @@ test('model changes automatically prepare and apply configuration without starti
 
 test('DSH reload authenticates the owning project, waits through busy turns and verifies the new instance',async t=>{
   const f=fixture(t);fs.writeFileSync(path.join(f.root,'state/social-dsh-token.txt'),'fixture-token');let attempts=0,reloaded=false;
-  const initial={ok:true,project:'WeChatAgent',projectRoot:f.root,provider:f.config.dsh.provider,model:'old-model',accountScope:'',instanceId:'old',configurationReload:'native-runtime-v1'};
+  fs.mkdirSync(path.join(f.root,'packages/dsh-social-bridge-plugin'),{recursive:true});fs.writeFileSync(path.join(f.root,'packages/dsh-social-bridge-plugin/cordis.patch.yml'),'wechatagent=aaaaaaaaaaaaaaaa');
+  const initial={ok:true,project:'WeChatAgent',projectRoot:f.root,provider:f.config.dsh.provider,model:'old-model',accountScope:'',pluginRevision:'aaaaaaaaaaaaaaaa',capabilityExecution:'dsh-generation-v1',instanceId:'old',configurationReload:'native-runtime-v1'};
   const fetchImpl=async(url,options)=>{assert.equal(options.headers.Authorization,'Bearer fixture-token');if(url.endsWith('/health'))return Response.json(reloaded?{...initial,instanceId:'new',model:f.config.dsh.model}:initial);attempts++;if(attempts===1)return Response.json({error:'CONFIGURATION_BUSY'},{status:409});reloaded=true;return Response.json({ok:true},{status:202});};
   assert.equal((await refreshDsh({...f,fetchImpl,delay:async()=>{}})).status,'reloaded');assert.equal(attempts,2);
   attempts=0;assert.equal((await refreshDsh({...f,fetchImpl,delay:async()=>{}})).status,'current');assert.equal(attempts,0);

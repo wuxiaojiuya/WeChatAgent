@@ -1,0 +1,3 @@
+- insert:
+    - id: wechat-capabilities-plugin
+      name: wechat-capabilities-plugin/index.mjs

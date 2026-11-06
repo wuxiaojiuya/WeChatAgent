@@ -5,11 +5,17 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
+import crypto from 'node:crypto';
 import deployment from '../apps/console-desktop/deployment.cjs';
+import {CAPABILITY_PLUGIN_FILES,CAPABILITY_EXECUTION_VERSION} from '../packages/dsh-capabilities-plugin/contract.mjs';
 
 const root=path.resolve(import.meta.dirname,'..');
 const resources=path.resolve(process.argv[2]??path.join(root,'release/installer/win-unpacked/resources'));
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'WeChatAgent installation '));
+const capabilityFiles=['scripts/dsh-capability-client.mjs',...CAPABILITY_PLUGIN_FILES.map(file=>'packages/dsh-capabilities-plugin/'+file)];
+const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py'];
+const updatedFiles=[...capabilityFiles,...deliveryFiles];
+const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 try {
   const manifest=JSON.parse(fs.readFileSync(path.join(resources,'project/deployment.json')));
   assert.equal(manifest.hookBackend,'supplier-http');
@@ -21,6 +27,12 @@ try {
   const featureFiles=['scripts/drawing-capability.mjs','scripts/native-image-delivery.mjs','packages/dsh-social-bridge-plugin/drawing-tools.mjs',
     'packages/dsh-social-bridge-plugin/persona-generation.mjs','public/console/drawing-capability.js','public/console/drawing-capability.css','docs/GPT_DRAWING.md'];
   for(const relative of featureFiles){assert(manifest.sourceHashes[relative]);assert(fs.existsSync(path.join(installed.root,relative)));}
+  for(const relative of updatedFiles){
+    assert(manifest.files.includes(relative),'Missing deployment file: '+relative);
+    assert.equal(manifest.sourceHashes[relative],sha(path.join(root,relative)),'Packaged source is outdated: '+relative);
+    assert.equal(sha(path.join(resources,'project',relative)),manifest.sourceHashes[relative],'Packaged feature hash mismatch: '+relative);
+    assert.equal(sha(path.join(installed.root,relative)),manifest.sourceHashes[relative],'Deployed feature hash mismatch: '+relative);
+  }
   // No system Node/Python on PATH: verify the exact setup-page action with the
   // deployed config and copied embedded runtime, not developer dependencies.
   const powershell=path.join(process.env.SystemRoot??'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
@@ -42,7 +54,13 @@ try {
   const distributionFile=path.join(installed.root,'config/distribution.json');
   const previous=JSON.parse(fs.readFileSync(distributionFile));
   fs.writeFileSync(distributionFile,JSON.stringify({...previous,version:'0.2.0',buildId:'previous-build-fixture'}));
+  // An upgrade must replace prior capability/transport code, while leaving the
+  // user's settings, credentials, custom voices and personas intact.
+  for(const relative of updatedFiles)fs.writeFileSync(path.join(installed.root,relative),'prior-version feature fixture\n');
   await deployment.bootstrapDeployment(resources,temporary);
+  for(const relative of updatedFiles)assert.equal(sha(path.join(installed.root,relative)),manifest.sourceHashes[relative],'Upgrade retained stale feature code: '+relative);
+  const upgradeState=JSON.parse(fs.readFileSync(path.join(installed.root,'state/console-state.json')));
+  assert.equal(upgradeState.pendingApply,true);assert.equal(upgradeState.dshRestartRequired,true);
   assert.deepEqual(JSON.parse(fs.readFileSync(configFile)).wechat.whitelist.private,['123']);
   for(const [relative,text]of fixtures)assert.equal(fs.readFileSync(path.join(installed.root,relative),'utf8'),text);
   const {createAudioCapabilities}=await import(pathToFileURL(path.join(installed.root,'scripts/audio-capabilities.mjs')).href);
@@ -50,6 +68,7 @@ try {
   try{const saved=audio.snapshot();assert.equal(saved.settings.singing.musicSource,'netease');assert.equal(saved.settings.singing.hasNeteaseCookie,true);assert.equal(saved.settings.singing.neteaseCookie,'');assert(!JSON.stringify(saved).includes('private-upgrade-fixture'));}finally{audio.close();}
   assert(fs.readFileSync(path.join(installed.root,'public/console/music-source.js'),'utf8').includes('music-netease-login'));
   console.log(JSON.stringify({ok:true,version:manifest.version,cleanInstalledRuntimeCheck:true,systemNodeOrPythonRequired:false,
+    capabilityHost:'dsh',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,capabilityFilesDeployed:true,upgradeReplacesCapabilityAndDeliveryFiles:true,upgradeRequiresDshReload:true,
     setupWechatLocation:true,upgradePreservesChatSettings:true,upgradePreservesPersona:true,upgradePreservesPrivateKey:true,
     upgradePreservesCustomModel:true,upgradePreservesMusicCredential:true,upgradePreservesDrawingCredential:true,upgradePreservesPersonaBackup:true,
     drawingAndPersonaFiles:true,neteaseLoginPage:true,servicesStarted:false}));

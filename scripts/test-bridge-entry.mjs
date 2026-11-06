@@ -57,7 +57,7 @@ if(process.argv[2]==='--bridge-entry-fixture'){
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
     const wechat={enabled:true,whitelist:{private:['123'],groups:['456']},wake_mode:'hybrid',wake_words:['助手'],replyLayout:{maxMessages:0},search:{enabled:false},stickers:{enabled:false},proactive:{enabled:false},context:{enabled:false}};
     const social={batch_ms:1,min_interval_ms:0,private_min_interval_ms:0,max_per_minute:100,max_per_ten_minutes:100};
-    const save=()=>fs.writeFileSync(configFile,JSON.stringify({version:1,wechat,social,persona:{default:'Fixture',chats:{}}}));
+    const save=()=>{fs.writeFileSync(configFile+'.tmp',JSON.stringify({version:1,wechat,social,persona:{default:'Fixture',chats:{}}}));fs.renameSync(configFile+'.tmp',configFile);};
     fs.mkdirSync(path.dirname(configFile),{recursive:true});save();
     fs.mkdirSync(path.join(root,'roles'));fs.writeFileSync(path.join(root,'roles/Fixture.md'),'Fixture persona');
     const bridgeConfig=path.join(root,'bridge.json');

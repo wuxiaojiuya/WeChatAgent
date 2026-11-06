@@ -1,12 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {spawn} from 'node:child_process';
 import {validateMusicQuery} from '../packages/music-source/kugou.mjs';
-import {searchMusic,resolveMusic,fetchMusicAudio} from '../packages/music-source/providers.mjs';
-import {checkNeteaseLogin} from '../packages/music-source/netease.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
-import {mediaFfmpeg,probeMedia} from './media-tools.mjs';
 import {activeReaderAccount} from './reader-account-state.mjs';
 import {validatePerformance} from '../packages/dsh-social-bridge-plugin/singing-performance.mjs';
 
@@ -19,28 +15,7 @@ const atomic = (file, data) => {
   try {fs.writeFileSync(temporary, JSON.stringify(data, null, 2), {flag: 'wx', mode: 0o600}); fs.renameSync(temporary, file);}
   finally {if (fs.existsSync(temporary)) fs.unlinkSync(temporary);}
 };
-function execute(executable, args, {signal, cwd, timeoutMs = 120000, onData = () => {}} = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {cwd, windowsHide: true, shell: false,
-      env: {...process.env, PYTHONIOENCODING: 'utf-8'}, stdio: ['ignore', 'pipe', 'pipe']});
-    let output = '', failed = false;
-    const stop = () => {failed = true;
-      if(process.platform==='win32'&&child.pid){const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});killer.on('error',()=>child.kill());}
-      else child.kill();};
-    const timer = setTimeout(stop, timeoutMs);
-    signal?.addEventListener('abort', stop, {once: true}); if (signal?.aborted) stop();
-    child.stdout.on('data', data => {output = (output + data.toString('utf8')).slice(-1048576); onData(data.toString('utf8'));});
-    child.stderr.on('data', data => onData(data.toString('utf8')));
-    child.once('error', error => {clearTimeout(timer); signal?.removeEventListener('abort', stop); reject(error);});
-    child.once('close', code => {
-      clearTimeout(timer); signal?.removeEventListener('abort', stop);
-      if (failed || code !== 0) reject(fault('本地音频处理失败或超时，请检查音频及翻唱环境。', 502));
-      else resolve(output);
-    });
-  });
-}
-
-export function createMusicCapabilities({root, fetchImpl = fetch, settings = () => ({musicSource: 'kugou'}), probeAudio, runCover, runReference, planPerformance, models, now = Date.now} = {}) {
+export function createMusicCapabilities({root, fetchImpl = fetch, settings = () => ({musicSource: 'kugou'}), execution, probeAudio, runCover, runReference, planPerformance, models, now = Date.now} = {}) {
   const directory = path.join(root, 'state', 'music-library');
   const runtime = path.join(root, 'state', 'maintenance', 'audio-capabilities', 'feiyu-cover');
   const python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
@@ -50,6 +25,10 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   const references=new Map(),referenceDirectory=path.join(root,'state/music-references');
   const readerScope=()=>crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'state/wechat-io-config.json'))).digest('hex');
   let active = false, closed = false, preparing = false;
+  const executeCapability=(operation,payload,options)=>{
+    if(typeof execution!=='function')throw fault('DSH 唱歌能力插件尚未连接，请打开 DSH 并启用当前项目插件。',503);
+    return execution(operation,payload,options);
+  };
   const jobText=(value,max=400)=>typeof value==='string'&&value.length<=max&&!/[\r\n\0]|https?:\/\/|[A-Z]:[\\/]|^[\\/]|[A-Za-z0-9_-]{48,}/i.test(value);
   const jobTime=value=>typeof value==='string'&&value.length<=40&&Number.isFinite(Date.parse(value));
   function savedJob(job){
@@ -110,9 +89,8 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     }
   }
   const probe = probeAudio ?? (async file => {
-    const value = await probeMedia(file, {root});
-    if (!value.streams?.some(stream => stream.codec_type === 'audio')) throw fault('文件中没有可解码的音频。');
-    return Number(value.format?.duration);
+    const value=await executeCapability('audio.probe',{file},{timeoutMs:30000});
+    return Number(value.durationSeconds);
   });
   const audioPath = id => path.join(directory, id + '.audio');
   const readEntries = () => {
@@ -139,7 +117,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     const current=settings();
     if (current.musicSource === 'local') return {songs:local, remoteError:null};
     try {
-      const songs = await searchMusic(current.musicSource,query, {fetchImpl, signal,...(current.musicSource==='netease'?{neteaseCookie:current.neteaseCookie}:{})});
+      const {songs} = await executeCapability('music.search',{source:current.musicSource,query,...(current.musicSource==='netease'?{neteaseCookie:current.neteaseCookie}:{})},{signal,timeoutMs:20000});
       return {songs:[...local, ...songs.map(song => ({...remember(song), mid:undefined,songId:undefined,cachedId:findCached(song.id) ? 'local:' + findCached(song.id).key : null}))], remoteError:null};
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -175,24 +153,15 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     if (!ticket || Date.now() - ticket.time > 15 * 60 * 1000) throw fault('搜索结果已过期，请重新搜索后选择歌曲。', 409);
     const current=settings();
     if(current.musicSource==='local')throw fault('当前只使用本地曲库，请先选择在线音乐来源。');
-    const song = ticket.song, resolved = await resolveMusic(song, {fetchImpl, signal,...(current.musicSource==='netease'&&song.source==='netease'?{neteaseCookie:current.neteaseCookie}:{})});
+    const song = ticket.song, resolved = await executeCapability('music.resolve',{song,...(current.musicSource==='netease'&&song.source==='netease'?{neteaseCookie:current.neteaseCookie}:{})},{signal,timeoutMs:20000});
     fs.mkdirSync(directory, {recursive:true});
     const key = crypto.randomUUID(), temporary = path.join(directory, key + '.tmp');
-    let handle;
     try {
-      const downloadSignal = AbortSignal.any([AbortSignal.timeout(45000), ...(signal ? [signal] : [])]);
-      const response = await fetchMusicAudio(resolved.url,song.source, {fetchImpl, signal:downloadSignal});
-      if (Number(response.headers.get('content-length')) > LIMIT) {await response.body?.cancel(); throw fault('歌曲文件超过 64 MB，请先下载较小的版本。');}
-      if (!response.body) throw fault('音源返回了空文件。', 502);
-      handle = fs.openSync(temporary, 'wx', 0o600); let size = 0;
-      for await (const chunk of response.body) {
-        if (downloadSignal.aborted || (size += chunk.length) > LIMIT) throw fault('音频下载超时或超过 64 MB。', 502);
-        fs.writeSync(handle, chunk);
-      }
-      fs.closeSync(handle); handle = undefined;
-      if (!size) throw fault('音源返回了空文件。', 502);
+      const result=await executeCapability('music.download',{source:song.source,url:resolved.url,output:temporary},{signal,timeoutMs:55000});
+      signal?.throwIfAborted();const stat=fs.lstatSync(temporary);
+      if(!stat.isFile()||stat.isSymbolicLink()||!Number.isSafeInteger(result.bytes)||result.bytes<=0||result.bytes>LIMIT||stat.size!==result.bytes)throw fault('歌曲下载完整性校验失败。',502);
       return await commit(temporary, key, {title:song.title, artist:song.artist, album:song.album, providerId:song.id, previewOnly:resolved.previewOnly});
-    } finally {if (handle !== undefined) fs.closeSync(handle); if (fs.existsSync(temporary)) fs.unlinkSync(temporary);}
+    } finally {if (fs.existsSync(temporary)) fs.unlinkSync(temporary);}
   }
   async function cache(body, {signal} = {}) {return publicEntry(await cacheSong(body?.songId, signal));}
   async function requestSong(body,{signal,isAllowed=()=>true}={}) {
@@ -278,7 +247,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
       const id=crypto.randomUUID();dir=path.join(referenceDirectory,id);fs.mkdirSync(dir,{recursive:false});
       const input=path.join(dir,'video-source.wav');fs.writeFileSync(input,bytes,{flag:'wx',mode:0o600});
       if(runReference)await runReference({input,output:dir,seconds:audio.seconds,signal:combined});
-      else await execute(python,[path.join(root,'scripts/music-reference.py'),'--input',input,'--output',dir,'--seconds',String(audio.seconds)],{cwd:runtime,signal:combined,timeoutMs:150000});
+      else await executeCapability('singing.reference',{input,output:dir,seconds:audio.seconds},{signal:combined,timeoutMs:180000});
       combined.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
       if(scope!==readerScope())throw fault('微信读取账号已变化，请重新分析视频。',409);
       const record=JSON.parse(fs.readFileSync(path.join(dir,'reference.json'),'utf8'));
@@ -340,7 +309,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(accountId?{accountScope:accountId}:{}),...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
     persistJob(job);jobs.set(id, job); active = true;
     const controller = new AbortController(); controllers.add(controller);
-    let processLog='',reference=source?.reference,performance=body.performance;
+    let reference=source?.reference,performance=body.performance;
     const check=()=>{controller.signal.throwIfAborted();if(!isAllowed()||source&&!source.isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);if(scope!==accountScope())throw fault('微信账号已变化，本次演唱已取消。',409);};
     job.finished = (async () => {
       try {
@@ -357,7 +326,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
           reference={id:referenceId,dir,inUse:true};references.set(referenceId,reference);
           stageJob(job,'正在分析歌词、旋律、节奏与分句');
           if(runReference)await runReference({input:inputFile,output:dir,seconds:duration,startSeconds,withScore:true,signal:controller.signal});
-          else await execute(python,[path.join(root,'scripts/music-reference.py'),'--input',inputFile,'--output',dir,'--start',String(startSeconds),'--seconds',String(duration),'--soulx-runtime',singer],{cwd:runtime,signal:controller.signal,timeoutMs:10*60*1000,onData:chunk=>{processLog=(processLog+chunk).slice(-64000);}});
+          else await executeCapability('singing.reference',{input:inputFile,output:dir,startSeconds,seconds:duration,withScore:true},{signal:controller.signal,timeoutMs:11*60*1000});
           check();
           const record=JSON.parse(fs.readFileSync(path.join(dir,'reference.json'),'utf8'));
           if(record.schema!=='singing-reference-v1'||record.source_sha256!==crypto.createHash('sha256').update(fs.readFileSync(inputFile)).digest('hex')||Math.abs(record.seconds-duration)>.05||!record.analysis?.phrases?.length||!record.analysis?.lyrics?.length)throw fault('歌曲参考分析未完成，未生成演唱。',502);
@@ -368,28 +337,17 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
         let performanceFile;
         fs.mkdirSync(output,{recursive:true});performanceFile=path.join(output,'performance.json');atomic(performanceFile,performance);
         if (runCover) await runCover({input:inputFile, output, seconds:duration, startSeconds:0, model,pitch:config.pitch,accompaniment:config.accompaniment,signal:controller.signal,performance,reference:reference.dir});
-        else await execute(python, [path.join(root,'scripts','music-cover.py'), '--input', inputFile, '--start', '0',
-          '--seconds', String(duration), '--output', output,'--model',model?.directory??path.join(runtime,'models','FeiyuVoice-RVC'),
-          '--pitch',String(config.pitch??0),'--performance',performanceFile,'--reference',reference.dir,...(config.accompaniment===false?['--vocals-only']:[])], {cwd:runtime, signal:controller.signal, timeoutMs:45 * 60 * 1000,
-          onData(chunk) {processLog=(processLog+chunk).slice(-64000);
-            if(chunk.includes('soulx_preprocess'))stageJob(job,'正在提取歌词、旋律与节奏');
-            if(chunk.includes('soulx_loading'))stageJob(job,'正在加载 SoulX 演唱模型');
-            if(chunk.includes('performance_arranged'))stageJob(job,'AI 编排已应用，正在按谱重新演唱');
-            if(chunk.includes('soulx_singing'))stageJob(job,'SoulX 正在重新演唱（CPU 处理需要数分钟）');
-            if(chunk.includes('Converting with'))stageJob(job,'正在用所选 .pth 音色换声');
-            if(chunk.includes('"mixing"'))stageJob(job,'正在混入原歌曲伴奏并优化音量');}});
+        else await executeCapability('singing.render',{input:inputFile,output,seconds:duration,modelId:config.modelId??'FeiyuVoice-RVC-v1',pitch:config.pitch??0,accompaniment:config.accompaniment!==false,performance,reference:reference.dir},{signal:controller.signal,timeoutMs:46*60*1000,onProgress:stage=>stageJob(job,stage)});
         const receipt = JSON.parse(fs.readFileSync(path.join(output, 'result.json'), 'utf8'));
         if (receipt.status !== 'success' || Math.abs(receipt.seconds - duration) > 0.05) throw fault('翻唱结果校验失败。', 502);
         if(!runCover&&(receipt.route!=='SoulX -> selected RVC -> accompaniment remix'||receipt.original_vocals_mixed!==false))throw fault('翻唱链路校验失败，未返回 SoulX 演唱结果。',502);
         check();
         if(!runCover&&(receipt.performance_sha256!==crypto.createHash('sha256').update(fs.readFileSync(performanceFile)).digest('hex')||receipt.performance?.control!=='score'||receipt.performance?.source_f0_used!==false||receipt.performance?.dynamics?.applied!==true))throw fault('演唱编排未实际执行，未返回音频。',502);
-        const wav = path.join(output, 'feiyu-cover-' + Number(duration).toString() + 's.wav');
         stageJob(job,'正在准备试听文件');
-        await execute(mediaFfmpeg(root), ['-hide_banner', '-loglevel', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '256k', path.join(output, 'preview.mp3')], {signal:controller.signal});
+        await executeCapability('singing.preview',{output,seconds:duration},{signal:controller.signal,timeoutMs:150000});
         check();
         updateJob(job, {state:'success', stage:'试听已生成', seconds:receipt.seconds, completedAt:new Date().toISOString()});
       } catch (error) {
-        if(processLog){fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output+'.log',processLog,{mode:0o600});}
         updateJob(job, {state:'failed', stage:'未生成试听', error:error.status ? error.message : '歌曲处理失败，请检查音源与本地翻唱环境。',completedAt:new Date().toISOString()});}
       finally {if(reference){fs.rmSync(reference.dir,{recursive:true,force:true});references.delete(reference.id);}active = false; controllers.delete(controller);}
     })();
@@ -413,7 +371,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   async function checkNetease({signal}={}) {
     if(closed)throw fault('音乐服务已关闭。',503);
     const current=settings();if(current.musicSource!=='netease')throw fault('请先选择网易云音乐并保存。');
-    return checkNeteaseLogin({neteaseCookie:current.neteaseCookie,fetchImpl,signal});
+    return executeCapability('music.login-check',{neteaseCookie:current.neteaseCookie},{signal,timeoutMs:20000});
   }
   return {search, cache, importFile, status, start, getJob,latestForConversation, preview,cleanup,requestSong,requestVideo,prepareVideoReference,checkNetease,isBusy:()=>!!active||preparing,
     async settled(id) {await jobs.get(id)?.finished; return getJob(id);},

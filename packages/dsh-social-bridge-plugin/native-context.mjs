@@ -48,7 +48,7 @@ const {REQUEST_WINDOW_MODE,NATIVE_PREFIX_POLICY,APPEND_WINDOW_POLICY,CACHE_LAYOU
 
 const readHistoryPolicy=(root,key,chatOnly=false)=>{const value=baseHistoryPolicy(root,key);return !chatOnly&&readWorkMode(root,key)==='assistant'?{...value,enabled:false}:value;};
 export const name = 'dsh-social-bridge-plugin';
-export const inject = ['agents', 'sessions', 'agentPresets', 'tokenMeter', 'systemPrompt'];
+export const inject = ['agents', 'sessions', 'agentPresets', 'tokenMeter', 'systemPrompt', 'wechatCapabilities'];
 const KEY = /^(qq|wechat):(private|group):.{1,256}$/;
 const sidFor = (key,generation=0,scope='') => 'social-' + crypto.createHash('sha256').update((scope ? scope+'\0' : '')+(generation ? `${key}\0${generation}` : key)).digest('hex').slice(0,32);
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
@@ -479,7 +479,7 @@ function createNativeRuntime(ctx, config={}) {
     });
   }
   async function bindConversationTools(agent,key,sid){
-    if(internalGroupChat){Object.defineProperty(agent.ctx,ASSISTANT_ACCESS,{configurable:true,value:()=>false});applyAssistantToolGuard(agent.ctx);return;}
+    if(internalGroupChat){Object.defineProperty(agent.ctx,ASSISTANT_ACCESS,{configurable:true,value:()=>false});applyAssistantToolGuard(agent.ctx);bindNativeToolPresentation(agent.ctx,agent);return;}
     if(!webReaderBindings.has(sid))webReaderBindings.set(sid,bindWebReader(agent.ctx,root,key,()=>pending.get(sid)?.webReaderTurn));
     const extension = await extensions();
     if(extension) {
@@ -1011,17 +1011,40 @@ function createNativeRuntime(ctx, config={}) {
   const assistantControl=createAssistantControl({ctx,root,tasks:assistantTasks,accountReady,sessionGroups,mappings,profiles,pending,notifications:assistantNotifications,beforeSubmit:key=>resolvePresetReady(readDshAccess(root,key).preset??ASSISTANT_PRESET)});
   if(!internalGroupChat)assistantTasks.pump();
   let requests=0;
-  const isBusy=()=>requests>1||pending.size>0||operations.size>0||startup.size>0||[...assistantTasks.jobs.values()].some(job=>['queued','running','cancelling'].includes(job.state))||groupChatRuntime?.isBusy();
+  const capabilityRuntime=ctx.get?.('wechatCapabilities');
+  const isBusy=()=>requests>1||pending.size>0||operations.size>0||startup.size>0||capabilityRuntime?.isBusy()||[...assistantTasks.jobs.values()].some(job=>['queued','running','cancelling'].includes(job.state))||groupChatRuntime?.isBusy();
   const server=http.createServer(async(req,res)=>{
     requests++;let released=false;const release=()=>{if(!released){released=true;requests--;}};res.once('finish',release);res.once('close',release);
     const reply=(code,body)=>{if(!res.destroyed){res.writeHead(code,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify(body));}};
     const supplied=Buffer.from(String(req.headers.authorization ?? '').replace(/^Bearer /i,'')), expected=Buffer.from(token);
     if(supplied.length!==expected.length || !crypto.timingSafeEqual(supplied,expected))return reply(401,{error:'unauthorized'});
+    if(req.method==='POST'&&req.url==='/capability-execution'){
+      if(internalGroupChat||!capabilityRuntime||!accountReady()||config.isReloading?.())return reply(503,{error:'CAPABILITY_PLUGIN_UNAVAILABLE'});
+      const controller=new AbortController(),closed=()=>{if(!res.writableEnded)controller.abort();};res.once('close',closed);
+      try{
+        let size=0;const parts=[];for await(const part of req){size+=part.length;if(size>128*1024)throw Object.assign(Error('Invalid capability request'),{code:'CAPABILITY_REQUEST_TOO_LARGE',status:413});parts.push(part);}
+        const {dshInstanceId,...body}=JSON.parse(Buffer.concat(parts).toString('utf8'));
+        if(dshInstanceId!==instanceId)return reply(409,{error:'DSH_CONNECTION_CHANGED'});
+        if(body.accountScope!==loadedAccount.id)return reply(409,{error:'CAPABILITY_ACCOUNT_CHANGED'});
+        res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-store'});
+        const event=value=>{if(!res.destroyed)res.write(JSON.stringify(value)+'\n');};
+        try{
+          const value=await capabilityRuntime.execute(body,{signal:controller.signal,onProgress:stage=>event({event:'progress',stage})});
+          event({event:'result',value});
+        }catch(error){
+          const safe=Number.isInteger(error.status)&&typeof error.message==='string'&&error.message.length<=500&&!/[\r\n\0]|https?:\/\/|[A-Z]:[\\/]|Bearer\s|[A-Za-z0-9_-]{48,}/i.test(error.message);
+          event({event:'error',code:/^[A-Z][A-Z0-9_]{2,80}$/.test(error.code??'')?error.code:'CAPABILITY_EXECUTION_FAILED',status:safe?error.status:503,message:safe?error.message:'DSH 能力插件未完成生成，请检查推理环境和任务状态。'});
+        }
+        res.end();
+      }catch{if(!res.headersSent)reply(400,{error:'CAPABILITY_REQUEST_INVALID'});else res.end();}
+      finally{res.removeListener('close',closed);}
+      return;
+    }
     if(req.method==='POST'&&req.url==='/reload-config'){
       try{req.resume();return config.reload?.()?reply(202,{ok:true,status:'reloading'}):reply(409,{error:'CONFIGURATION_BUSY'});}
       catch{return reply(400,{error:'CONFIGURATION_INVALID'});}
     }
-    if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),configurationReload:'native-runtime-v1',instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
+    if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),configurationReload:'native-runtime-v1',capabilityExecution:capabilityRuntime?.status().version,capabilityHost:'dsh',instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
     if(config.isReloading?.())return reply(503,{error:'configuration_reloading'});
     if(!accountReady())return reply(409,{error:'account_changed',detail:'ACCOUNT_SWITCH_REQUIRES_DSH_RESTART'});
     if(req.method==='POST'&&req.url==='/persona-generate'){

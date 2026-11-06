@@ -351,7 +351,7 @@ def start_gateway(reader):
                     return self.reply(submit_voice(reader, mapped, identity['wxid'], target, body.get('duration')))
                 if self.path == '/SendImageMsg':
                     result = reader.api.post(route, mapped, timeout=IMAGE_UPLOAD_TIMEOUT_SECONDS)
-                    return self.reply(normalize_send_response(self.path, result))
+                    return self.reply(normalize_send_response(self.path, result, identity['wxid'], target))
                 result = reader.api.post(route, mapped)
                 # Keep the last acknowledgement locally for diagnosis, never
                 # expose it in public status or log the submitted message body.
@@ -455,9 +455,16 @@ def map_send(route, body):
 def normalize_send_response(route, result, account=None, target=None, duration=None, size=None):
     if not isinstance(result, dict):
         raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
-    # A generic code=1 only acknowledges submission, never delivery.
-    if result.get('code') == 1:
-        return {'ret': 0, 'submitted': True, 'confirmed': False}
+    if 'account_wxid' in result and (not isinstance(result['account_wxid'], str) or not account or result['account_wxid'] != account):
+        raise RuntimeError('HOOK_ACCOUNT_MISMATCH')
+    # Supplied builds use either code or errCode. Both generic envelopes only
+    # acknowledge submission; the existing exact database receipt is still needed.
+    codes = [result[key] for key in ('code', 'errCode') if key in result]
+    if codes:
+        if any(type(code) is not int for code in codes):
+            raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
+        accepted = all(code == 1 for code in codes)
+        return {'ret': 0 if accepted else -1, 'submitted': accepted, 'confirmed': False}
     if (route == '/SendVoiceMsg' and account and target and result.get('baseResponse', {}).get('ret') == 0
             and result.get('endFlag') == 2 and result.get('cancelFlag') == 0
             and result.get('fromUserName') == account and result.get('toUserName') == target

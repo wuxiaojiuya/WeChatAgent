@@ -6,11 +6,14 @@ import os from 'node:os';
 import {createAudioCapabilities,audioDefaults} from './audio-capabilities.mjs';
 import {createConsole} from './console-server.mjs';
 import {feiyuCredential} from './feiyu-credentials.mjs';
+import {createVoiceExecutor} from '../packages/dsh-capabilities-plugin/voice.mjs';
+import {createSingingExecutor} from '../packages/dsh-capabilities-plugin/singing.mjs';
 const secret='fixture-feiyu-credential';
 const config={wechat:{whitelist:{private:['123'],groups:['456']}}};
 function fixture(t,fetchImpl,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'feiyu-audio-'));
-  const service=createAudioCapabilities({root,fetchImpl,...options});t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
+  const executor=createVoiceExecutor({root,fetchImpl,...options});
+  const service=createAudioCapabilities({root,execution:(operation,payload,context)=>executor[operation==='voice.check'?'check':'generate'](payload,context),...options});t.after(()=>{service.close();executor.close();fs.rmSync(root,{recursive:true,force:true});});
   const save=(kind,value,extra={})=>service.save(kind,{revision:service.snapshot().revision,settings:{...audioDefaults()[kind],...(kind==='voice'?{endpoint:'http://127.0.0.1:9882'}:{}),...value},...extra},config);
   return {root,service,save};
 }
@@ -208,7 +211,8 @@ test('console authenticates music search, uploads, cache access and local model 
 test('console saves a masked NetEase credential and verifies it only through authenticated requests',async t=>{
   const {root}=fixture(t);fs.mkdirSync(path.join(root,'config'));fs.copyFileSync(new URL('../config/wechatagent.example.json',import.meta.url),path.join(root,'config/wechatagent.example.json'));
   const cookie='MUSIC_U=fixture-console-login';let calls=0;
-  const app=createConsole({root,port:0,fetchImpl:async(url,options)=>{calls++;assert.equal(String(url),'https://music.163.com/weapi/w/nuser/account/get');assert.equal(options.headers.Cookie,cookie);return Response.json({code:200,account:{id:123}});}});
+  const fetchImpl=async(url,options)=>{calls++;assert.equal(String(url),'https://music.163.com/weapi/w/nuser/account/get');assert.equal(options.headers.Cookie,cookie);return Response.json({code:200,account:{id:123}});};
+  const app=createConsole({root,port:0,capabilityExecution:createSingingExecutor({root,fetchImpl})});
   const address=await app.start();t.after(()=>app.close());
   const base='http://127.0.0.1:'+address.port,{token}=await fetch(base+'/api/info').then(r=>r.json());
   const route='/api/audio-capabilities/music/netease/check';

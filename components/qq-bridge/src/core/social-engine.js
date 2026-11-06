@@ -149,7 +149,10 @@ export class SocialEngine {
     this.pendingDirect = new Set(); this.sentAt = new Map();
     this.decisions = new Map();
     this.stickerSelect=stickerSelect;
-    this.deliveryRetry={busyDelayMs:500,busyTimeoutMs:30000,maxBusyRetries:6,receiptDelayMs:1500,maxReceiptChecks:2,mediaDeadlineMs:45000,mediaCallTimeoutMs:10000,...deliveryRetry};
+    // The production OneBot action has a 45s budget, including native checks,
+    // submission and the Hook's 18s receipt window. Wait beyond that action so
+    // the outer text lane cannot discard a valid late receipt first.
+    this.deliveryRetry={busyDelayMs:500,busyTimeoutMs:30000,maxBusyRetries:6,receiptDelayMs:1500,maxReceiptChecks:2,mediaDeadlineMs:45000,mediaCallTimeoutMs:10000,textCallTimeoutMs:50000,...deliveryRetry};
     for(const [name,value]of Object.entries(this.deliveryRetry))if(!Number.isSafeInteger(value)||value<1||value>60000||/^(maxBusyRetries|maxReceiptChecks)$/.test(name)&&value>8)throw new TypeError('Invalid delivery retry limit');
     for(const [key,item] of buffer.pendingReplies??[]){
       if(item.parts?.length||buffer.unread(key,buffer.maxPerChat).some(row=>row.id===item.throughId))this.decisions.set(key,item);
@@ -540,7 +543,7 @@ export class SocialEngine {
       const before=part.state;part.state='sending';delete part.retryAt;persist();
       let delivery;
       try{
-        delivery=await boundedTask(()=>this.send(target,part.text,{deliveryId:part.deliveryId}),{timeoutMs:15000,code:'TEXT_DELIVERY_TIMEOUT'});
+        delivery=await boundedTask(()=>this.send(target,part.text,{deliveryId:part.deliveryId}),{timeoutMs:retry.textCallTimeoutMs,code:'TEXT_DELIVERY_TIMEOUT'});
       }catch(error){
         if(error.code==='TEXT_DELIVERY_TIMEOUT'||/^OneBot action timeout:/.test(error.message??'')){
           part.state='unconfirmed';

@@ -36,10 +36,9 @@ export function validateDrawingPng(bytes){
   try{const value=imageMetadata(bytes);if(value.format!=='png')throw Error('PNG_REQUIRED');return {width:value.width,height:value.height};}
   catch{throw fault('绘画接口未返回有效的 PNG 图片。',502);}
 }
-async function responseJson(response,limit){const chunks=[];let bytes=0;for await(const chunk of response.body){bytes+=chunk.length;if(bytes>limit)throw fault('绘画接口响应过大。',502);chunks.push(chunk);}try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw fault('绘画接口返回格式无效。',502);}}
-function providerError(status){return fault(status===401?'绘画 API Key 无效，请核对凭据。':status===403?'当前账号没有该绘画模型的访问权限，请核对模型授权。':status===429?'绘画服务额度不足或请求过于频繁，请在服务商后台检查。':status===400?'绘画请求被服务商拒绝，请检查模型、尺寸、画质或调整画面描述。':status===404?'绘画接口或模型不存在，请检查基础地址和模型名称。':'绘画服务暂时不可用，本次没有自动重试。',502);}
+const executionMessages=Object.freeze({DRAWING_KEY_INVALID:'绘画 API Key 无效，请核对凭据。',DRAWING_FORBIDDEN:'当前账号没有该绘画模型的访问权限，请核对模型授权。',DRAWING_RATE_LIMIT:'绘画服务额度不足或请求过于频繁，请在服务商后台检查。',DRAWING_REQUEST_REJECTED:'绘画请求被服务商拒绝，请检查模型、尺寸、画质或调整画面描述。',DRAWING_NOT_FOUND:'绘画接口或模型不存在，请检查基础地址和模型名称。',DRAWING_PROVIDER_UNAVAILABLE:'DSH 绘画插件无法连接绘画服务，本次没有自动重试。',DRAWING_RESPONSE_TOO_LARGE:'绘画接口响应过大。',DRAWING_RESPONSE_INVALID:'绘画接口返回格式无效。',DRAWING_MODEL_UNCONFIRMED:'服务未确认所选模型，请核对模型名称，或直接生成试画验证。',DRAWING_IMAGE_INVALID:'绘画接口未返回有效的 PNG 图片。',DRAWING_CONFIG_INVALID:'DSH 绘画插件配置无效，请重新保存绘画设置。'});
 
-export function createDrawingCapability({root,config,delivery,fetchImpl=fetch,accountScope=()=>activeReaderAccount(root).id,now=Date.now,timeoutMs=240000,retention={}}={}){
+export function createDrawingCapability({root,config,delivery,execution,accountScope=()=>activeReaderAccount(root).id,now=Date.now,timeoutMs=240000,retention={}}={}){
   root=path.resolve(root);
   const settingsFile=path.join(root,'state/drawing/capability.json'),directory=path.join(root,'state/drawing/jobs'),ledgerFile=path.join(root,'state/drawing/retired.json');
   const limits={...drawingRetention,...retention};for(const key of Object.keys(limits))if(!Object.hasOwn(drawingRetention,key)||!Number.isSafeInteger(limits[key])||limits[key]<1||limits[key]>drawingRetention[key])throw new TypeError('Invalid drawing retention');
@@ -71,13 +70,18 @@ export function createDrawingCapability({root,config,delivery,fetchImpl=fetch,ac
     atomic(settingsFile,next);return snapshot();
   }
   function catalog(){const saved=snapshot(),value=saved.settings,count=value.chats.filter(key=>audioChatKeys(config()).includes(key)).length,ready=saved.verified;
-    return [{id:'native-gpt-drawing',name:'GPT 绘画',description:'在聊天中描述想画的内容，由 GPT Image 生成图片并发送。支持独立接口、画质、尺寸与聊天范围配置。',management:'drawing',builtin:true,host:'console',category:'绘画与素材',enabled:value.enabled,ready,configured:value.apiKeyConfigured,selectedCount:count,statusLabel:!value.apiKeyConfigured?'待配置 API Key':ready?'绘画接口已验证':'已配置 · 待检测或试画',statusTone:ready?'success':'warning',featureState:{globalEnabled:value.enabled,effectiveCount:value.enabled&&value.apiKeyConfigured?count:0,totalCount:audioChatKeys(config()).length}}];
+    return [{id:'native-gpt-drawing',name:'GPT 绘画',description:'在聊天中描述想画的内容，由 GPT Image 生成图片并发送。支持独立接口、画质、尺寸与聊天范围配置。',management:'drawing',managementHost:'wechatagent',builtin:true,host:'dsh',category:'绘画与素材',enabled:value.enabled,ready,configured:value.apiKeyConfigured,selectedCount:count,statusLabel:!value.apiKeyConfigured?'待配置 API Key':ready?'绘画接口已验证':'已配置 · 待检测或试画',statusTone:ready?'success':'warning',featureState:{globalEnabled:value.enabled,effectiveCount:value.enabled&&value.apiKeyConfigured?count:0,totalCount:audioChatKeys(config()).length}}];
   }
   function guard(signal){if(closed)throw fault('绘画服务已关闭。',503);signal?.throwIfAborted();}
+  async function execute(operation,settings,prompt,signal){
+    if(typeof execution!=='function')throw fault('DSH 绘画插件尚未就绪，请启动 DSH 并启用能力插件。',503);
+    const {endpoint,apiKey,model,size,quality}=settings;
+    try{return await abortable(execution(operation,{settings:{endpoint,apiKey,model,size,quality},...(prompt===undefined?{}:{prompt})},{signal}),signal);}
+    catch(error){if(Object.hasOwn(executionMessages,error?.code))throw fault(executionMessages[error.code],502);throw error;}
+  }
   async function check(body){guard();const saved=read();if(body?.revision!==saved.revision)throw fault('绘画设置已变化，请重新打开配置。',409);if(!saved.settings.apiKey)throw fault('请先保存绘画服务的 API Key。');
     const controller=new AbortController(),signal=AbortSignal.any([controller.signal,AbortSignal.timeout(12000)]);controllers.add(controller);
-    try{const response=await abortable(fetchImpl(drawingEndpoint(saved.settings.endpoint)+'/models/'+encodeURIComponent(saved.settings.model),{headers:{Authorization:'Bearer '+saved.settings.apiKey},redirect:'error',signal}),signal);guard(signal);if(!response.ok)throw providerError(response.status);
-      const result=await abortable(responseJson(response,1024*1024),signal);guard(signal);if(result?.id!==saved.settings.model)throw fault('服务未确认所选模型，请核对模型名称，或直接生成试画验证。',502);if(read().revision!==saved.revision)throw fault('绘画设置已变化，请重新检测。',409);verifiedRevision=saved.revision;
+    try{const result=await execute('drawing.check',saved.settings,undefined,signal);guard(signal);if(result?.model!==saved.settings.model)throw fault('服务未确认所选模型，请核对模型名称，或直接生成试画验证。',502);if(read().revision!==saved.revision)throw fault('绘画设置已变化，请重新检测。',409);verifiedRevision=saved.revision;
       return {ok:true,message:'API 凭据和模型访问检查通过。请生成一张试画，验证实际绘图权限；本地试画不会发送微信。'};
     }catch(error){if(error?.[publicFault])throw error;throw fault('无法连接绘画服务，或检测超时。请检查 API 基础地址和网络。',502);}finally{controllers.delete(controller);}
   }
@@ -149,10 +153,9 @@ export function createDrawingCapability({root,config,delivery,fetchImpl=fetch,ac
     try{persist(job);}catch{busy=false;controllers.delete(controller);storageProblem=true;throw fault('无法保存绘画任务，请检查本地磁盘；本次未提交生成。',503);}jobs.set(id,job);
     const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(timeoutMs)]);
     const task=(async()=>{
-      try{guard(signal);const value=saved.settings,response=await abortable(fetchImpl(drawingEndpoint(value.endpoint)+'/images/generations',{method:'POST',headers:{Authorization:'Bearer '+value.apiKey,'Content-Type':'application/json'},body:JSON.stringify({model:value.model,prompt:body.prompt.trim(),n:1,size:value.size,quality:value.quality,output_format:'png'}),redirect:'error',signal}),signal);
-        guard(signal);if(!response.ok)throw providerError(response.status);const result=await abortable(responseJson(response,23*1024*1024),signal);guard(signal);const base64=result?.data?.length===1?result.data[0]?.b64_json:undefined;
+      try{guard(signal);const result=await execute('drawing.generate',saved.settings,body.prompt.trim(),signal);guard(signal);const base64=result?.image;
         if(typeof base64!=='string'||base64.length>Math.ceil(MAX_IMAGE/3)*4||base64.length%4!==0||!/^[A-Za-z0-9+/]*={0,2}$/.test(base64))throw fault('绘画服务没有返回 PNG 图片数据，请使用支持 GPT Image 的接口。',502);
-        const bytes=Buffer.from(base64,'base64');if(bytes.toString('base64')!==base64)throw fault('绘画接口返回的图片编码无效。',502);const dimensions=validateDrawingPng(bytes),file=safe(path.join(directory,id,'image.png'));fs.writeFileSync(file,bytes,{flag:'wx',mode:0o600});
+        const bytes=Buffer.from(base64,'base64');if(bytes.toString('base64')!==base64)throw fault('绘画接口返回的图片编码无效。',502);const dimensions=validateDrawingPng(bytes);if(result.width!==dimensions.width||result.height!==dimensions.height)throw fault('DSH 绘画插件返回的图片尺寸无效。',502);const file=safe(path.join(directory,id,'image.png'));fs.writeFileSync(file,bytes,{flag:'wx',mode:0o600});
         const unchanged=read().revision===saved.revision;if(unchanged)verifiedRevision=saved.revision;
         update(job,{state:'success',stage:'图片已生成',...dimensions,completedAt:new Date(Math.max(now(),Date.parse(job.startedAt))).toISOString()});
         if(!previewOnly){

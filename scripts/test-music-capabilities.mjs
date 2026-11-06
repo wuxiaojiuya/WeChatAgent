@@ -9,13 +9,14 @@ import {searchMusic,resolveMusic,musicMediaUrl,fetchMusicAudio} from '../package
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {createRvcModels} from './rvc-models.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
+import {createSingingExecutor} from '../packages/dsh-capabilities-plugin/singing.mjs';
 const kgHash='A'.repeat(32);
 const kgResult={status:1,data:{lists:[{FileHash:kgHash,AlbumID:'123',SongName:'同名歌（DJ版）',SingerName:'歌手甲',Duration:120,PayType:3}]}};
 const plan={version:'score-performance-v1',emotion:'warm',intention:'前段轻唱，后段逐渐加强。',phrases:[{start:0,end:30,articulation:'flowing',timingMs:12,tail:'hold',gainDb:.6,contour:'build'}]};
 const referenceFixture=async({input,output,seconds})=>fs.writeFileSync(path.join(output,'reference.json'),JSON.stringify({schema:'singing-reference-v1',source_sha256:crypto.createHash('sha256').update(fs.readFileSync(input)).digest('hex'),seconds,analysis:{phrases:[{start:0,end:seconds}],lyrics:[{start:0,end:seconds,text:'测试歌词'}]}}));
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'music-source-'));let clock=Date.now();
-  const service=createMusicCapabilities({root,probeAudio:async()=>120,now:()=>clock,runReference:referenceFixture,planPerformance:async()=>plan,...options});
+  const service=createMusicCapabilities({root,probeAudio:async()=>120,now:()=>clock,runReference:referenceFixture,planPerformance:async()=>plan,execution:createSingingExecutor({root,fetchImpl:options.fetchImpl??fetch}),...options});
   t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});return {root,service,advance:days=>clock+=days*86400000};
 }
 

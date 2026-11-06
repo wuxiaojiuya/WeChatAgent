@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import {packZip} from '../packages/plugin-api/zip.mjs';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
+import {CAPABILITY_PLUGIN_FILES,CAPABILITY_EXECUTION_VERSION} from '../packages/dsh-capabilities-plugin/contract.mjs';
 const root=path.resolve(import.meta.dirname,'..'),pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'))),version=pkg.releaseVersion??pkg.version;
 const output=path.join(root,'release/installer'),prefix='WeChatAgent-'+version;
 const files=['components/supplier-hook/4.1.8.27/files.sha256.json','components/supplier-hook/4.1.8.27/libGLESv1.dll','components/supplier-hook/4.1.8.27/x64 inject.exe','components/supplier-hook/README.md','docs/SUPPLIER_HOOK_41827.md'];
@@ -14,6 +15,8 @@ const checked=spawnSync(createRequire(import.meta.url)('7zip-bin').path7za,['t',
 if(checked.status!==0)throw Error('HOOK_ARCHIVE_VERIFICATION_FAILED');
 const assets=['WeChatAgent-Setup-'+version+'-x64.exe',prefix+'-source.zip',hookName,'VERIFICATION.json'];
 const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const capabilityFiles=['scripts/dsh-capability-client.mjs',...CAPABILITY_PLUGIN_FILES.map(file=>'packages/dsh-capabilities-plugin/'+file)];
+const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py'];
 for(const name of assets)if(!fs.existsSync(path.join(output,name)))throw Error('RELEASE_ASSET_MISSING: '+name);
 const manifest=JSON.parse(fs.readFileSync(path.join(output,'VERIFICATION.json')));
 if(manifest.version!==version||!/^[a-f0-9]{16}$/.test(manifest.buildId)||manifest.privateAccountDataBundled!==false)throw Error('RELEASE_METADATA_INVALID');
@@ -27,6 +30,10 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
   if(deployment.version!==version||deployment.buildId!==manifest.buildId||deployment.hookBackend!=='supplier-http'||deployment.wechatVersion!=='4.1.8.27'||deployment.privateAccountDataBundled!==false)throw Error('PACKAGED_DEPLOYMENT_MISMATCH');
   const packaged=JSON.parse(fs.readFileSync(path.join(directory,'package.json')));
   if(packaged.version!==version||packaged.releaseVersion!==version)throw Error('PACKAGED_VERSION_MISMATCH');
+  for(const relative of [...capabilityFiles,...deliveryFiles]){
+    if(!Array.isArray(deployment.files)||!deployment.files.includes(relative)||!Object.hasOwn(deployment.sourceHashes,relative))throw Error('CAPABILITY_OR_DELIVERY_FEATURE_NOT_PACKAGED: '+relative);
+    if(deployment.sourceHashes[relative]!==sha(path.join(root,relative)))throw Error('CAPABILITY_OR_DELIVERY_SOURCE_OUTDATED: '+relative);
+  }
   for(const [relative,expected]of Object.entries(deployment.sourceHashes)){
     if(path.isAbsolute(relative)||relative.split(/[\\/]/).includes('..')||/^(?:state|release)\//.test(relative)||relative==='config/wechatagent.json')throw Error('PACKAGED_PRIVATE_PATH_REJECTED');
     if(sha(path.join(directory,relative))!==expected)throw Error('PACKAGED_HASH_MISMATCH: '+relative);
@@ -61,6 +68,7 @@ if(binary.toString('ascii',0,2)!=='MZ'||binary.readUInt32LE(pe)!==0x4550)throw E
 const identity=spawnSync('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true,encoding:'utf8'});
 if(identity.status!==0)throw Error('SOURCE_REVISION_UNAVAILABLE');
 Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,installedChecks,
+  capabilityHost:'dsh',capabilityManagementHost:'wechatagent',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,deliveryFixesPackaged:true,upgradeRequiresDshReload:true,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),
   validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC/SoulX pipeline checks are separate from packaging; full first-time model downloads require access to official sources.','Packaging checks do not generate singing audio or verify arbitrary third-party links. Real local song/video singing preview evidence is described in the release notes; platform downloads may require valid cookies.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
 fs.writeFileSync(path.join(output,'VERIFICATION.json'),JSON.stringify(manifest,null,2)+'\n');

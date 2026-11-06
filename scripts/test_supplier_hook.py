@@ -232,6 +232,66 @@ class SupplierContract(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'HOOK_SEND_RESPONSE_UNKNOWN'):
             normalize_send_response('/SendTextMsg', {'status': 'maybe'})
 
+    def test_delivered_errcode_send_envelope_only_acknowledges_submission(self):
+        ack = {'account_wxid': 'wxid_self', 'data': {}, 'errCode': 1, 'errMsg': '请求处理成功'}
+        for route in ('/SendTextMsg', '/SendImageMsg', '/SendFileMsg', '/SendStickerMsg', '/SendVoiceMsg'):
+            with self.subTest(route=route):
+                self.assertEqual(normalize_send_response(route, ack, 'wxid_self', 'wxid_friend'),
+                                 {'ret': 0, 'submitted': True, 'confirmed': False})
+        # Older envelopes remain valid and never become delivery receipts either.
+        self.assertEqual(normalize_send_response('/SendTextMsg', {'code': 1}),
+                         {'ret': 0, 'submitted': True, 'confirmed': False})
+        self.assertFalse(normalize_send_response('/SendTextMsg', {'errCode': 1})['confirmed'])
+
+    def test_send_envelope_account_must_match_the_bound_request(self):
+        for account in ('wxid_other', '', None, 1, {}, ['wxid_self']):
+            for code in ('code', 'errCode'):
+                with self.subTest(account=account, code=code):
+                    with self.assertRaisesRegex(RuntimeError, '^HOOK_ACCOUNT_MISMATCH$'):
+                        normalize_send_response('/SendTextMsg', {code: 1, 'account_wxid': account}, 'wxid_self')
+        with self.assertRaisesRegex(RuntimeError, '^HOOK_ACCOUNT_MISMATCH$'):
+            normalize_send_response('/SendTextMsg', {'errCode': 1, 'account_wxid': 'wxid_self'})
+
+    def test_failed_unknown_and_conflicting_send_envelopes_are_not_accepted(self):
+        for result in ({'errCode': 0}, {'errCode': -1}, {'errCode': 2}, {'code': 1, 'errCode': 0}, {'code': 0, 'errCode': 1}):
+            with self.subTest(result=result):
+                self.assertEqual(normalize_send_response('/SendTextMsg', {**result, 'errMsg': '请求处理成功'}),
+                                 {'ret': -1, 'submitted': False, 'confirmed': False})
+        for result in ({'errCode': '1'}, {'errCode': True}, {'errCode': 1.0}, {'errCode': None}, {'code': True}, {'data': {}, 'errMsg': '请求处理成功'}):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(RuntimeError, '^HOOK_SEND_RESPONSE_UNKNOWN$'):
+                    normalize_send_response('/SendTextMsg', result)
+
+    def test_gateway_handles_actual_errcode_ack_without_delivery_confirmation_or_retry(self):
+        reader = self.reader()
+        reader.start_native_gateway()
+        self.addCleanup(reader.gateway.server_close)
+        self.addCleanup(reader.gateway.shutdown)
+        original, response_account = self.api.transport, ['wxid_self']
+        def delivered(route, body):
+            result = original(route, body)
+            return {'account_wxid': response_account[0], 'data': {}, 'errCode': 1, 'errMsg': '请求处理成功'} if route.startswith('/api/send_') else result
+        self.api.transport = delivered
+        headers = {'Authorization': 'Bearer '+'a'*64, 'X-WeChatAgent-Account': 'wxid_self', 'Content-Type': 'application/json'}
+        def call(route, body):
+            request = urllib.request.Request(self.api.hook['baseUrl']+route, json.dumps(body).encode(), headers)
+            return json.load(urllib.request.urlopen(request, timeout=5))
+        for text in ('第一句', '第二句'):
+            self.assertEqual(call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': text}),
+                             {'ret': 0, 'submitted': True, 'confirmed': False})
+        file = self.image_file()
+        self.assertEqual(call('/SendImageMsg', {'wxidorgid': 'wxid_friend', 'path': str(file), 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()}),
+                         {'ret': 0, 'submitted': True, 'confirmed': False})
+        self.assertEqual(len([route for route, _ in self.fake.calls if route.startswith('/api/send_')]), 3)
+        # The fake Hook did not add SQL rows: acknowledgements cannot invent them.
+        self.assertEqual(len(reader.messages('wxid_friend')), 2)
+        response_account[0] = 'wxid_other'
+        with self.assertRaises(urllib.error.HTTPError) as mismatch:
+            call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': '第三句'})
+        self.assertEqual(mismatch.exception.code, 503)
+        self.assertEqual(json.load(mismatch.exception), {'error': 'HOOK_ACCOUNT_MISMATCH'})
+        self.assertEqual(len([route for route, _ in self.fake.calls if route == '/api/send_text_msg']), 3)
+
     def test_voice_upload_has_a_separate_budget_and_other_requests_keep_five_seconds(self):
         file = self.root/'voice.silk'
         file.write_bytes(b'\x02#!SILK_V3fixture')

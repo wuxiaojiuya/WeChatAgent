@@ -43,7 +43,7 @@ test('DSH restart verification requires the actual project, model, plugin revisi
   fs.mkdirSync(path.join(root,'packages/dsh-social-bridge-plugin'),{recursive:true});fs.mkdirSync(path.join(root,'state/weflow'),{recursive:true});
   fs.writeFileSync(path.join(root,'packages/dsh-social-bridge-plugin/cordis.patch.yml'),'name: file:///fixture/native-context.mjs?wechatagent=aaaaaaaaaaaaaaaa');
   fs.writeFileSync(path.join(root,'state/weflow/active-account.json'),JSON.stringify({id:'account-a'}));
-  const health={ok:true,project:'WeChatAgent',projectRoot:root,provider:'fixture',model:'fixture-model',pluginRevision:'aaaaaaaaaaaaaaaa',accountScope:'account-a'};
+  const health={ok:true,project:'WeChatAgent',projectRoot:root,provider:'fixture',model:'fixture-model',pluginRevision:'aaaaaaaaaaaaaaaa',capabilityExecution:'dsh-generation-v1',accountScope:'account-a'};
   assert(dshConfigurationMatches(root,config,health));
-  for(const change of [{ok:false},{projectRoot:root+'-other'},{provider:'other'},{model:'old-model'},{pluginRevision:'bbbbbbbbbbbbbbbb'},{accountScope:'account-b'}])assert.equal(dshConfigurationMatches(root,config,{...health,...change}),false);
+  for(const change of [{ok:false},{projectRoot:root+'-other'},{provider:'other'},{model:'old-model'},{pluginRevision:'bbbbbbbbbbbbbbbb'},{capabilityExecution:undefined},{capabilityExecution:'old-version'},{accountScope:'account-b'}])assert.equal(dshConfigurationMatches(root,config,{...health,...change}),false);
 });

@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {createDrawingCapability,drawingDefaults,drawingEndpoint} from './drawing-capability.mjs';
+import {createDrawingExecution} from '../packages/dsh-capabilities-plugin/drawing.mjs';
 import {createConsole} from './console-server.mjs';
 
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg==','base64');
 const key='wechat:private:123',secret='fixture-openai-private-key';
 function fixture(t,fetchImpl,overrides={}){const root=fs.mkdtempSync(path.join(os.tmpdir(),'drawing-capability-')),state={scope:'b'.repeat(64),posts:0,sends:0,enabled:true,clock:Date.now()};
   const config={wechat:{whitelist:{private:['123'],groups:['456']}}};
-  const options={root,config:()=>config,accountScope:()=>state.scope,now:()=>state.clock,fetchImpl:async(url,request)=>{state.posts++;assert.equal(request.redirect,'error');assert.equal(request.headers.Authorization,'Bearer '+secret);return fetchImpl?fetchImpl(url,request,state):Response.json({data:[{b64_json:png.toString('base64')}]});},delivery:{capture:async()=>({accountScope:state.scope}),send:async value=>{state.sends++;assert.deepEqual(fs.readFileSync(value.file),png);return {id:value.id,state:'queued',sent:false};},lookup:()=>null,refresh:()=>assert.fail('no recorded delivery')},...overrides};
+  const options={root,config:()=>config,accountScope:()=>state.scope,now:()=>state.clock,execution:createDrawingExecution({fetchImpl:async(url,request)=>{state.posts++;assert.equal(request.redirect,'error');assert.equal(request.headers.Authorization,'Bearer '+secret);return fetchImpl?fetchImpl(url,request,state):Response.json({data:[{b64_json:png.toString('base64')}]});}}),delivery:{capture:async()=>({accountScope:state.scope}),send:async value=>{state.sends++;assert.deepEqual(fs.readFileSync(value.file),png);return {id:value.id,state:'queued',sent:false};},lookup:()=>null,refresh:()=>assert.fail('no recorded delivery')},...overrides};
   const service=createDrawingCapability(options);t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
   const save=(changes={},extra={})=>service.save({revision:service.snapshot().revision,settings:{...drawingDefaults(),apiKey:secret,enabled:true,chats:[key],...changes},...extra});
   const generate=(changes={})=>service.generate({prompt:'水彩猫咪',requestId:crypto.randomUUID(),conversationKey:key,previewOnly:false,...changes});return {root,state,config,options,service,save,generate};}
@@ -63,6 +64,30 @@ test('restart restores results and never resubmits interrupted or completed paid
 
 test('model check verifies identity while keeping provider errors and credentials private',async t=>{
   const f=fixture(t,async url=>{assert.equal(url,'https://api.openai.com/v1/models/gpt-image-2');return Response.json({id:'gpt-image-2'});});f.save();assert.equal((await f.service.check({revision:f.service.snapshot().revision})).ok,true);assert.equal(f.service.catalog()[0].ready,true);f.save({quality:'high'});assert.equal(f.service.catalog()[0].ready,false);
+});
+
+test('drawing requires the injected DSH executor and never uses a local provider fallback',async t=>{
+  for(const execution of [undefined,async()=>{throw Object.assign(Error(secret),{code:'DSH_OFFLINE'});},async()=>{throw Object.assign(Error(secret),{code:'toString'});}]){
+    const f=fixture(t,()=>assert.fail('console must not call provider'),{execution});f.save();
+    await assert.rejects(f.service.check({revision:f.service.snapshot().revision}),error=>error.status>=500&&!error.message.includes(secret));
+    const {job}=await f.generate();await f.service.settled(job.id);const result=await f.service.get(job.id,key);
+    assert.equal(result.state,'failed');assert.equal(f.state.posts,0);assert.equal(f.state.sends,0);assert(!JSON.stringify(result).includes(secret));
+  }
+});
+
+test('the transport verifies executor PNG data and dimensions before saving or delivering',async t=>{
+  for(const result of [{image:png.toString('base64'),width:3,height:2},{image:Buffer.from('invalid').toString('base64'),width:2,height:2},{image:png.toString('base64'),width:'2',height:2}]){
+    const f=fixture(t,undefined,{execution:async()=>result});f.save();const {job}=await f.generate();await f.service.settled(job.id);
+    assert.equal((await f.service.get(job.id,key)).state,'failed');assert.equal(f.state.sends,0);assert.equal(fs.existsSync(path.join(f.root,'state/drawing/jobs',job.id,'image.png')),false);
+  }
+});
+
+test('private execution settings stay outside job records and the executor receives no chat identity',async t=>{
+  const received=[],executor=createDrawingExecution({fetchImpl:async()=>Response.json({data:[{b64_json:png.toString('base64')}]})});
+  const f=fixture(t,undefined,{execution:async(operation,payload,options)=>{received.push({operation,payload});return executor(operation,payload,options);}});f.save();
+  const {job}=await f.generate();await f.service.settled(job.id);assert.equal(received[0].operation,'drawing.generate');assert.deepEqual(Object.keys(received[0].payload).sort(),['prompt','settings']);
+  assert.equal(received[0].payload.settings.apiKey,secret);assert(!JSON.stringify(received).includes(key));assert(!JSON.stringify(received).includes(f.state.scope));
+  const saved=fs.readFileSync(path.join(f.root,'state/drawing/jobs',job.id,'job.json'),'utf8');assert(!saved.includes(secret));assert(!saved.includes('水彩猫咪'));
 });
 
 test('closing during channel capture never starts a paid request, even if the capture ignores abort',async t=>{
@@ -127,7 +152,7 @@ test('a job directory junction cannot expose an image or redirect cleanup outsid
 
 test('console exposes the drawing card and assets while requiring console authentication for settings',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'drawing-console-'));fs.mkdirSync(path.join(root,'config'));fs.copyFileSync(new URL('../config/wechatagent.example.json',import.meta.url),path.join(root,'config/wechatagent.json'));
-  const instance=createConsole({root,port:0,fetchImpl:async()=>{throw Error('not running');}});await instance.start();t.after(()=>{instance.close();fs.rmSync(root,{recursive:true,force:true});});const base='http://127.0.0.1:'+instance.server.address().port;
+  const instance=createConsole({root,port:0,fetchImpl:async()=>{throw Error('not running');},capabilityExecution:createDrawingExecution({fetchImpl:async()=>{throw Error('not running');}})});await instance.start();t.after(()=>{instance.close();fs.rmSync(root,{recursive:true,force:true});});const base='http://127.0.0.1:'+instance.server.address().port;
   const info=await(await fetch(base+'/api/info')).json(),headers={'X-Console-Token':info.token};assert.equal((await fetch(base+'/api/drawing-capability')).status,401);
   const catalog=await(await fetch(base+'/api/extensions',{headers})).json();assert.equal(catalog.extensions.find(row=>row.id==='native-gpt-drawing').management,'drawing');
   for(const file of ['/drawing-capability.js','/drawing-capability.css'])assert.equal((await fetch(base+file)).status,200);

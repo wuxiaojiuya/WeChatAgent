@@ -9,7 +9,7 @@ import {createAudioRuntimeInstaller} from './audio-runtime-installer.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {createRvcModels} from './rvc-models.mjs';
 import {createVoiceProfiles} from './voice-profiles.mjs';
-import {createSpeechRvc} from './speech-rvc.mjs';
+import {createDshCapabilityClient} from './dsh-capability-client.mjs';
 import {createPersonaApprovals} from './persona-approvals.mjs';
 import {administratorForChat,administratorFriend,privateChatId} from './chat-administrators.mjs';
 import fs from 'node:fs';
@@ -104,7 +104,7 @@ export function validateConsoleConfig(config, root) {
 
 import {allowedConversation,validateConversationSettings,conversationWorkMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {createNativeVoiceDelivery} from './native-voice-delivery.mjs';
-export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions, speechRvc } = {}) {
+export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions, capabilityExecution } = {}) {
   const updates=createUpdateChecker({root,fetchImpl});
   const publicDir = path.join(projectRoot, 'public', 'console');
   const pluginInstaller=new PluginInstaller(root);
@@ -113,12 +113,13 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const voiceProfiles=createVoiceProfiles({root,models:rvcModels});
   const audioInstaller=createAudioRuntimeInstaller({root,nodeExecutable,...audioInstallerOptions});
   let voiceTransport={ready:false,sent:false,message:'等待连接微信原生语音接口。'};
-  const audioCapabilities=createAudioCapabilities({root,fetchImpl,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles,speechRvc:speechRvc??createSpeechRvc({root,models:rvcModels})});
-  const musicCapabilities=createMusicCapabilities({root,fetchImpl,settings:()=>audioCapabilities.singingSettings(),models:rvcModels,
+  const generation=capabilityExecution??createDshCapabilityClient({root,config:()=>snapshot().config,fetchImpl}).execute;
+  const audioCapabilities=createAudioCapabilities({root,execution:generation,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles});
+  const musicCapabilities=createMusicCapabilities({root,execution:generation,settings:()=>audioCapabilities.singingSettings(),models:rvcModels,
     planPerformance:async({signal,...body})=>(await plugin('/singing-performance',body,{signal})).performance});
   const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
   const nativeImage=createNativeImageDelivery({root,fetchImpl,config:()=>snapshot().config,enabledFor:key=>drawingCapability.allowed(key),reader});
-  const drawingCapability=createDrawingCapability({root,fetchImpl,config:()=>snapshot().config,delivery:nativeImage});
+  const drawingCapability=createDrawingCapability({root,execution:generation,config:()=>snapshot().config,delivery:nativeImage});
   const voiceRequests=new Map(),musicDeliveries=new Map();
   async function musicJobStatus(job){
     let entry=musicDeliveries.get(job.id);
@@ -254,7 +255,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       const readerState = value(0), adapter = value(2), health = value(3);
       const matchesDsh=dshConfigurationMatches(root,snapshot().config,health);
       if(optionalJson(preferenceFile).dshRestartRequired && matchesDsh)atomic(preferenceFile,{...optionalJson(preferenceFile),dshRestartRequired:false});
-      const dshReady = health?.ok === true && health.project === 'WeChatAgent' && sameProjectPath(health.projectRoot,root) && health.contextMode === 'native-session-v1' && health.behaviorPolicy === 'local-config-only-v1' && health.imageInput === 'native-attachment-v1' && (!optionalJson(preferenceFile).dshRestartRequired || matchesDsh);
+      const dshReady = matchesDsh && health.contextMode === 'native-session-v1' && health.behaviorPolicy === 'local-config-only-v1' && health.imageInput === 'native-attachment-v1';
       const readerReady = !!readerState && !!value(1) && !readerState.lastError;
       const bridgeReady = !!value(4) && adapter?.ob_connected === true;
       const hookReady = adapter?.hook_connected === true && adapter?.hook_account_verified === true && adapter?.version === config.hook.expectedVersion;
@@ -350,7 +351,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const saved=snapshot().config,preferences=optionalJson(preferenceFile);
         let result;
         try{result=await refreshDsh({root,config:saved,previousPort:body.previousDshPort??preferences.previousDshPort,waitForIdle:body.restartServices??preferences.applyRestartServices,fetchImpl});}
-        catch(error){output(error.message+'\n');throw error;}
+        catch(error){if(error.message==='DSH_RELOAD_UPGRADE_REQUIRED')markPending(true);output(error.message+'\n');throw error;}
         output('DSH 配置：'+result.status+'\n');
         if(body.restartServices??preferences.applyRestartServices)return execute({...command('restart'),timeoutMs:180000},output);
         return 0;

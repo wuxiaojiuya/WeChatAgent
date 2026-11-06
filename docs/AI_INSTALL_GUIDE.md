@@ -1,10 +1,14 @@
-# AI 安装指南：本地语音回复与 RVC 翻唱
+# AI 安装指南：本地语音回复与自主演唱
 
 这份文档供有终端和文件操作权限的 AI 编程助手使用。用户可以把下面的提示词和本仓库地址交给 AI，让它检查电脑、准备环境并逐项验证。普通聊天模型若不能操作电脑，只能给出命令，不能代为完成安装。
 
 当前源码已提供「设置 → 语音与翻唱环境」的一键安装、修复和检查。Windows x64 CPU 用户优先使用该入口，操作说明见 [音频环境安装](AUDIO_INSTALLER.md)。下文保留手动部署与排障方法，适用于旧版、下载失败或需要自行适配 GPU 的环境。
 
 本指南以 **Windows x64、原生 CPU 推理**为基线，覆盖肥鱼 TTS 和「SoulX 演唱干声 → 所选 .pth 换声 → 原曲伴奏混音」。维护机已验证这条路线；本文不是已在所有全新 Windows 系统验证过的一键安装器。NVIDIA、AMD、Intel GPU 路线需要另外适配和实际验收，不能仅更换 PyTorch 下载地址就声称可用。
+
+当前源码的分工是：WeChatAgent 管理能力设置、密钥、任务记录、微信收发和环境安装；DSH 能力插件执行服务调用、歌曲搜索与下载、音轨分析、SoulX 演唱、RVC 换声和混音；DSH 中的 AI 理解意图、选择文字/语音/绘画/唱歌并编排步骤。能力插件随现有桥接插件包自动配置和加载，无需手动注册第二个插件。
+
+本地服务与 Python 环境安装成功后，还要让 DSH 加载当前项目插件，才能从能力页检查服务或生成试听。DSH 未打开或插件未就绪时明确失败，WeChatAgent 不回退到控制台执行推理。环境、音色与任务仍存放在原项目数据工作区，不因职责拆分而迁移目录。本指南描述当前源码，并不表示包含这些变更的安装包已经发布。
 
 ## 直接交给 AI 的提示词
 
@@ -13,19 +17,22 @@
 先阅读 README.md、docs/QUICK_START.md、docs/AI_INSTALL_GUIDE.md 和
 docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
 
-目标：在我的 Windows 电脑安装本地肥鱼语音回复和 RVC 翻唱环境，
+目标：在我的 Windows 电脑安装本地肥鱼语音回复和 SoulX + RVC 演唱环境，
 先生成本地试听，通过后再指导我接入微信。
 
 请先检测项目/数据工作区、Python、Node.js、Git、FFmpeg、内存、磁盘和显卡，
 给出缺少的项目与预计下载量，然后在已有安装授权范围内继续。
-使用两个独立的 Python 3.11 环境，按指南固定上游版本与关键依赖；
+TTS 与 RVC 使用各自独立的 Python 3.11 环境，SoulX 另按其指南准备独立环境；按指南固定上游版本与关键依赖，
 模型从原发布方下载，保留许可、校验文件并记录实际下载版本。
 已有安装先检查和复用，不覆盖我的账号配置、模型或 API Key。
 
 不要把 TTS、RVC、SoulX、微信读取器的 Python 环境混装。优先使用设置页一键安装；SoulX 固定依赖、官方模型清单及验收见 docs/SOULX_SINGING.md。
+WeChatAgent 负责设置、密钥、任务、微信收发和环境安装，DSH 能力插件负责执行，DSH 中的 AI 负责决策和编排。
+通过项目现有桥接插件安装流程加载能力插件，不另外手动注册第二个插件；确认 DSH 指向当前数据工作区并保持运行。
 不要仅凭 pip 安装成功或 HTTP health 成功就报告完成。
-必须验证短句 TTS，以及一段本地音源的分离、SoulX 实际演唱、所选 RVC 换声和伴奏混音，
+必须从项目能力页经 DSH 插件验证短句 TTS + 所选 RVC 音色，以及一段本地音源的分析、AI 编排、SoulX 实际演唱、所选 RVC 换声和伴奏混音，
 报告音频位置、实际时长、推理设备与失败项。
+直接运行底层 Python 脚本只用于单组件排障，不能代替 DSH 插件接入和完整演唱链路的验收；插件未就绪时不增加控制台本地推理回退。
 如果缺少音源，可先完成 TTS，再向我索取本地音频。
 本次安装不自动向微信联系人发送消息，也不自行启用新的聊天权限。
 若当前项目已经停止，除安装验证所需服务外不要恢复自动聊天。
@@ -42,12 +49,13 @@ docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
 | 系统 | Windows x64；本指南使用 PowerShell |
 | Node.js | 22.13.0 或以上，满足项目 `package.json` |
 | Git | 可在子进程的 PATH 中执行，用于固定源码和运行期校验 |
-| 音频 Python | 两个独立 Python 3.11 x64 环境；维护机为 3.11.18 |
+| 音频 Python | TTS 与 RVC 各自独立的 Python 3.11 x64 环境；维护机为 3.11.18；SoulX 另有独立环境，按 [SoulX 指南](SOULX_SINGING.md) 安装 |
+| DSH | 独立安装 DSH Desktop，配置可用的对话模型，加载当前项目桥接插件包及其自动配置的能力插件 |
 | 微信读取器 Python | 源码安装按 QUICK_START 使用独立 Python 3.13，依赖见 `scripts/reader-requirements.txt` |
 | PyTorch | CPU 构建；TTS 与 RVC 的版本不同，见下一节 |
 | FFmpeg | 需要真实 `ffmpeg.exe`；当前翻唱入口固定使用 `C:/ffmpeg-tools/bin/ffmpeg.exe` |
 | 内存 | 建议 16 GB 或以上；这是部署建议，不是已认证的最低要求 |
-| 磁盘 | 建议至少 25 GB 可用空间，供约 13 GiB 已展开环境、下载与临时音轨使用 |
+| 磁盘 | 完整语音与 SoulX 演唱建议至少 35 GB 可用空间，供独立环境、模型、下载与临时音轨使用 |
 | 显卡 | CPU 基线不要求独立显卡，推理可能明显慢于音频时长 |
 
 不要强行占用已被其他软件使用的端口。TTS 默认 `127.0.0.1:9880`，可选 ASR 为 `127.0.0.1:9881`，控制台为 `127.0.0.1:3210`。先核对监听进程归属，再决定是否需要停止项目自己的旧服务。
@@ -71,7 +79,7 @@ docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
 
 ### 已使用的 CPU 关键依赖
 
-这是关键版本表，**不是完整依赖锁文件**。剩余依赖以固定服务的推理依赖清单为基线解析，成功后在本机保存完整冻结清单。
+这是 TTS 与 RVC 的关键版本表，**不是完整依赖锁文件**。SoulX 的独立依赖和模型清单见 [SoulX 指南](SOULX_SINGING.md)。剩余依赖以固定服务的推理依赖清单为基线解析，成功后在本机保存完整冻结清单。
 
 | 组件 | feiyu-tts | feiyu-cover |
 | --- | --- | --- |
@@ -82,7 +90,7 @@ docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
 | soundfile | `0.12.1` | `0.14.0` |
 | onnxruntime | `1.22.0`，CPU Provider | `1.22.0`，CPU Provider |
 | 其他关键项 | `modelscope==1.20.0`、`wetext==0.0.4`、`HyperPyYAML==1.2.3`、`omegaconf==2.3.0`、`pyworld==0.3.4` | `demucs==4.0.1`、`faiss-cpu==1.14.3`、`scipy==1.17.1`、`omegaconf==2.4.0` |
-| TTS HTTP 服务 | 维护机使用 `fastapi==0.115.6`、`uvicorn==0.30.0`；还需服务源码导入的 HTTP/表单依赖 | 无需另建翻唱 HTTP 服务，由项目调用本地 Python |
+| TTS HTTP 服务 | 维护机使用 `fastapi==0.115.6`、`uvicorn==0.30.0`；还需服务源码导入的 HTTP/表单依赖 | 无需另建翻唱 HTTP 服务，由 DSH 能力插件调用项目固定的本地 Python 入口 |
 
 不要直接执行 CosyVoice 原仓库的整份训练 requirements：其中的 Torch、CUDA、训练和加速组件与本指南不一致。固定肥鱼服务提供 `server/runtime_profiles/requirements-tts.txt` 和 `requirements-rvc.txt`，供推理依赖使用。其 `requirements-service.txt` 还递归引用其他功能依赖，可能与上表的 TTS `soundfile` 版本冲突；安装 AI 应先核对并生成本地兼容的推理清单，不能用 `--no-deps` 隐藏冲突或忽略 `pip check`。
 
@@ -93,6 +101,7 @@ docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
 ```text
 <ProjectRoot>/
   scripts/                               # 仓库已提供的集成入口
+  packages/dsh-capabilities-plugin/       # DSH 内执行绘画、语音和演唱；随桥接包自动加载
   state/maintenance/audio-capabilities/
     feiyu-cover/
       venv/Scripts/python.exe
@@ -111,6 +120,10 @@ docs/AUDIO_RUNTIME.md，再核对当前源码的实际入口。
       normalizer.json
       voice-service.json
       service-data/                      # 本机密钥、任务与音频，不提交 Git
+    soulx-singer/                        # 独立环境，完整清单见 SoulX 指南
+      venv/Scripts/python.exe
+      runtime.cpu.json
+      source/pretrained_models/SoulX-Singer/model.pt
 ```
 
 在实际工作区执行下列环境骨架。运行前先检查目标目录，已存在的 venv 不覆盖。Python launcher 若不可用，可使用检测到的 Python 3.11 完整路径，或用 uv 创建相同位置的环境。
@@ -139,10 +152,11 @@ if ($LASTEXITCODE -ne 0) { throw 'TTS Torch installation failed' }
 4. 从模型官方来源下载完整包，使用固定服务 `feiyu_runtime.common.verify_package` 校验；保留 manifest、参考音频、索引及所有许可文件。不能只下一个 `.pth` 或 `.pt` 就当作完整默认声库。
 5. 将 Demucs 权重放到布局中的位置，并在同目录生成 `download.json`，内容包含上表官方 `url`、完整 `sha256` 和实际 `size`。当前 `scripts/music-cover.py` 会读取并核验这个文件。
 6. FFmpeg 安装到当前入口要求的位置，同时验证 `ffmpeg -version`。若用户已有别处的 FFmpeg，应明确处理项目固定路径的兼容性，不能只把 PATH 中有 FFmpeg 当作完成。Git 必须能被 Python 子进程找到；无须为了占位而创建假的 `tools/mingit`。
+7. 按 [SoulX 安装与模型来源](SOULX_SINGING.md) 准备独立的 `soulx-singer` 环境及完整模型清单，执行其实际干声验收。只完成上述 TTS/RVC 两个环境不能报告唱歌环境已完成。
 
 ## 4. 为本机生成运行配置
 
-两份 `runtime.cpu.json` 均应由本机环境生成，不能复制别人的绝对路径或版本号。格式来自固定服务的 `feiyu_runtime/common.py` 和 `scripts/setup_runtime.py`。
+下面的 TTS 与 RVC 两份 `runtime.cpu.json` 均应由本机环境生成，不能复制别人的绝对路径或版本号。格式来自固定服务的 `feiyu_runtime/common.py` 和 `scripts/setup_runtime.py`。SoulX 的配置与完整性校验另按其安装指南完成。
 
 | 字段 | TTS | RVC |
 | --- | --- | --- |
@@ -177,7 +191,7 @@ if ($LASTEXITCODE -ne 0) { throw 'TTS Torch installation failed' }
 }
 ```
 
-这里的 TTS 服务只负责说话。唱歌由本项目本地 SoulX/RVC/混音入口完成。设置页安装 SoulX 后，自动提取歌词与旋律，无需手工制作 MIDI，也不调用上游 `/v1/singing`。
+这里的 TTS 服务只负责说话。唱歌由 DSH 能力插件调用项目固定的本地 SoulX/RVC/混音入口完成，AI 负责分析后的演唱编排。设置页安装 SoulX 后，自动提取歌词与旋律，无需手工制作 MIDI，也不调用上游 `/v1/singing`。
 
 Windows 文本规范化还需安装 AI 准备可由 `wetext==0.0.4` 使用的本地资源，确认数字、中文短句能正常处理。`feiyu-tts/normalizer.json` 的格式为 `{"directory":"<本机 WeText 资源绝对路径>"}`。该目录的 `verified-files.json` 必须是资源相对文件名到 SHA256 的映射，覆盖实际使用的资源，并在确认下载来源后生成；集成入口 `scripts/feiyu-site/sitecustomize.py` 会按此校验。不要把其他电脑的 AppData 路径写进配置，也不要依赖聊天时临时下载资源。
 
@@ -185,8 +199,11 @@ Windows 文本规范化还需安装 AI 准备可由 `wetext==0.0.4` 使用的本
 
 | 用途 | 当前入口 |
 | --- | --- |
+| DSH 能力执行 | `packages/dsh-capabilities-plugin/index.mjs` 与 `runtime.mjs`，由现有桥接插件包自动加载 |
 | TTS 服务 | `scripts/feiyu-service.py`，使用固定服务并生成本项目情绪覆盖层 |
-| 翻唱编排 | `scripts/music-cover.py` |
+| 参考音轨分析 | DSH 能力插件调用 `scripts/music-reference.py`；分离参考与伴奏、提取实际歌词和谱面 |
+| 演唱决策与编排 | DSH 中已配置的对话模型；提交并验证 `score-performance-v1` 分句方案 |
+| 按方案执行演唱 | DSH 能力插件调用 `scripts/music-cover.py`，执行 SoulX、RVC 与混音 |
 | SoulX 预处理与演唱 | `scripts/music-soulx-worker.py`，独立 CPU 环境；固定文件清单 `scripts/soulx-assets.json` |
 | RVC 实际推理 | `scripts/music-rvc-worker.py`，含中文路径的 FAISS 字节读取适配 |
 | 模型上传与检查 | 能力页，以及 `scripts/rvc-inspect.py` |
@@ -212,28 +229,20 @@ runpy.run_path(str(project / "scripts/music-cover.py"), run_name="__main__")
 & $TtsPython -B .\scripts\feiyu-service.py
 ```
 
-另一个终端检查 `http://127.0.0.1:9880/health`，再打开项目控制台，在「能力 → 语音回复」选择「本机肥鱼服务（自动连接）」，检测后生成本地试听。服务首次生成的 API Key 位于 `data_dir/api_key.txt`，项目自动读取，不要求用户复制填写，不打印、不写入文档。通过 `scripts/feiyu-service.py` 启动时会移除继承的 `FEIYU_API_KEY` 环境变量覆盖，避免进程密钥与磁盘凭据不一致；独立部署的其他服务通过高级自定义配置连接。情绪覆盖层依赖固定服务源码；出现版本不匹配时核对提交，不删除完整性检查。
+另一个终端检查 `http://127.0.0.1:9880/health`，再确认 DSH 已加载当前项目插件，在项目控制台「能力 → 语音回复」选择「本机肥鱼服务（自动连接）」，经插件检测后生成本地试听。服务首次生成的 API Key 位于 `data_dir/api_key.txt`，由本机能力执行层自动读取，不要求用户复制填写，不打印、不写入文档。通过 `scripts/feiyu-service.py` 启动时会移除继承的 `FEIYU_API_KEY` 环境变量覆盖，避免进程密钥与磁盘凭据不一致；独立部署的其他服务通过高级自定义配置连接。情绪覆盖层依赖固定服务源码；出现版本不匹配时核对提交，不删除完整性检查。
 
-翻唱在能力页选默认肥鱼模型，或上传自己的 `.pth` 和匹配 `.index`。命令行验收可使用完整默认声库目录，替换下面的音源路径，并为每次运行选新输出目录：
+在「能力 → 语音回复」选择默认肥鱼音色，或上传自己的 `.pth` 和配套 `.index`，唱歌沿用同一份音色档案。通过唱歌页面导入至少 10 秒的本地普通音源，选择片段并生成本地试听。先由能力插件分析实际歌词、谱面与参考音轨，再由 DSH 对话模型编排，最后由插件执行 SoulX → RVC → 混音；试听不发送微信。
 
-```powershell
-$InputAudio = '<至少 10 秒的本地 MP3/FLAC/WAV 完整路径>'
-$RvcPackage = Join-Path $CoverRoot 'models/FeiyuVoice-RVC'
-$TestOutput = Join-Path $ProjectRoot ('state/audio-install-check/cover-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-& $CoverPython -B .\scripts\music-cover.py --input $InputAudio --start 0 --seconds 10 --model $RvcPackage --output $TestOutput --quality enhanced
-if ($LASTEXITCODE -ne 0) { throw 'Local cover validation failed' }
-```
-
-使用自有 RVC 模型时，先让能力页完成上传与校验，再用生成的 `state/rvc-models/<模型ID>/` 目录作为 `--model`，不要把一个裸 `.pth` 文件当作模型目录传入。
+底层 Python 命令可用于定位单组件错误，但直接执行 `music-cover.py`、省略 AI 编排或只给原唱换声不能算完整演唱链路验收。现有模型保留在 `state/voice-profiles` 和 `state/rvc-models`，TTS/RVC/SoulX 环境保留在上述目录，无需复制到 DSH 安装目录。
 
 ## 6. 验收标准与交付
 
 安装 AI 应依次报告这些结果，不能把模拟测试通过代替真实推理：
 
-1. **依赖**：两个 Python 均可导入其所需模块；`pip check` 无冲突；CPU Torch 和 ONNX Provider 符合配置，Git 提交、源文件和模型摘要核验通过。
-2. **语音**：生成一条简短中文试听 WAV，文件可解码且非静音，检查实际采样率与时长；分别测试数字文本和一条情绪表达。情绪可辨程度最终需要用户试听。
-3. **翻唱**：10 秒本地输入确实生成原唱人声、伴奏、RVC 人声及最终混音。查看 `result.json`、`rvc/cover_result.json` 和 `faiss_reads.json`，确认实际载入模型/索引，检查非数值、静音与削波；再让用户试听。
-4. **页面接入**：能力页显示已准备，能选择模型并生成本地试听。在线歌曲搜索和抖音解析独立验证；网站无可访问音源或 Cookie 过期不等于 RVC 安装失败。
+1. **依赖**：TTS、RVC 与 SoulX 各自的 Python 均可导入所需模块；`pip check` 无冲突；CPU Torch 和 ONNX Provider 符合各自配置，Git 提交、源文件和模型摘要核验通过。
+2. **语音**：从能力页经 DSH 插件生成一条简短中文试听，确认 TTS 后实际调用所选 RVC 模型；文件可解码且非静音，检查实际采样率与时长，分别测试数字文本和一条情绪表达。情绪可辨程度最终需要用户试听。
+3. **演唱**：从至少 10 秒的本地输入经完整链路生成参考分析、AI 分句方案、SoulX 新演唱干声、RVC 人声及最终混音。查看 `performance.json`、`soulx/result.json`、最终 `result.json`、`rvc/cover_result.json` 和 `faiss_reads.json`，确认实际执行编排并载入所选模型/索引，检查非数值、静音与削波；再让用户试听。原唱人声只作参考，不能直接换声交差。
+4. **页面与插件接入**：DSH 确认加载当前项目能力插件，能力页可检查服务、选择音色并生成本地试听；断开 DSH 时返回插件未就绪，不由控制台替代生成。在线歌曲搜索、网易云验证和抖音解析独立验证；网站无可访问音源或 Cookie 过期不等于 RVC 安装失败。
 5. **微信发送**：本地生成成功不代表微信已送达。只有用户另行指定测试聊天并授权发送后才测试，并取得实际回执/播放确认。
 
 交付报告应包含项目和环境位置、Python/依赖版本、模型来源与 revision、验证音频的绝对路径、成功/失败项，以及启停方式。完整依赖冻结清单、下载记录、生成配置与测试音频均保存在本机 `state/`，不上传 GitHub。停止单独启动的测试服务；不要改变用户原先停止的自动聊天状态。
@@ -248,18 +257,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Local cover validation failed' }
 
 ### 从另一目录迁移时额外检查
 
-整份复制 `state/maintenance/audio-capabilities` 不能保证直接运行。Python venv 不是通用便携环境；优先在新位置重建并按本机冻结清单安装。确需迁移已有环境时，至少核对 `pyvenv.cfg` 的基础解释器位置、TTS 服务配置的 `data_dir/package/runtime_profile`、两份 runtime profile 的 `python/repo`，并实际运行两个解释器与模型验证。
+整份复制 `state/maintenance/audio-capabilities` 不能保证直接运行。Python venv 不是通用便携环境；优先在新位置重建并按本机冻结清单安装。确需迁移已有环境时，至少核对各环境 `pyvenv.cfg` 的基础解释器位置、TTS 服务配置的 `data_dir/package/runtime_profile`、TTS/RVC runtime profile 的 `python/repo` 及 SoulX 配置，并实际运行三个解释器与各自模型验证。
 
 WeText 资源可能在原部署进程的 `%LOCALAPPDATA%` 中，而非项目目录；沙箱或桌面应用可能将该变量重定向。先确认原配置所指目录真实存在，再按来源与 SHA256 校验完整资源，将其放入当前工作区的 `state/media-runtime/wetext/` 并更新 `normalizer.json`。不要猜某个固定用户的 AppData 路径，也不要只迁移 JSON 而遗漏 tagger/verbalizer 等资源。`no frontend is available`、`TTS returned no audio` 应检查规范化组件和上游日志，不能只重复填写 Key。
 
 DSH 插件安装目录变化后，需要验证插件 health 返回的 `projectRoot` 指向当前工作区。DSH 启动时加载的旧插件不会因为目录复制就自动切换；如果 AI 自己运行在 DSH 内，应让用户完成重启后继续，而不是关闭自己的宿主。旧进程返回 401 可能是项目令牌不一致，不是 TTS 密钥错误。
 
+升级到职责拆分后的源码时，沿用项目桥接插件包的安装/更新入口，能力插件会一同加载；不要另建第二份手动注册或让旧、新插件同时指向不同工作区。插件连接失败与 Python 模型缺失应分别排查。
+
 PowerShell 5.1 发送包含中文的 JSON 时，应显式使用 UTF-8 字节，例如把 JSON 文本通过 `[Text.Encoding]::UTF8.GetBytes($JsonText)` 转为请求 body，并声明 `application/json; charset=utf-8`。不要仅根据终端显示正常判断收到的中文正常，更不要把被编码替换成 `?` 的请求用于模型验收。
 
 | 现象 | 检查与处理 |
 | --- | --- |
+| DSH 能力插件未连接或未就绪 | 打开 DSH，确认项目桥接插件包已更新并加载、`projectRoot` 指向当前工作区；不通过控制台直接推理绕过插件 |
 | `FEIYU_LOCAL_RUNTIME_MISSING` | 检查真实数据工作区、固定服务目录和 `voice-service.json`，不要改指向不存在的路径 |
-| Torch、NumPy 或依赖解析冲突 | 确认两个独立 Python；按关键版本与推理清单修复，再运行 `pip check` |
+| Torch、NumPy 或依赖解析冲突 | 确认 TTS、RVC、SoulX 使用独立 Python；按各自关键版本与推理清单修复，再运行 `pip check` |
 | 找不到 FFmpeg / Git | 核对翻唱固定 FFmpeg 路径，以及 Python 子进程实际继承的 PATH |
 | `Runtime source commit changed` / 摘要不匹配 | 检查精确提交、子模块、换行格式和经过校验的 Applio 覆盖层，不修改包内校验文件 |
 | `FEIYU_NORMALIZER_INTEGRITY_FAILED` | 检查本机 WeText 目录、资源摘要和 `verified-files.json`，不要删除规范化环节 |

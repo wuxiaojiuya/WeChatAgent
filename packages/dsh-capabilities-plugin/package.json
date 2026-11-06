@@ -1,0 +1,10 @@
+{
+  "name": "wechat-capabilities-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "description": "DSH execution plugin for WeChatAgent drawing, speech and singing",
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}},
+  "exports": {".": "./index.mjs", "./runtime": "./runtime.mjs", "./contract": "./contract.mjs"}
+}

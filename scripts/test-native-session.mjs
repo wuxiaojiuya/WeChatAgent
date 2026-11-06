@@ -356,21 +356,33 @@ async function fixture(t) {
       sess.append('compaction/end',fail?{error:{message:'fixture summary failure'}}:{});
     };
     function register(sid,creation={}){
-      const registeredTools=new Map(),toolGuards=[];
+      const registeredTools=new Map(),toolRegistrations=new Map(),toolGuards=[];
+      const schema=({name,description,parameters,deferLoading})=>({name,...(description===undefined?{}:{description}),parameters,...(deferLoading===true?{deferLoading}: {})});
+      const nativeExecutor={describe:definitions=>({schemas:definitions.map(schema)}),execute:async()=>({})};let executor=nativeExecutor;
       let prefixRegistrations=0;const systemSections=new Map(),systemPrompt={getSectionOrder:()=>0,section(section){if(section.name==='wechatagent:fixed-window-prefix'){prefixRegistrations++;calls.prefixBindings++;}if(systemSections.has(section.name))throw Error('duplicate scoped section');systemSections.set(section.name,section);return ()=>systemSections.delete(section.name);}};
-      const sess=session(sid,creation), agent={session:sess,ctx:{on(){return ()=>{};},systemPrompt:options.disableSystemPrompt?undefined:systemPrompt,tools:{presentAs(){},guard(fn){toolGuards.push(fn);return ()=>{};},register(tool){registeredTools.set(tool.name,tool);return ()=>registeredTools.delete(tool.name);}}},systemSections,registeredTools,toolGuards,autoCompact:false,overflowCompact:false,
+      const sess=session(sid,creation), agent={session:sess,ctx:{on(){return ()=>{};},systemPrompt:options.disableSystemPrompt?undefined:systemPrompt,tools:{presentAs(){},guard(fn){toolGuards.push(fn);return ()=>{};},register(tool,registration={}){registeredTools.set(tool.name,tool);toolRegistrations.set(tool.name,{definition:tool,when:registration.when});return()=>{registeredTools.delete(tool.name);toolRegistrations.delete(tool.name);};},selectExecutor(){return executor;},setExecutor(value){assert.equal(executor,nativeExecutor,'only one executor per agent scope');executor=value;return()=>{executor=nativeExecutor;};}}},systemSections,registeredTools,toolGuards,autoCompact:false,overflowCompact:false,
         followup(message){queueMicrotask(async()=>{
           const id=++turn;sess.append('turn/start',{turn:id});try{
           if(archived.has(sid)){sess.append('turn/end',{turn:id,reason:{kind:'blocked'}});return;}
           if(agent.autoCompact){agent.autoCompact=false;compact(sess);}
           for(let step=0;step<(options.steps??1);step++){
           const inbox=step===0?[message]:[];
+          // The installed DSH driver resolves async registration conditions and
+          // snapshots executor-owned schemas BEFORE agent/pre-step. Refreshing
+          // only in pre-step can add instructions while omitting the real tool.
+          const stepSignal=new AbortController().signal,admitted=[...(options.requestSeed?.tools??[])];
+          for(const registration of toolRegistrations.values()){
+            stepSignal.throwIfAborted();
+            if(registration.when===undefined||await registration.when({agent,modelSelection:{provider:'fixture-provider',model:'fixture-model'},signal:stepSignal}))admitted.push(registration.definition);
+            stepSignal.throwIfAborted();
+          }
+          const tools=structuredClone(executor.describe(admitted).schemas);
+          const systemText=['fixture system guard',...[...systemSections.values()].sort((a,b)=>a.order-b.order).map(section=>section.name==='wechatagent:fixed-window-prefix'&&(options.omitNativePrefix||options.omitInitialNativePrefix&&prefixRegistrations===1)?'':typeof section.text==='function'?section.text({scope:agent}):section.text)].filter(Boolean).join('\n\n');
           const decision=await waterfall('agent/pre-step',{agent,messages:inbox,step},async()=>({kind:'enter',messages:inbox}));
-          const request=await waterfall('agent/request',{agent},async()=>({provider:'fixture-provider',model:'fixture-model',...options.requestSeed}));
+          const request={...await waterfall('agent/request',{agent},async()=>({provider:'fixture-provider',model:'fixture-model',...options.requestSeed})),tools};
           if(request.reasoningEffort!==undefined)assert((options.reasoningInfo??{efforts:[{id:'off'},{id:'high'}]}).efforts.some(item=>item.id===request.reasoningEffort),'provider rejected unsupported reasoning effort');
           assert.deepEqual(JSON.parse(JSON.stringify(request)),request,'request/header must preserve a lossless JSON snapshot');
           calls.requests.push(request);
-          const systemText=['fixture system guard',...[...systemSections.values()].sort((a,b)=>a.order-b.order).map(section=>section.name==='wechatagent:fixed-window-prefix'&&(options.omitNativePrefix||options.omitInitialNativePrefix&&prefixRegistrations===1)?'':typeof section.text==='function'?section.text({scope:agent}):section.text)].filter(Boolean).join('\n\n');
           // The native driver commits the first system head only AFTER both
           // hooks. Starting fixtures with a prebuilt head hid early appends.
           if(!sess.snapshotEvents().some(event=>event.type==='system/message')){
@@ -402,6 +414,8 @@ async function fixture(t) {
       agents:{get:sid=>agents.get(sid),create:async options=>{calls.create.push(options);if(calls.failCreate)throw new Error('fixture creation failed');const handle=register(options.sessionId,options);await options.setup(agents.get(options.sessionId).ctx);return handle;},resume:async options=>{calls.resume.push(options);if(calls.resumeError)throw calls.resumeError;const handle=register(options.resumeSessionId);await options.setup(agents.get(options.resumeSessionId).ctx);return handle;}}};
     ctx.tokenMeter = { measure: sess => ({ totalTokens: sess.snapshotEvents().some(e => e.type === 'compaction/end' && !e.data?.error) ? options.afterContextTokens ?? 1000 : options.contextTokens ?? 0, baseline: { kind: 'usage' } }) };
     ctx.workspaceRegistry=options.workspaceRegistry??{get archivedSessionIds(){return [...archived];}};
+    ctx.tools={schemas:()=>options.requestSeed?.tools??[]};
+    ctx.wechatCapabilities=options.capabilityRuntime;
     ctx.get=name=>ctx[name];ctx.llm={resolveModelInfo:async(provider,model)=>{assert.equal(provider,'fixture-provider');assert.equal(model,'fixture-model');return {inputModalities:['text','image'],reasoning:options.reasoningInfo??{efforts:[{id:'off'},{id:'high'}]}};}};
     ctx.attachments={saveImage:async image=>({attachmentId:'sha256:'+crypto.createHash('sha256').update(image.data).digest('hex'),mediaType:image.mediaType,width:1,height:1,bytes:image.data.length})};
     apply(ctx,{port,statePath,tokenFile,cwd:dir,provider:'fixture-provider',model:'fixture-model',...options});
@@ -416,6 +430,28 @@ async function fixture(t) {
   return {start,store,statePath,dir,archived,setPersona};
 }
 const key='wechat:private:123', persona='固定测试人格：简短自然。', info={conversationKey:key,persona,personaName:'测试人格',conversationName:'测试好友'};
+
+test('the actual bridge authenticates and streams generation to the independent DSH runtime',async t=>{
+  const f=await fixture(t),{createCapabilityRuntime}=await import('../packages/dsh-capabilities-plugin/runtime.mjs');
+  const {createDshCapabilityClient}=await import('./dsh-capability-client.mjs');
+  let runs=0;
+  const capabilityRuntime=createCapabilityRuntime({root:f.dir,accountScope:()=>'',executors:{
+    drawing:async(operation,payload,{onProgress})=>{runs++;assert.equal(operation,'drawing.generate');if(payload.fail)throw Object.assign(Error('Bearer private-provider-secret C:/private/key'),{code:'DRAWING_KEY_INVALID',status:401});onProgress('正在生成图片');return {image:'fixture-image',width:1,height:1};},
+    voice:{close(){}},singing:async()=>{throw Error('unexpected singing');},
+  }});t.after(()=>capabilityRuntime.close());
+  const r=await f.start({capabilityRuntime}),health=await r.request('/health');
+  assert.equal(health.capabilityExecution,'dsh-generation-v1');assert.equal(health.capabilityHost,'dsh');
+  fs.writeFileSync(path.join(f.dir,'state/social-dsh-token.txt'),'fixture-native-token');
+  const client=createDshCapabilityClient({root:f.dir,config:()=>({ports:{dshPlugin:Number(new URL(r.url).port)}}),accountScope:()=>''}),progress=[];
+  assert.deepEqual(await client.execute('drawing.generate',{settings:{}},{onProgress:stage=>progress.push(stage)}),{image:'fixture-image',width:1,height:1});
+  assert.deepEqual(progress,['正在生成图片']);assert.equal(runs,1);
+  await assert.rejects(client.execute('drawing.generate',{fail:true}),error=>error.code==='DRAWING_KEY_INVALID'&&!error.message.includes('private-provider-secret')&&!error.message.includes('C:/'));
+  const request={operation:'drawing.generate',payload:{},requestId:crypto.randomUUID(),issuedAt:Date.now(),accountScope:'',dshInstanceId:'stale-instance'};
+  assert.equal((await fetch(r.url+'/capability-execution',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request)})).status,401);
+  assert.equal((await r.request('/capability-execution',request,409)).error,'DSH_CONNECTION_CHANGED');
+  assert.equal((await r.request('/capability-execution',{...request,dshInstanceId:health.instanceId,accountScope:'wrong-account'},409)).error,'CAPABILITY_ACCOUNT_CHANGED');
+  assert.equal(runs,2);assert.equal(r.calls.model.length,0);
+});
 
 test('authenticated configuration reload preserves sessions, isolates accounts and restores them without restarting DSH',async t=>{
   const f=await fixture(t),r=await f.start(),file=path.join(f.dir,'config/wechatagent.json');
@@ -908,6 +944,29 @@ test('native drawing tools require the live enabled chat and guard final text an
  assert.match(JSON.stringify(f.store.get(first.sessionId).snapshotEvents()),/GPT 绘画/);
  assert.equal((await r.request('/followup',body)).text,first.text);assert.equal(requests.length,1);
  enabled=false;await r.request('/followup',{...info,message:'这次只看图，不要画图。'});assert.equal(requests.length,1);
+});
+
+test('drawing schemas are admitted before pre-step with one capability read per turn and disappear after revocation',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');
+ fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},history:{enabled:true,mode:'window',recentMessages:8,recentChars:4000}}}));
+ const names=['wechat_draw_image','wechat_drawing_status'];let enabled=true,chats=[key],reads=0;
+ const server=http.createServer((req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url==='/api/info')return res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'drawing-schema-fixture'}));
+  assert.equal(req.headers['x-console-token'],'drawing-schema-fixture');
+  assert.equal(req.url,'/api/drawing-capability','schema inspection must not submit a paid image request or send anything');reads++;
+  res.end(JSON.stringify({settings:{enabled,chats,apiKeyConfigured:true}}));
+ });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ const r=await f.start({steps:2}),schemas=()=>r.calls.requests.slice(-2).map(request=>request.tools.map(tool=>tool.name));
+ const visible=value=>{for(const schema of schemas())for(const name of names)assert.equal(schema.includes(name),value,'the actual first-step schema must reflect current drawing authorization');
+  const profile=JSON.parse(fs.readFileSync(f.statePath,'utf8')).profiles[key];for(const name of names)assert.equal(profile.windowRequest.toolNames.includes(name),value,'the llm/stream observation must contain the same schemas');};
+ await r.request('/followup',{...info,message:'我想看你的照片'});visible(true);assert.equal(reads,1,'both tools and both model steps share one lookup');
+ assert.match(r.calls.model[0],/\[GPT 绘画\]/);
+ await r.request('/followup',{...info,message:'新一轮只回复文字'});visible(true);assert.equal(reads,2,'a new turn refreshes authorization before its first schema snapshot');
+ enabled=false;await r.request('/followup',{...info,message:'绘画已关闭'});visible(false);assert.equal(reads,3);
+ enabled=true;chats=[];await r.request('/followup',{...info,message:'当前聊天撤销绘画授权'});visible(false);assert.equal(reads,4);
+ chats=[key];await r.request('/followup',{...info,message:'当前聊天重新授权，仅检查功能'});visible(true);assert.equal(reads,5);
 });
 
 test('a native video turn analyzes acoustic evidence before the model submits its own executable performance',async t=>{

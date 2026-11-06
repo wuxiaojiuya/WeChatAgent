@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 import {mediaFfmpeg} from './media-tools.mjs';
+import {createSingingExecutor} from '../packages/dsh-capabilities-plugin/singing.mjs';
 const videoId='a'.repeat(64),conversationKey='wechat:private:123';
 function wave(){
   const data=Buffer.alloc(44+44100*4);data.write('RIFF');data.writeUInt32LE(data.length-8,4);data.write('WAVEfmt ',8);data.writeUInt32LE(16,16);data.writeUInt16LE(1,20);data.writeUInt16LE(2,22);data.writeUInt32LE(44100,24);data.writeUInt32LE(44100*4,28);data.writeUInt16LE(4,32);data.writeUInt16LE(16,34);data.write('data',36);data.writeUInt32LE(data.length-44,40);return data;
@@ -15,7 +16,7 @@ function fixture(t,options={}){
   fs.mkdirSync(path.join(root,'state'));fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture-reader-token'}));
   const bytes=wave(),packet={videoId,conversationKey,startSeconds:0,seconds:1,mime:'audio/wav',b64:bytes.toString('base64'),sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
   const runReference=async({input,output,seconds})=>fs.writeFileSync(path.join(output,'reference.json'),JSON.stringify({schema:'singing-reference-v1',source_sha256:crypto.createHash('sha256').update(fs.readFileSync(input)).digest('hex'),seconds,analysis:{phrases:[{start:0,end:seconds}]}}));
-  const service=createMusicCapabilities({root,runReference,runCover:async()=>{throw Error('unexpected processing');},fetchImpl:async()=>Response.json(packet),...options});
+  const service=createMusicCapabilities({root,execution:createSingingExecutor({root}),runReference,runCover:async()=>{throw Error('unexpected processing');},fetchImpl:async()=>Response.json(packet),...options});
   t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});return {root,service,packet,bytes};
 }
 test('video singing rejects forged binding, corrupt audio and invalid timing before starting any job',async t=>{
