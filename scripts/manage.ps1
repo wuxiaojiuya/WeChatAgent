@@ -259,6 +259,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'WeChat-Hook is not ready. Use Open WeChat in WeChatAgent, finish login, then start again. Check the error above and state/logs/hook-init.log for native initialization details.' }
     }
     $env:SOCIAL_DSH_TOKEN = (Get-Content (Join-Path $stateDir 'social-dsh-token.txt') -Raw).Trim()
+    & $node (Join-Path $PSScriptRoot 'dsh-refresh.mjs')
+    if ($LASTEXITCODE -ne 0) { throw 'DSH_CONFIGURATION_APPLY_FAILED: See the configuration reload error above.' }
     $dshUrl = 'http://127.0.0.1:'+$config.ports.dshPlugin+'/health'
     if (-not (Test-Port ([int]$config.ports.dshPlugin))) {
         if (-not $config.runtime.dshDesktop -or -not (Test-Path -LiteralPath $config.runtime.dshDesktop)) { throw 'DSH_NOT_CONFIGURED: Install DSH from the setup link, then select its executable and save settings.' }

@@ -370,7 +370,7 @@ async function fixture(t) {
         });}};
       agents.set(sid,agent);return {dispose:async()=>agents.delete(sid)};
     }
-    const ctx={logger:()=>({info(value){calls.costLogs.push(value);},warn(){}}),on(name,fn){const list=listeners.get(name)??[];list.push(fn);listeners.set(name,list);},effect(fn){disposer=fn();},
+    const ctx={logger:()=>({info(value){calls.costLogs.push(value);},warn(){}}),on(name,fn){const list=listeners.get(name)??[];list.push(fn);listeners.set(name,list);return ()=>{const at=list.indexOf(fn);if(at>=0)list.splice(at,1);};},effect(fn){disposer=fn();},
       agentPresets:{resolve:async id=>({id}),mount:async (agentCtx,id)=>{agentCtx.preset=id;return {id};},composedPreset:agentCtx=>agentCtx.preset,serviceFor:(_agent,name)=>name==='compaction'?ctx.compaction:undefined},sessions:{get:sid=>store.get(sid),flush:async()=>true},
       sessionTitle:{get:sess=>sess.title,rename(sess,title){calls.titles.push(title);sess.title={title};sess.append('session/title',{title,source:{kind:'user'}});return sess.title;}},
       compaction:{compactNow:async agent=>{compact(agent.session);return {endSeq:agent.session.snapshotEvents().length-1};}},
@@ -391,6 +391,37 @@ async function fixture(t) {
   return {start,store,statePath,dir,archived,setPersona};
 }
 const key='wechat:private:123', persona='固定测试人格：简短自然。', info={conversationKey:key,persona,personaName:'测试人格',conversationName:'测试好友'};
+
+test('authenticated configuration reload preserves sessions, isolates accounts and restores them without restarting DSH',async t=>{
+  const f=await fixture(t),r=await f.start(),file=path.join(f.dir,'config/wechatagent.json');
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  const saved={wechat:{whitelist:{private:['123'],groups:[]}},dsh:{provider:'fixture-provider',model:'fixture-model'}};
+  fs.writeFileSync(file,JSON.stringify(saved));
+  const first=await r.request('/followup',{...info,message:'HOT_RELOAD_HISTORY'}),original=await r.request('/health');
+  const poll=async previous=>{for(let i=0;i<100;i++){try{const h=await r.request('/health');if(h.instanceId!==previous.instanceId)return h;}catch{}await new Promise(resolve=>setTimeout(resolve,10));}assert.fail('reload timed out');};
+  const denied=await fetch(r.url+'/reload-config',{method:'POST'});assert.equal(denied.status,401);
+  saved.dsh.model='changed-model';fs.writeFileSync(file,JSON.stringify(saved));
+  await r.request('/reload-config',{},202);let current=await poll(original);assert.equal(current.model,'changed-model');
+  saved.dsh.model='fixture-model';fs.writeFileSync(file,JSON.stringify(saved));await r.request('/reload-config',{},202);current=await poll(current);
+  const continued=await r.request('/followup',{...info,message:'CONTINUED'});assert.equal(continued.sessionId,first.sessionId);assert(r.calls.model.at(-1).includes('HOT_RELOAD_HISTORY'));
+  const accountFile=path.join(f.dir,'state/weflow/active-account.json');fs.mkdirSync(path.dirname(accountFile),{recursive:true});fs.writeFileSync(accountFile,JSON.stringify({id:'b'.repeat(64)}));
+  await r.request('/followup',{...info,message:'wrong account'},409);
+  await r.request('/reload-config',{},202);current=await poll(current);assert.equal(current.accountScope,'b'.repeat(64));
+  const other=await r.request('/followup',{...info,message:'OTHER_ACCOUNT'});assert.notEqual(other.sessionId,first.sessionId);assert(!r.calls.model.at(-1).includes('HOT_RELOAD_HISTORY'));
+  fs.writeFileSync(accountFile,JSON.stringify({id:''}));await r.request('/reload-config',{},202);await poll(current);
+  assert.equal((await r.request('/followup',{...info,message:'BACK'})).sessionId,first.sessionId);
+});
+
+test('configuration reload waits for a running response without cancelling or duplicating admission',async t=>{
+  const f=await fixture(t);let entered=false,release;const gate=new Promise(resolve=>release=resolve);
+  const r=await f.start({beforeAssistant:async()=>{entered=true;await gate;}});
+  const turn=r.request('/followup',{...info,message:'RUNNING'});
+  for(let i=0;i<100&&!entered;i++)await new Promise(resolve=>setTimeout(resolve,5));assert(entered);
+  const health=await r.request('/health');assert.equal((await r.request('/reload-config',{},409)).error,'CONFIGURATION_BUSY');
+  assert.equal((await r.request('/health')).instanceId,health.instanceId);release();await turn;
+  assert.equal(r.calls.model.length,1);
+  await r.request('/reload-config',{},202);
+});
 
 test('WeChat window personas live in isolated native system prefixes across turns, owner changes and restart',async t=>{
  const f=await fixture(t);allowGroupFixture(f);

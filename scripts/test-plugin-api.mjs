@@ -151,7 +151,8 @@ test('console ZIP installation protects authentication, keeps built-ins, serves 
   assert.equal((await rpc('/api/plugins',undefined,'bad')).status,401);
   const preview=await rpc('/api/plugins/inspect',{name:'fixture.zip',zip:bundle().toString('base64')}).then(r=>r.json());
   assert(preview.ticket);assert.equal((await rpc('/api/plugins/install',{ticket:preview.ticket,revision:preview.revision})).status,200);
-  const catalog=await rpc('/api/extensions').then(r=>r.json());assert.equal(catalog.canImport,false);assert.equal(catalog.canInstallZip,true);assert(catalog.extensions.every(item=>item.management==='project'));assert.equal(catalog.plugins[0].enabled,false);
+  const catalog=await rpc('/api/extensions').then(r=>r.json());assert.equal(catalog.canImport,false);assert.equal(catalog.canInstallZip,true);assert(catalog.extensions.every(item=>item.management==='project'||item.management==='audio'));assert.equal(catalog.plugins[0].enabled,false);
+  assert.deepEqual(catalog.extensions.filter(item=>item.management==='audio').map(item=>item.id).sort(),['native-singing','native-voice-output']);
   for(const asset of ['/plugins.js','/plugins.css','/plugin-api.md','/plugin-example.zip'])assert.equal((await fetch(base+asset)).status,200,asset);
   const sample=Buffer.from(await fetch(base+'/plugin-example.zip').then(r=>r.arrayBuffer()));assert(unpackZip(sample).some(file=>file.name==='index.mjs'));
   fs.writeFileSync(path.join(f.root,'config/plugins.json'),'{"version":1,"plugins":{"broken":"fixture-secret');

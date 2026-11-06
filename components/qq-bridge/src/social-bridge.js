@@ -24,6 +24,7 @@ import { ContextMaintenance } from './core/context-maintenance.js';
 import {HistoryStore} from '../../../packages/dsh-social-bridge-plugin/history-store.mjs';
 import {scopeHistory} from '../../../packages/dsh-social-bridge-plugin/work-modes.mjs';
 import {activeReaderAccount} from '../../../scripts/reader-account-state.mjs';
+import {applyLiveChatSettings} from './core/live-settings.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const configPath = path.resolve(process.argv[2] ?? path.join(root, 'config.social.json'));
@@ -119,6 +120,7 @@ adapter.onMessage(message=>{void voiceIngress.push(message).catch(()=>log('[Voic
 const personaApproval=createPersonaApprovalDelivery({root:historyRoot,adapter,settingsFor:memberSettings,accountScope:historyAccount.id,isReady:()=>activeReaderAccount(historyRoot).id===historyAccount.id,log});
 async function routeIncoming(message) {
   try {
+    refreshChatSettings();
     const list = message.kind === 'group' ? allowedGroups : allowedPrivate;
     if (!list.has(String(message.conversation_id))) {
       log(`[WeChat] denied ${message.kind}:${message.conversation_id}`); return;
@@ -148,14 +150,24 @@ await Promise.all([connection.check({force:true}),memberConnection.check({force:
 await adapter.start();
 log(`[Social] reverse OneBot listening on 127.0.0.1:${wechat.onebot?.server?.port ?? 11229}${wechat.onebot?.server?.path ?? '/ws'}`);
 const replayTimer = setInterval(() => {
+  refreshChatSettings();
   for (const key of buffer.keys()) engine.replay(key);
   for (const key of memberBuffer.keys()) memberEngine.replay(key);
 }, 30000);
+function refreshChatSettings(){
+  if(!config.search_policy_file)return;
+  try{
+    const current=JSON.parse(fs.readFileSync(config.search_policy_file,'utf8').replace(/^\uFEFF/,''));
+    applyLiveChatSettings(current,[engine,memberEngine],allowedGroups,allowedPrivate);
+    wechat.wake_words=current.wechat.wake_words;
+  }catch(error){log('[Social] settings refresh failed: '+error.message);}
+}
+const settingsTimer=setInterval(refreshChatSettings,500);refreshChatSettings();
 const noticeDelivery=createAssistantNoticeDelivery({adapter,plugin,settingsFor:()=>config.search_policy_file?JSON.parse(fs.readFileSync(config.search_policy_file,'utf8').replace(/^\uFEFF/,'' )).wechat:wechat,isReady:()=>connection.ready,log});
 const assistantNoticeTimer=setInterval(()=>void noticeDelivery.tick(),5000);
 const personaNoticeTimer=setInterval(()=>void personaApproval.tick(),5000);
 const proactiveTimer=setInterval(()=>void proactive.tick(),60000);void proactive.tick();
 const contextTimer = setInterval(() => void contextMaintenance.tick(), 30000); void contextMaintenance.tick();
-const stop = async () => { personaApproval.stop();clearInterval(personaNoticeTimer);voiceIngress.stop(); clearInterval(contextTimer);contextMaintenance.stop();clearInterval(proactiveTimer);noticeDelivery.stop();clearInterval(replayTimer);clearInterval(assistantNoticeTimer); connection.stop();memberConnection.stop();engine.stop();memberEngine.stop(); await adapter.stop(); historyStore.close(); process.exit(0); };
+const stop = async () => { clearInterval(settingsTimer);personaApproval.stop();clearInterval(personaNoticeTimer);voiceIngress.stop(); clearInterval(contextTimer);contextMaintenance.stop();clearInterval(proactiveTimer);noticeDelivery.stop();clearInterval(replayTimer);clearInterval(assistantNoticeTimer); connection.stop();memberConnection.stop();engine.stop();memberEngine.stop(); await adapter.stop(); historyStore.close(); process.exit(0); };
 process.once('SIGINT', () => void stop());
 process.once('SIGTERM', () => void stop());

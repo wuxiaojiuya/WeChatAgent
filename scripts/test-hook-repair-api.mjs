@@ -25,6 +25,7 @@ test('a failed startup port stays inspectable even when cached status claims the
  fs.mkdirSync(path.join(root,'config'));fs.mkdirSync(path.join(root,'state'));const config=JSON.parse(fs.readFileSync(path.join(source,'config/wechatagent.example.json'),'utf8'));
  const onebot=net.createServer(socket=>socket.end());await new Promise(resolve=>onebot.listen(0,'127.0.0.1',resolve));config.ports.onebot=onebot.address().port;t.after(()=>new Promise(resolve=>onebot.close(resolve)));
  fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_token:'fixture'}));
+ fs.mkdirSync(path.join(root,'state/weflow'));fs.writeFileSync(path.join(root,'state/weflow/WeFlow-config.json'),JSON.stringify({backend:'supplier-http',myWxid:'wxid_fixture',dbPath:path.join(root,'state/hook/accounts')}));
  const probes=[],app=createConsole({root,port:0,runner:async(_spec,output)=>{output('SERVICE_PORT_IN_USE service=adapter port=8766 owners=777');return 1;},fetchImpl:async input=>{
   const url=new URL(input);return new Response(JSON.stringify(url.pathname==='/status'?{ob_connected:true,reader_connected:true,hook_connected:true,hook_account_verified:true,version:config.hook.expectedVersion}:{lastError:''}));
  },processProbe:async input=>{probes.push(input);return{items:[]};},processStop:async()=>{throw Error('Inspection must not terminate processes');}});

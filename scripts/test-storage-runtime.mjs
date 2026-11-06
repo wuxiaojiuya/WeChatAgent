@@ -23,6 +23,16 @@ test('an occupied automatic console port retries and serves the browser on anoth
  const original=crypto.randomInt;let calls=0;t.mock.method(crypto,'randomInt',(...args)=>calls++===0?occupied.address().port:original(...args));
  const app=createConsole({root,port:0});try{const address=await app.start();assert(calls>=2);assert.notEqual(address.port,occupied.address().port);assert.equal((await fetch(`http://127.0.0.1:${address.port}/api/info`)).status,200);}finally{app.server.closeAllConnections();if(app.server.listening)await new Promise(resolve=>app.server.close(resolve));await new Promise(resolve=>occupied.close(resolve));}
 });
+
+test('console advertises its current project port and removes only its own registration',async t=>{
+ const root=fixture(t),file=path.join(root,'state/console-runtime.json'),app=createConsole({root,port:0}),second=createConsole({root,port:0});
+ try{
+  const first=await app.start();assert.deepEqual(JSON.parse(fs.readFileSync(file)),{root,pid:process.pid,port:first.port});
+  const next=await second.start();assert.equal(JSON.parse(fs.readFileSync(file)).port,next.port);
+  await new Promise(resolve=>app.server.close(resolve));assert.equal(JSON.parse(fs.readFileSync(file)).port,next.port);
+  await new Promise(resolve=>second.server.close(resolve));assert(!fs.existsSync(file));
+ }finally{for(const current of [app,second]){current.server.closeAllConnections();if(current.server.listening)await new Promise(resolve=>current.server.close(resolve));}}
+});
 test('new and upgraded bundled runtimes keep the selected DSH home and preserve an independent executable',async t=>{
  const base=fixture(t),resources=path.join(base,'app/resources'),home=path.join(base,'data');
  const write=(relative,value)=>{const file=path.join(resources,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,typeof value==='string'?value:JSON.stringify(value));};

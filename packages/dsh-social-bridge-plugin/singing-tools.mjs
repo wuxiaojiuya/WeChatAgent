@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {allowedConversation} from './conversation-policy.mjs';
+const {consolePort}=await import(new URL('./console-client.mjs'+new URL(import.meta.url).search,import.meta.url));
 
 export const SINGING_POLICY=Symbol.for('wechatagent.singing.v1');
 export function singingAllowed(root,key,kind='singing'){
@@ -12,15 +13,18 @@ export function singingAllowed(root,key,kind='singing'){
   }catch{return false;}
 }
 
-export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,fetchImpl=fetch,port=Number(process.env.WECHATAGENT_CONSOLE_PORT??3210)}={}){
+export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,fetchImpl=fetch,port}={}){
   const owned=new Set();let latest,latestVoice;
   const active=(kind='singing')=>{const turn=turnFor();return !!turn&&!turn.controller.signal.aborted&&isAllowed()===true&&singingAllowed(root,key,kind);};
   async function request(route,body,signal,kind='singing'){
-    if(!Number.isInteger(port)||port<1024||port>65535)throw Error('唱歌控制台地址无效。');
-    const origin='http://127.0.0.1:'+port;
-    const infoResponse=await fetchImpl(origin+'/api/info',{redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(3000)])});
+    const currentPort=consolePort(root,port),label=kind==='voice'?'语音':'唱歌';
+    if(!Number.isInteger(currentPort)||currentPort<1024||currentPort>65535)throw Object.assign(Error(label+'控制台地址无效。'),{public:true});
+    const origin='http://127.0.0.1:'+currentPort;
+    let infoResponse;
+    try{infoResponse=await fetchImpl(origin+'/api/info',{redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(3000)])});}
+    catch{throw Object.assign(Error('本机'+label+'控制台连接失败，请确认项目页面正在运行。'),{public:true});}
     const info=await infoResponse.json();
-    if(!infoResponse.ok||info.project!=='WeChatAgent Console'||typeof info.root!=='string'||path.resolve(info.root)!==path.resolve(root)||typeof info.token!=='string')throw Error('本机唱歌控制台未就绪。');
+    if(!infoResponse.ok||info.project!=='WeChatAgent Console'||typeof info.root!=='string'||path.resolve(info.root)!==path.resolve(root)||typeof info.token!=='string')throw Object.assign(Error('本机'+label+'控制台未就绪或项目不匹配。'),{public:true});
     const response=await fetchImpl(origin+'/api/audio-capabilities/'+(kind==='voice'?'voice':'music')+route,{method:body?'POST':'GET',redirect:'error',signal,
       headers:{'X-Console-Token':info.token,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
     const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error??'这次唱歌没有完成。'),{public:true});return value;
@@ -69,7 +73,7 @@ export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
         }
         if(!active(def.kind)||turnFor()!==turn)throw Error('音频操作已取消。');
         return {content:JSON.stringify({...value,sent:value.sent===true,notice:value.sent===true?'已取得微信服务器消息回执。':'生成或排队不代表微信已发送；仅 sent:true 可以说已送达。'}),isError:value.state==='failed'};
-      }catch(error){return {content:JSON.stringify({state:'failed',sent:false,message:error.public?error.message:'唱歌操作未完成，请检查本机控制台是否运行及当前聊天的能力设置。'}),isError:true};}
+      }catch(error){return {content:JSON.stringify({state:'failed',sent:false,message:error.public?error.message:(def.kind==='voice'?'语音':'唱歌')+'操作未完成，请检查本机控制台是否运行及当前聊天的能力设置。'}),isError:true};}
     }}));
   const available=tool=>active(tool.kind)&&(tool.name!=='wechat_sing_video'||turnFor()?.videos?.length>0);
   Object.defineProperty(agentCtx,SINGING_POLICY,{configurable:true,value:{names:()=>new Set(definitions.filter(available).map(tool=>tool.name)),definitions:()=>definitions.filter(available),check:name=>definitions.some(tool=>tool.name===name&&available(tool))}});

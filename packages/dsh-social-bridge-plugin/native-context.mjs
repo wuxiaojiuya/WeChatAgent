@@ -1,5 +1,4 @@
 import {AssistantNotifications} from './assistant-notifications.mjs';
-import {apply as applyAssistantToolGuard} from './social-tool-restrict.mjs';
 import {AssistantTasks,ASSISTANT_CONTROLLER,liveTask,taskFault,assistantHelp,formatAssistantTask} from './assistant-tasks.mjs';
 import {createAssistantControl} from './assistant-control.mjs';
 import { activeReaderAccount } from '../../scripts/reader-account-state.mjs';
@@ -17,7 +16,6 @@ import { BEHAVIOR_POLICY, MAX_RPC_BYTES, localPersona, assertLocalPersona } from
 import { bindWebReader, createWebReaderTurn, webReaderInstructions, builtinWebReader } from './web-reader.mjs';
 import {bindDshAccess,dshCatalog,retireDshSkillHistory,readDshAccess} from './dsh-access.mjs';
 import {bindFileTools} from './file-tools.mjs';
-import {bindSingingTools} from './singing-tools.mjs';
 import {bindPersonaProposalTools} from './persona-proposal-tools.mjs';
 import {trackToolOrigins} from './plugin-catalog.mjs';
 import {ASSISTANT_ACCESS,assistantSenderAllowed,assistantGroupChatAllowed,assistantControlAllowed} from './assistant-policy.mjs';
@@ -26,6 +24,8 @@ import {readWorkMode,createWorkModeSlots,scopeHistory,assistantChatInstructionsF
 import {createSessionGroups,groupFault} from './session-groups.mjs';
 import {API_VERSION,HOST_RUNTIME,HOST_FEATURES,PERMISSIONS,CONTRACT_REVISION} from '../plugin-api/contract.mjs';
 const runtimeQuery=new URL(import.meta.url).search;
+const {bindSingingTools}=await import(new URL('./singing-tools.mjs'+runtimeQuery,import.meta.url));
+const {apply:applyAssistantToolGuard,bindNativeToolPresentation}=await import(new URL('./social-tool-restrict.mjs'+runtimeQuery,import.meta.url));
 const {nativeMemorySummaries}=await import(new URL('./memory-summary.mjs'+runtimeQuery,import.meta.url));
 const {AssistantThinkingFeedback,createProgressWriter}=await import(new URL('./assistant-feedback.mjs'+runtimeQuery,import.meta.url));
 const {bindModelSearch,createModelSearchTurn,modelSearchInstructions,builtinModelSearch,refreshSearchToolBaseline}=await import(new URL('./model-search.mjs'+runtimeQuery,import.meta.url));
@@ -110,7 +110,40 @@ function initialization(profile, compactSeq) {
 }
 
 export function apply(ctx, config={}) {
+  if(config.internalGroupChat)return createNativeRuntime(ctx,config);
+  let runtime,loadedSettings,stopped=false,reloading=false,reloadPromise=Promise.resolve();
+  const root=config.projectRoot?path.resolve(config.projectRoot):path.resolve(import.meta.dirname,'..','..');
+  const settings=()=>{
+    const file=path.join(root,'config/wechatagent.json');
+    const saved=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')):{};
+    return {...config,provider:saved.dsh?.provider??config.provider,model:saved.dsh?.model??config.model,port:saved.ports?.dshPlugin??config.port};
+  };
+  const reload=()=>{
+    if(stopped||reloading||runtime.isBusy())return false;
+    const next=settings(); // Read and validate before disposing the current account runtime.
+    if(!next.provider||!next.model)throw Error('DSH_MODEL_NOT_CONFIGURED');
+    reloading=true;
+    reloadPromise=new Promise(resolve=>setImmediate(resolve)).then(async()=>{
+      try{
+        await runtime.dispose();
+        if(!stopped){runtime=createNativeRuntime(ctx,{...next,reload,isReloading:()=>reloading});await runtime.ready;loadedSettings=next;}
+      }
+      catch(error){
+        ctx.logger('social-bridge').warn('configuration reload failed:',error.message);
+        if(!stopped){await runtime.dispose();runtime=createNativeRuntime(ctx,{...loadedSettings,reload,isReloading:()=>reloading});await runtime.ready;}
+      }
+      finally{reloading=false;}
+    });
+    return true;
+  };
+  loadedSettings=settings();runtime=createNativeRuntime(ctx,{...loadedSettings,reload,isReloading:()=>reloading});
+  ctx.effect(()=>async()=>{stopped=true;await reloadPromise;await runtime.dispose();});
+}
+
+function createNativeRuntime(ctx, config={}) {
   const internalGroupChat=config.internalGroupChat===true;let groupChatRuntime;
+  const listeners=[];
+  const on=(...args)=>{const dispose=ctx.on(...args);if(typeof dispose==='function')listeners.push(dispose);};
   const instanceId=crypto.randomUUID(),instanceStartedAt=Date.now();
   const disposeToolOrigins=trackToolOrigins(ctx);
   const root = config.projectRoot ? path.resolve(config.projectRoot) : path.resolve(import.meta.dirname,'..','..');
@@ -457,6 +490,7 @@ export function apply(ctx, config={}) {
     if(!memeBindings.has(sid))memeBindings.set(sid,bindMemeLibrary(agent.ctx,memeLibrary,root,key,()=>pending.get(sid)?.memeTurn,{isAllowed:accountReady}));
     if(!memberMemoryBindings.has(sid))memberMemoryBindings.set(sid,bindMemberMemory(agent.ctx,memberMemory,key,()=>pending.get(sid)?.memberMemoryTurn));
     if(!historyBindings.has(sid))historyBindings.set(sid,bindHistory(agent.ctx,history,root,key,()=>pending.get(sid)?.webReaderTurn,accountReady));
+    bindNativeToolPresentation(agent.ctx,agent);
   }
   async function configure(key,body,{repairPrefix=false}={}) {
     const workMode=readWorkMode(root,key);
@@ -633,7 +667,7 @@ export function apply(ctx, config={}) {
 
   // Native compaction runs in the same waterfall. Unwind it before deciding
   // whether to prepend one bootstrap message to the next admitted model input.
-  ctx.on('agent/pre-step',async({agent},next)=>{
+  on('agent/pre-step',async({agent},next)=>{
     let decision=await next();const key=keyFor(String(agent.session.id)),profile=profiles[key];
     if(!internalGroupChat&&profile?.workMode==='assistant'&&decision?.kind==='enter'&&!pending.has(String(agent.session.id)))decision=await adoptScheduledTurn(agent,key,decision);
     if(!profile || decision?.kind!=='enter')return decision;
@@ -670,7 +704,7 @@ export function apply(ctx, config={}) {
   },{global:true});
   // Context overflow recovery can compact between retries of a single step.
   // Those retries do not revisit pre-step; restore the role before retrying.
-  ctx.on('agent/request',async({agent},next)=>{
+  on('agent/request',async({agent},next)=>{
     let result=await next();
     const sid=String(agent.session.id), key=keyFor(sid), profile=profiles[key];
     if(profile && !windowPolicy(key) && !staged.has(sid) && agent.session.surface.nodes.length){
@@ -701,7 +735,7 @@ export function apply(ctx, config={}) {
     const {toolChoice:unusedToolChoice,...toolFree}=result;
     return {...toolFree,tools:[]};
   },{global:true});
-  ctx.on('session/event',(session,event)=>{
+  on('session/event',(session,event)=>{
     const sid=String(session.id), key=keyFor(sid);
     if(!key)return;
     if(profiles[key]?.workMode==='assistant')try{assistantNotifications.observe(session,event,key,assistantTasks.get(pending.get(sid)?.taskId));}catch{log.warn('assistant native notification recording failed');}
@@ -758,7 +792,7 @@ export function apply(ctx, config={}) {
 
   // Observe the actual native request, without replacing the adapter or making
   // another call. This is also a fail-closed check against display-only leakage.
-  ctx.on('llm/stream',(options,next)=>{
+  on('llm/stream',(options,next)=>{
     const key=keyFor(String(options.sessionId??''));if(internalGroupChat&&key&&(options.tools??[]).length)throw Error('ASSISTANT_CHAT_TOOL_LEAK');if(!key||!windowPolicy(key))return next();
     if(!accountReady())throw Error('HISTORY_ACCOUNT_CHANGED');
     const messages=options.messages??[],window=messages.find(m=>m.source?.socialInputWindow);
@@ -942,11 +976,19 @@ export function apply(ctx, config={}) {
   const assistantNotifications=new AssistantNotifications(path.join(root,'state/assistant-tasks',loadedAccount.id||loadedAccount.legacyId||'legacy',internalGroupChat?'group-chat-notifications.json':'notifications.json'),(key,sender)=>accountReady()&&readWorkMode(root,key)==='assistant'&&assistantSenderAllowed(JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8')).wechat,key,sender));
   const assistantControl=createAssistantControl({ctx,root,tasks:assistantTasks,accountReady,sessionGroups,mappings,profiles,pending,notifications:assistantNotifications,beforeSubmit:key=>resolvePresetReady(readDshAccess(root,key).preset??ASSISTANT_PRESET)});
   if(!internalGroupChat)assistantTasks.pump();
+  let requests=0;
+  const isBusy=()=>requests>1||pending.size>0||operations.size>0||startup.size>0||[...assistantTasks.jobs.values()].some(job=>['queued','running','cancelling'].includes(job.state))||groupChatRuntime?.isBusy();
   const server=http.createServer(async(req,res)=>{
+    requests++;let released=false;const release=()=>{if(!released){released=true;requests--;}};res.once('finish',release);res.once('close',release);
     const reply=(code,body)=>{if(!res.destroyed){res.writeHead(code,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify(body));}};
     const supplied=Buffer.from(String(req.headers.authorization ?? '').replace(/^Bearer /i,'')), expected=Buffer.from(token);
     if(supplied.length!==expected.length || !crypto.timingSafeEqual(supplied,expected))return reply(401,{error:'unauthorized'});
-    if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
+    if(req.method==='POST'&&req.url==='/reload-config'){
+      try{req.resume();return config.reload?.()?reply(202,{ok:true,status:'reloading'}):reply(409,{error:'CONFIGURATION_BUSY'});}
+      catch{return reply(400,{error:'CONFIGURATION_INVALID'});}
+    }
+    if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),configurationReload:'native-runtime-v1',instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
+    if(config.isReloading?.())return reply(503,{error:'configuration_reloading'});
     if(!accountReady())return reply(409,{error:'account_changed',detail:'ACCOUNT_SWITCH_REQUIRES_DSH_RESTART'});
     if(req.method==='POST'&&req.url==='/voice-input'){
       const controller=new AbortController(),closed=()=>{if(!res.writableEnded)controller.abort();};res.once('close',closed);
@@ -1053,7 +1095,7 @@ export function apply(ctx, config={}) {
       if(req.url==='/assistant-chat'){
         if(!chatInputAllowed(key,body.assistantSender))throw taskFault('ASSISTANT_SENDER_DENIED',403);
         if(body.files?.length||body.assistantTaskId||body.assistantParentId)throw taskFault('ASSISTANT_ADMIN_REQUIRED',403);
-        groupChatRuntime??=apply(ctx,{...config,internalGroupChat:true});
+        groupChatRuntime??=createNativeRuntime(ctx,{...config,internalGroupChat:true});
         output=await groupChatRuntime.followup({...body,workMode:'assistant',assistantChatOnly:true,files:[],searchTicket:undefined,searchContext:undefined,webReaderUrls:[],searchOptOut:true,memeLibraryDisabled:true},requestController,()=>{requestAdmitted=true;});
       }else output=await nativeRequest(req.url,body,requestController,()=>{requestAdmitted=true;});
       reply(output.error?502:200,output);
@@ -1061,6 +1103,8 @@ export function apply(ctx, config={}) {
     finally{res.removeListener('close',disconnected);}
   });
   server.on('error',error=>log.warn('local RPC server error:',error.message));
+  const ready=internalGroupChat?Promise.resolve():new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});
+  ready.catch(()=>{});
   // Warm discovery at plugin startup, before the first ordinary chat needs it.
   if(!internalGroupChat)extensions().then(async extension=>{if(extension){await extension.runtime.sync();extension.runtime.start();}}).catch(error=>log.warn('extension preload failed:',error.message));
   if(!internalGroupChat)server.listen(port,host,()=>log.info(`Native-session WeChat plugin listening on ${host}:${port}`));
@@ -1077,8 +1121,8 @@ export function apply(ctx, config={}) {
     for(const dispose of modelSearchBindings.values())dispose();
     if(extensionPromise)await (await extensionPromise)?.runtime.dispose();
     await Promise.allSettled([...handles.values()].map(handle=>handle.dispose()));
+    for(const off of listeners)off();
     history.close();
   })();
-  if(internalGroupChat)return {followup:(body,controller,onAdmitted)=>nativeRequest('/followup',body,controller,onAdmitted),dispose};
-  ctx.effect(()=>dispose);
+  return {followup:(body,controller,onAdmitted)=>nativeRequest('/followup',body,controller,onAdmitted),dispose,isBusy,ready};
 }

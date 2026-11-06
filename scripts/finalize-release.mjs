@@ -37,6 +37,8 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
     'scripts/voice-profiles.mjs','scripts/voice-reference.py','scripts/direct-tts.mjs','scripts/direct-tts-worker.py','scripts/feiyu_voice_reference.py','public/console/voice-profiles.js',
     'scripts/speech-rvc.mjs','scripts/speech-rvc-worker.py','scripts/music-rvc-worker.py',
     'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','docs/VIDEO_SINGING.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
+  for(const relative of ['scripts/supplier_images.py','components/qq-bridge/src/core/image-context.js','components/qq-bridge/src/core/live-settings.js',
+    'scripts/dsh-refresh.mjs','packages/dsh-social-bridge-plugin/console-client.mjs','docs/IMAGE_INPUT.md','docs/LIVE_SETTINGS.md'])if(!deployment.sourceHashes[relative])throw Error('IMAGE_OR_LIVE_SETTINGS_FEATURE_NOT_PACKAGED: '+relative);
 }
 const desktop=JSON.parse(fs.readFileSync(path.join(output,'win-unpacked/resources/app/package.json')));
 if(desktop.version!==version)throw Error('DESKTOP_VERSION_MISMATCH');

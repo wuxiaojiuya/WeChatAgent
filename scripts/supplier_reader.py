@@ -19,6 +19,7 @@ from wechat_voice_input import MAX_SILK_BYTES
 from wechat_image_normalize import normalize_image
 from wechat_sticker import resolve_sticker
 from wechat_video import MAX_VIDEO_BYTES
+from supplier_images import download_image
 
 
 def xml_root(text):
@@ -210,23 +211,7 @@ def create_reader(Base):
                 result = resolve_sticker(self.account, row['imageXml'], normalize_image, allow_cdn=media.get('allowStickerCdn') is True, allow_cdn_alias=media.get('allowStickerCdnAlias') is True)
             else:
                 node = xml_root(row['imageXml']).find('img')
-                size = int(node.get('cdnmidimgurl_size', '0')) if node is not None else 0
-                if not 0 < size <= 20*1024*1024:
-                    raise RuntimeError('IMAGE_DOWNLOAD_METADATA_MISSING')
-                file = self.account/'hook-media'/(image_id+'.jpg')
-                file.parent.mkdir(parents=True, exist_ok=True)
-                if not file.exists():
-                    with self.callback_lock:
-                        callback = self.callback_messages.get(str(descriptor['serverId']), {})
-                    # The supplier's MsgId is not interchangeable with newMsgId.
-                    msg_id = callback.get('msgId')
-                    if not isinstance(msg_id, int) or not 0 < msg_id <= 0xffffffff or callback.get('from') != descriptor['talker'] or callback.get('to') != self.own_wxid:
-                        raise RuntimeError('IMAGE_CALLBACK_METADATA_REQUIRED')
-                    self.api.post('/api/download_img', {'to_user': self.own_wxid, 'from_user': descriptor['talker'], 'start_pos': 0, 'total_len': size, 'data_len': size, 'compress_type': 0, 'MsgId': msg_id, 'path': str(file)})
-                if not file.is_file() or file.stat().st_size != size:
-                    raise RuntimeError('IMAGE_DOWNLOAD_PENDING')
-                source_file(file, 20*1024*1024)
-                result = normalize_image(file.read_bytes(), max_side=2048, max_source_bytes=20*1024*1024)
+                result = download_image(self, image_id, descriptor, node)
             self.active_identity()
             if not self.image_talker_allowed(descriptor['talker']):
                 raise PermissionError('IMAGE_REFERENCE_NOT_ALLOWED')

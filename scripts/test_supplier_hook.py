@@ -8,6 +8,8 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import urllib.request
 from unittest.mock import patch
@@ -59,6 +61,9 @@ class FakeHook:
         if route == '/api/download_img':
             pathlib.Path(body['path']).write_bytes(self.image_bytes)
             return {'status': 'success', 'path': body['path'], 'downloaded_bytes': len(self.image_bytes)}
+        if route == '/api/cdn_download':
+            pathlib.Path(body['out']).write_bytes(self.image_bytes)
+            return {'code': 1}
         if route == '/api/download_file':
             pathlib.Path(body['path']).write_bytes(b'file-data')
             return {'status': 'success'}
@@ -281,6 +286,91 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]['MsgId'], 1234)  # Never truncate the 64-bit newMsgId.
         self.assertEqual(calls[0]['from_user'], 'wxid_friend')
+
+    def image_fixture(self, attrs, *, callback=True):
+        from PIL import Image
+        stream = io.BytesIO()
+        Image.new('RGB', (32, 24), 'blue').save(stream, 'PNG')
+        self.fake.image_bytes = stream.getvalue()
+        xml = '<msg><img '+attrs.format(size=len(self.fake.image_bytes))+'/></msg>'
+        self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(3,8047442179716189590,3,1,1700000002,?)', (xml.encode(),))
+        reader = self.reader()
+        message = reader.messages('wxid_friend')[0]
+        image_id = reader.register_image('wxid_friend',reader.make_payload('wxid_friend',message))
+        if callback:
+            reader.callback_messages['8047442179716189590'] = {'msgId':'1234','from':'wxid_friend','to':'wxid_self','type':3}
+        return reader,image_id
+
+    def test_real_image_length_field_and_string_callback_id(self):
+        reader,image_id = self.image_fixture('length="{size}" hdlength="123456"')
+        result = reader.resolve_image(image_id)
+        self.assertTrue(result['b64'])
+        body = next(body for route,body in self.fake.calls if route=='/api/download_img')
+        self.assertEqual(body['total_len'],len(self.fake.image_bytes))
+        self.assertEqual(body['MsgId'],1234)
+        self.assertTrue(body['path'].isascii())
+        self.assertTrue(body['path'].endswith('.jpg.part'))
+
+    def test_cdn_image_does_not_require_short_callback_id_or_length(self):
+        reader,image_id = self.image_fixture('cdnmidimgurl="message-bound-file" aeskey="'+'ab'*16+'"',callback=False)
+        result = reader.resolve_image(image_id)
+        self.assertEqual(result['imageId'],image_id)
+        calls = [(route,body) for route,body in self.fake.calls if route in ('/api/cdn_download','/api/download_img')]
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][0],'/api/cdn_download')
+        self.assertEqual(calls[0][1]['asekey'],'ab'*16)
+        self.assertEqual(calls[0][1]['imgType'],2)
+        self.fake.calls.clear()
+        self.assertEqual(reader.resolve_image(image_id)['sha256'],result['sha256'])
+        self.assertFalse(any(route=='/api/cdn_download' for route,_ in self.fake.calls))
+
+    def test_cdn_image_type_fallback_rejects_non_image_success_response(self):
+        reader,image_id = self.image_fixture('length="{size}" fileid="message-bound-file" asekey="'+'ab'*16+'"',callback=False)
+        transport = self.api.transport
+        def download(route,body):
+            if route=='/api/cdn_download' and body['imgType']==2:
+                self.fake.calls.append((route,body))
+                pathlib.Path(body['out']).write_bytes(b'not an image')
+                return {'code':1}
+            return transport(route,body)
+        self.api.transport=download
+        self.assertTrue(reader.resolve_image(image_id)['b64'])
+        self.assertEqual([body['imgType'] for route,body in self.fake.calls if route=='/api/cdn_download'],[2,3])
+
+    def test_chunk_download_waits_for_complete_image_before_atomic_cache(self):
+        reader,image_id = self.image_fixture('LENGTH="{size}"')
+        transport = self.api.transport
+        threads=[]
+        def download(route,body):
+            if route=='/api/download_img':
+                self.fake.calls.append((route,body))
+                def write():
+                    target=pathlib.Path(body['path'])
+                    target.write_bytes(self.fake.image_bytes[:24])
+                    time.sleep(.35)
+                    target.write_bytes(self.fake.image_bytes)
+                thread=threading.Thread(target=write)
+                threads.append(thread);thread.start()
+                return {'code':1}
+            return transport(route,body)
+        self.api.transport=download
+        self.assertTrue(reader.resolve_image(image_id)['b64'])
+        for thread in threads:thread.join()
+        directory=runtime_directory(self.root)/'incoming-images'
+        self.assertEqual((directory/(image_id+'.image')).read_bytes(),self.fake.image_bytes)
+        self.assertFalse(list(directory.glob('*.part')))
+
+    def test_downloaded_image_is_not_published_after_account_switch(self):
+        reader,image_id = self.image_fixture('cdnmidimgurl="message-bound-file" aeskey="'+'ab'*16+'"',callback=False)
+        transport=self.api.transport
+        def download(route,body):
+            response=transport(route,body)
+            if route=='/api/cdn_download':self.fake.wxid='other_account'
+            return response
+        self.api.transport=download
+        with self.assertRaisesRegex(RuntimeError,'HOOK_ACCOUNT_MISMATCH'):
+            reader.resolve_image(image_id)
+        self.assertFalse((runtime_directory(self.root)/'incoming-images'/(image_id+'.image')).exists())
 
     def test_file_download_is_scoped_to_exact_message_and_verified_by_hash(self):
         config = json.loads((self.root/'config/wechatagent.json').read_text())

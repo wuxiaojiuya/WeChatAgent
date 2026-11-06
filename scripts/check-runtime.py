@@ -47,7 +47,7 @@ def main():
     connection.close()
     root = pathlib.Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(root / 'scripts'))
-    for name in ('wechat_media', 'wechat_forwarded', 'wechat_quote', 'wechat_sticker_send', 'wechat_sticker', 'wechat_sticker_labels'):
+    for name in ('wechat_media', 'wechat_forwarded', 'wechat_quote', 'wechat_sticker_send', 'wechat_sticker', 'wechat_sticker_labels', 'supplier_images'):
         if not (root / 'scripts' / (name + '.py')).is_file():
             raise RuntimeError('Reader module missing: ' + name)
     spec = importlib.util.spec_from_file_location('reader_runtime_probe', root / 'scripts/reader-api.py')

@@ -33,6 +33,7 @@ import { personaError,personaReferences } from '../public/console/persona-files.
 import {applyChatSettings} from '../public/console/conversation-settings.mjs';
 import { runReaderSetup, readerSetupMessage } from './reader-setup.mjs';
 import { dshConfigurationMatches,sameProjectPath } from './dsh-configuration.mjs';
+import {refreshDsh} from './dsh-refresh.mjs';
 import { createProcessRecovery,startupConflictPorts } from './process-recovery.mjs';
 import { readerAccountId, cachedReaderAccount, applyReaderAccount,activeReaderAccount } from './reader-account-state.mjs';
 import {verifyWeChatAccount} from './wechat-account-check.mjs';
@@ -260,6 +261,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     const ps = (file, ...args) => ({ exe: windowsPowerShellExecutable(), args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'console-powershell.ps1'), '-ScriptPath', path.join(root, 'scripts', file), '-ArgumentsBase64', Buffer.from(JSON.stringify(args), 'utf8').toString('base64')] });
     const node = (file, ...args) => ({ exe: nodeExecutable, args: [path.join(root, 'scripts', file), ...args] });
     if (['start', 'stop', 'restart', 'prepare'].includes(action)) return ps('manage.ps1', action);
+    if(action==='apply-settings')return ps('manage.ps1','prepare');
     if (action === 'setup') return ps(fs.existsSync(path.join(root, 'config', 'distribution.json')) ? 'check-runtime.ps1' : 'setup.ps1');
     if (action === 'dsh-open') return ps('launch-dsh.ps1');
     if (action === 'wechat-open') return ps('launch-hook-wechat.ps1', ...(fs.existsSync(path.join(root,'state/hook/native/build.previous.json')) ? ['-UpdateHook'] : []));
@@ -326,6 +328,17 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     while (jobs.size > 30) jobs.delete(jobs.keys().next().value);
     const output = chunk => { job.output = safeText(job.output + chunk.toString()).slice(-40000); };
     Promise.resolve().then(async () => {
+      if(body.action==='apply-settings'){
+        output('正在自动应用设置；如有模型任务，等待当前任务完成。\n');
+        const prepared=await execute(spec,output);if(prepared!==0)return prepared;
+        const saved=snapshot().config,preferences=optionalJson(preferenceFile);
+        let result;
+        try{result=await refreshDsh({root,config:saved,previousPort:body.previousDshPort??preferences.previousDshPort,waitForIdle:body.restartServices??preferences.applyRestartServices,fetchImpl});}
+        catch(error){output(error.message+'\n');throw error;}
+        output('DSH 配置：'+result.status+'\n');
+        if(body.restartServices??preferences.applyRestartServices)return execute({...command('restart'),timeoutMs:180000},output);
+        return 0;
+      }
       if (!connectRequest) return execute(spec, output);
       job.phase='checking-wechat';
       await accountVerifier({root,config:snapshot().config,settings:connectRequest,fetchImpl,wait:false,requireReady:false});
@@ -377,13 +390,13 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if (code === 0 && body.action === 'reader-check' && checkRevision === readerRevision()) {
         atomic(preferenceFile, { ...optionalJson(preferenceFile), readerVerifiedRevision: checkRevision }); job.readerConfigured = true;
       }
-      if (code === 0 && ['start', 'restart'].includes(body.action)) {
+      if (code === 0 && ['start', 'restart','apply-settings'].includes(body.action)) {
         if(initialConfigRevision!==snapshot().revision)throw fault('设置在启动期间发生变化，请重新应用。',409);
-        if(optionalJson(preferenceFile).dshRestartRequired){
+        if(body.action!=='apply-settings'&&optionalJson(preferenceFile).dshRestartRequired){
           const health=await remote('http://127.0.0.1:'+snapshot().config.ports.dshPlugin+'/health',fs.readFileSync(path.join(root,'state/social-dsh-token.txt'),'utf8').trim());
           if(!dshConfigurationMatches(root,snapshot().config,health))throw fault('DSH 仍未加载当前模型或插件配置。请准备配置，从托盘完整退出并重开 DSH，然后重试。',409);
         }
-        atomic(preferenceFile, { ...optionalJson(preferenceFile), pendingApply: false, dshRestartRequired:false });
+        atomic(preferenceFile, { ...optionalJson(preferenceFile), pendingApply: false, dshRestartRequired:false,applyRestartServices:false,previousDshPort:snapshot().config.ports.dshPlugin });
       }
     }).catch(error => { job.state = 'failed'; job.exitCode = 1; job.message = error.status ? error.message : connectRequest ? readerSetupMessage(error.message) : taskFailureMessage(job.output, 1);if(connectRequest&&setupCode(error.code??error.message)){job.code=setupCode(error.code??error.message);output('['+job.code+'] ');}output(job.message); }).finally(() => {
       job.finishedAt = Date.now(); activeJob = null; statusTime = 0;
@@ -710,7 +723,6 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         }
         const personaChanged = (previous.config.persona.chats?.[body.key] ?? null) !== (config.persona.chats?.[body.key] ?? null);
         backup(configFile); atomic(configFile, config);
-        if (personaChanged) markPending();
         statusTime = 0;
         let modeReady=false;
         if(workModeChanged)try{await plugin('/configure',{conversationKey:body.key,workMode:conversationWorkMode(config.wechat,body.key)});modeReady=true;}catch{}
@@ -746,10 +758,17 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if (body.revision !== previous.revision) throw fault('配置已在其他窗口更新，请重新载入后再保存。', 409);
         const config = validateConsoleConfig(body.config, root);
         if (Object.values(config.ports).includes(boundPort) || Number(new URL(config.hook.baseUrl).port || 80) === boundPort) throw fault('服务端口不能与当前控制台端口重复。');
-        backup(configFile); atomic(configFile, config);
-        const withoutStickers=value=>{const copy=structuredClone(value);delete copy.wechat.fishNotebook;delete copy.wechat.replyLayout;delete copy.wechat.stickers;delete copy.wechat.search;delete copy.wechat.webReader;delete copy.wechat.proactive;delete copy.wechat.context;delete copy.wechat.chatModes;delete copy.wechat.dshAccess;delete copy.wechat.memeLibrary;delete copy.wechat.assistant;return copy;};
-        if(JSON.stringify(withoutStickers(previous.config))!==JSON.stringify(withoutStickers(config)))markPending(JSON.stringify(previous.config.dsh) !== JSON.stringify(config.dsh) || previous.config.ports.dshPlugin !== config.ports.dshPlugin);
-        return reply(200, { ...snapshot(), ...optionalJson(preferenceFile) });
+        const transport=value=>JSON.stringify({runtime:value.runtime,ports:value.ports,hook:value.hook,media:value.wechat.media});
+        const transportChanged=transport(previous.config)!==transport(config),modelChanged=JSON.stringify(previous.config.dsh)!==JSON.stringify(config.dsh);
+        const preferences=optionalJson(preferenceFile),needsApply=transportChanged||modelChanged||preferences.pendingApply||preferences.dshRestartRequired;
+        const wasRunning=needsApply?(await getStatus()).running:false;
+        backup(configFile); atomic(configFile, config);statusTime=0;
+        let applyJob;
+        if(needsApply){
+          atomic(preferenceFile,{...preferences,pendingApply:true,applyRestartServices:wasRunning&&(transportChanged||preferences.pendingApply===true),previousDshPort:preferences.previousDshPort??previous.config.ports.dshPlugin});
+          applyJob=startJob({action:'apply-settings'});
+        }
+        return reply(200, { ...snapshot(), ...optionalJson(preferenceFile),applyJob });
       }
       if(route==='/api/assistant-feedback')return reply(200,saveFeedback(root,body));
       if (route === '/api/persona-categories') return reply(200,personaCategories.update(body));
@@ -784,7 +803,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if (!exists && body.revision) throw fault('人格文件已被移动，请重新载入。', 409);
         backup(file); atomic(file, body.content);
         const marker=deletedPersonaFile(body.name);if(fs.existsSync(marker))fs.unlinkSync(marker);
-        markPending();
+        statusTime=0;
         return reply(200, { ok: true, revision: hash(body.content), categories: categorySnapshot() });
       }
       if (route === '/api/browse') {
@@ -832,11 +851,18 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     }
   });
   server.requestTimeout = 180000;
+  let registeredPort;
   const start=()=>new Promise((resolve,reject)=>{
     let attempts=0;
     const listen=()=>{
       attempts++;
-      const ready=()=>{server.removeListener('error',failed);resolve(server.address());};
+      const ready=()=>{
+        server.removeListener('error',failed);
+        const address=server.address();
+        registeredPort=address.port;
+        atomic(path.join(root,'state/console-runtime.json'),{root,pid:process.pid,port:address.port});
+        resolve(address);
+      };
       const failed=error=>{server.removeListener('listening',ready);if(port===0&&attempts<16&&['EADDRINUSE','EACCES'].includes(error.code)){listen();return;}reject(error);};
       server.once('error',failed);
       server.once('listening',ready);
@@ -845,7 +871,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     };
     listen();
   });
-  server.on('close',()=>{audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();voiceProfiles.close();rvcModels.close();});
+  server.on('close',()=>{const file=path.join(root,'state/console-runtime.json'),record=optionalJson(file);if(record.pid===process.pid&&record.port===registeredPort)fs.rmSync(file,{force:true});audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();voiceProfiles.close();rvcModels.close();});
   return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
 }
 

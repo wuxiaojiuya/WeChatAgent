@@ -22,6 +22,7 @@ test('profiles keep the old backend intact and advertise current native API exte
   assert.equal(hookProfile('4.1.15.14'),null);
   const config=JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.example.json'),'utf8'));
   validateConfig(config);
+  config.hook.backend='project-native';delete config.hook.voiceBaseUrl;
   config.hook.expectedVersion='4.1.15.13';config.hook.wechatExecutable='client/Weixin.exe';validateConfig(config);
   config.hook.expectedVersion='4.1.15.14';assert.throws(()=>validateConfig(config),/exactly matching/);
 });

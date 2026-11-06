@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';
 import {withoutDshIdentity} from '../packages/dsh-social-bridge-plugin/social-tool-policy.mjs';
-import {apply} from '../packages/dsh-social-bridge-plugin/social-tool-restrict.mjs';
+import {apply,bindNativeToolPresentation} from '../packages/dsh-social-bridge-plugin/social-tool-restrict.mjs';
 const native='You are an AI agent powered by DeepSeek Harness.',coding='You are a coding agent powered by the deepseek-flash model.';
 const guardPolicy=Symbol.for('wechatagent.dsh-access.v1');
 const sample=prefix=>({sections:[{name:'harness:identity',text:native},{name:'deployment:persona-prefix',text:prefix,interpolate:true},{name:'wechatagent:fixed-window-prefix',text:'本机人格：蓝色大肥鱼。保留我的身份和语气。'},{name:'tool:read',text:'Use the read tool to inspect text files.'},{name:'tool:pwsh',text:'Non-zero exits are reported as exit markers.'},{name:'tool:jobs',text:'Track every background job id you start.'}],contexts:[{name:'approval-policy',text:'Approval is required for protected operations.',required:true},{name:'working-directory',text:'fixture workspace'}],variables:{model:'deepseek-flash'},tools:[{name:'read',parameters:{type:'object'}},{name:'pwsh',parameters:{type:'object'}}]});
@@ -23,4 +23,17 @@ test('the WeChat-scoped middleware filters after other providers without changin
 });
 test('both native WeChat presets and selected standard assistants mount the scoped guard',()=>{
  const preset=fs.readFileSync('packages/dsh-social-bridge-plugin/assistant-preset.mjs','utf8'),nativeContext=fs.readFileSync('packages/dsh-social-bridge-plugin/native-context.mjs','utf8'),patch=fs.readFileSync('packages/dsh-social-bridge-plugin/cordis.patch.yml','utf8');assert(preset.includes('social-tool-restrict.mjs'));assert(patch.includes('id: social-tool-restrict'));assert(nativeContext.includes("preset!==ASSISTANT_PRESET)applyAssistantToolGuard(agentCtx)"));assert(nativeContext.includes('applyAssistantToolGuard(agent.ctx)'));assert(!nativeContext.includes('includeHarnessIdentity:false'));
+});
+
+test('new DSH text-only assembly preserves contexts and filters provider-owned tools with live scoped policy',async()=>{
+  let hook,executor,registrations=0,allowed=new Set(['read']);
+  const native={describe:definitions=>({schemas:definitions.map(({name})=>({name}))}),execute:input=>input};
+  const agent={ctx:{[guardPolicy]:{names:()=>allowed,check:name=>allowed.has(name)},tools:{selectExecutor:()=>native,setExecutor:value=>{registrations++;executor=value;}}}};
+  bindNativeToolPresentation(agent.ctx,agent);bindNativeToolPresentation(agent.ctx,agent);assert.equal(registrations,1);
+  apply({tools:{guard(){}},on:(_name,value)=>{hook=value;}});
+  const {tools:unused,...assembly}=sample(coding),snapshot=JSON.stringify(assembly);
+  const result=await hook(assembly,{scope:agent},async()=>assembly);assert(!Object.hasOwn(result,'tools'));assert.equal(result.contexts,assembly.contexts);assert.equal(JSON.stringify(assembly),snapshot);
+  const definitions=[{name:'pwsh'},{name:'read',deferLoading:true},{name:'unapproved'}];
+  assert.deepEqual(executor.describe(definitions).schemas,[{name:'read'}]);allowed=new Set();assert.deepEqual(executor.describe(definitions).schemas,[]);
+  const input={calls:[]};assert.equal(executor.execute(input),input);
 });

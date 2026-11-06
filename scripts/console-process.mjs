@@ -82,7 +82,10 @@ export function taskFailureMessage(output, code) {
   if (/HOOK_AUTH_FAILED|HOOK_PORT_OWNER_MISMATCH/.test(output)) return '微信发送端口或令牌与当前客户端不一致。请检查占用进程和 hook-init.log；可通过“修复微信连接”重新打开匹配微信。';
   if (/HOOK_HEALTH_TIMEOUT/.test(output)) return '微信发送组件响应超时，请稍后重试；持续失败时查看 hook-init.log。';
   if (/HOOK_HEALTH_INVALID_RESPONSE/.test(output)) return '微信发送端口返回了无效响应，可能被其他程序占用；请检查 hook-init.log 和发送端口。';
-  if (/ACCOUNT_SWITCH_REQUIRES_DSH_RESTART/.test(output)) return '账号已切换。请从 DSH 托盘完整退出并重新打开，再启动助手服务。';
+  if (/DSH_RELOAD_UPGRADE_REQUIRED/.test(output)) return '当前 DSH 加载的是旧版桥接插件。此次更新后请从托盘退出并重开一次 DSH；新版插件支持自动应用模型和账号变化。';
+  if (/DSH_CONFIGURATION_BUSY/.test(output)) return 'DSH 任务仍在执行，设置已保存。任务完成后点击“重新应用”，无需退出 DSH。';
+  if (/DSH_RELOAD_FAILED|DSH_RELOAD_TIMEOUT|DSH_CONFIGURATION_APPLY_FAILED|DSH_PROJECT_MISMATCH/.test(output)) return '设置已保存，DSH 桥接配置未能自动应用。请查看下方详细日志后重新应用。';
+  if (/ACCOUNT_SWITCH_REQUIRES_DSH_RESTART/.test(output)) return 'DSH 仍绑定旧账号，请点击“重新应用”重载账号连接。';
   if (code === 124) return '操作等待超时。请查看连接检查与日志，确认当前服务状态后重试。';
   if (/ModuleNotFoundError|ImportError|DLL load failed|需要 sqlcipher3/i.test(output)) return '读取组件缺失或无法加载。请重新安装更新后的安装包，然后在首次配置中点击“验证内置环境”。';
   if (/Selected account database directory is unavailable/i.test(output)) return '找不到所选账号的数据库目录。请在首次配置中自动查找账号，或重新选择包含 db_storage 的账号文件夹。';

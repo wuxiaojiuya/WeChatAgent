@@ -1,10 +1,11 @@
 # 发布流程
 
-仓库：[wuxiaojiuya/WeChatAgent](https://github.com/wuxiaojiuya/WeChatAgent)。当前版本 v0.2.0。
+仓库：[wuxiaojiuya/WeChatAgent](https://github.com/wuxiaojiuya/WeChatAgent)。版本以根目录 `package.json` 的 `releaseVersion` 为准，同时更新桌面包版本、锁文件和发布说明。
 
 ```powershell
 npm ci
 npm --prefix packages/dsh-social-bridge-plugin ci
+npm test
 npm run source:check
 npm run installer:runtime
 npm run source:build

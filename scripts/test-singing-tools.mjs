@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {bindSingingTools,SINGING_POLICY} from '../packages/dsh-social-bridge-plugin/singing-tools.mjs';
+import {consoleClient,consolePort} from '../packages/dsh-social-bridge-plugin/console-client.mjs';
 
 const key='wechat:private:123';
 function fixture(t,options={}){
@@ -84,4 +85,29 @@ test('voice-only scope exposes AI voice tools, preserves one request per turn an
   await send.execute({text:'你好'});assert.equal(calls.length,1);assert.equal(calls[0].body.conversationKey,key);assert.match(calls[0].body.requestId,/^[a-f0-9-]{36}$/);
   f.setTurn();const status=JSON.parse((await f.tools.get('wechat_voice_status').execute({})).content);assert.equal(status.sent,true);
   assert.match(calls[1].url,/conversationKey=wechat%3Aprivate%3A123/);
+});
+
+test('voice and shared console clients discover the live project port again after the desktop changes port',async t=>{
+  const calls=[];let f;
+  f=fixture(t,{fetchImpl:async(url,options)=>{
+    calls.push(url);
+    if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+    assert.equal(options.headers['X-Console-Token'],'fixture-token');return Response.json({state:'queued',sent:false});
+  }});
+  const runtime=path.join(f.root,'state/console-runtime.json');
+  fs.writeFileSync(runtime,JSON.stringify({root:f.root,port:47441}));
+  fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
+  assert.equal((await f.tools.get('wechat_voice_reply').execute({text:'测试'})).isError,false);
+  assert(calls.every(url=>url.startsWith('http://127.0.0.1:47441/')));
+  fs.writeFileSync(runtime,JSON.stringify({root:f.root,port:47442}));calls.length=0;f.setTurn();
+  await f.tools.get('wechat_voice_reply').execute({text:'再次测试'});assert(calls.every(url=>url.startsWith('http://127.0.0.1:47442/')));
+  const client=consoleClient(f.root,{fetchImpl:async url=>{calls.push(url);return Response.json(url.endsWith('/api/info')?{project:'WeChatAgent Console',root:f.root,token:'fixture-token'}:{ok:true});}});
+  calls.length=0;await client('/api/status');assert(calls.every(url=>url.startsWith('http://127.0.0.1:47442/')));
+  fs.writeFileSync(runtime,JSON.stringify({root:'Z:/other-project',port:47443}));assert.notEqual(consolePort(f.root),47443);assert.equal(consolePort(f.root,47444),47444);
+});
+
+test('voice connection errors name the failed local stage instead of reporting a singing failure',async t=>{
+  const f=fixture(t,{fetchImpl:async()=>{throw Error('ECONNREFUSED');}});
+  fs.writeFileSync(path.join(f.root,'state/voice-output/capabilities.json'),JSON.stringify({voice:{provider:'feiyu',enabled:true,chats:[key]}}));
+  const result=await f.tools.get('wechat_voice_reply').execute({text:'测试'});assert(result.isError);assert.match(result.content,/语音控制台连接失败/);assert(!result.content.includes('唱歌'));
 });

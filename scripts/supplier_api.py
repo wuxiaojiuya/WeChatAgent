@@ -149,14 +149,14 @@ class SupplierApi:
         self.transport, self.inspect_process = transport, inspect_process
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
-    def post(self, route, body=None):
+    def post(self, route, body=None, *, timeout=5):
         if not re.fullmatch(r'/api/[a-z0-9_]+', route):
             raise ValueError('HOOK_ROUTE_INVALID')
         if self.transport:
             return self.transport(route, body or {})
         request = urllib.request.Request(self.url + route, json.dumps(body or {}, ensure_ascii=False).encode(), {'Content-Type': 'application/json'}, method='POST')
         try:
-            with self.opener.open(request, timeout=5) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 raw = response.read(16 * 1024 * 1024 + 1)
                 if len(raw) > 16 * 1024 * 1024:
                     raise RuntimeError('HOOK_RESPONSE_TOO_LARGE')

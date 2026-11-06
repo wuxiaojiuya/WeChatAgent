@@ -55,6 +55,7 @@ const actions = {
   start: ['启动服务', '正在检查账号与连接，启动通常需要几十秒。'],
   stop: ['停止服务', '停止本项目管理的服务，控制台会继续保持打开。'],
   restart: ['重启并应用', '正在重新读取设置并重启本项目服务。'],
+  'apply-settings': ['应用设置', '正在自动应用设置，等待当前模型任务完成后重载必要组件。'],
   prepare: ['准备配置', '生成连接配置与插件设置。'],
   setup: ['安装依赖', '按现有锁文件安装依赖，需要联网，可能耗时几分钟。'],
   'wechat-open': ['打开匹配微信', '校验现有客户端和发送组件，然后打开微信。'],
@@ -178,7 +179,8 @@ function paintStatus() {
   $('#connection-label').setAttribute('aria-label',statusText+'，查看连接详情');
   $('#updated-label').textContent = '更新于 ' + new Date(s.updatedAt).toLocaleTimeString('zh-CN', { hour12: false });
   $('#pending-banner').hidden = !s.pendingApply && !s.dshRestartRequired;
-  $('#pending-message').textContent = s.dshRestartRequired ? '模型或插件端口有更改：先在诊断页准备配置，从托盘退出并重开 DSH，再重启服务。' : '设置已保存，重启服务后生效。';
+  $('#pending-message').textContent = s.activeJob?.action==='apply-settings' ? '正在自动应用设置，请稍候…' : '设置尚未完成应用，请点击“重新应用”查看处理结果。';
+  $('#pending-banner button').disabled=!!s.activeJob;
   if (state.page !== 'overview') return;
   const runningJob = state.job?.state === 'running';
   $('#power-title').textContent = runningJob ? '正在' + (actions[state.job.action]?.[0] ?? '操作') : s.ready ? '运行中' : s.running ? '连接待完成' : '服务未启动';
@@ -494,7 +496,7 @@ async function saveAll() {
       state.config = result.config; state.draft = structuredClone(result.config); state.revision = result.revision;
     }
     if (readerDirty()) await persistReader();
-    updateDraftUI(); await refreshStatus(); toast(state.status?.pendingApply ? '设置已保存，重启服务后生效。' : '设置已保存并生效。');
+    updateDraftUI(); await refreshStatus(); toast(state.status?.pendingApply ? '设置已保存，正在自动应用。' : '设置已保存，后续消息使用新设置。');
   } catch (error) { showError(error.message); }
   finally { state.savingAll = false; updateDraftUI(); }
 }
@@ -532,7 +534,7 @@ async function pollJob() {
           const updated = await api('/api/config');
           state.config = updated.config; state.draft = structuredClone(updated.config); state.revision = updated.revision;
           state.names.clear();
-          toast('账号已切换。请完整重开 DSH 后启动服务；新账号需要选择自己的允许的聊天。');
+          toast('账号已切换，启动服务时会自动更新模型连接；请为新账号选择允许的聊天。');
         }
         if (state.deployment) { state.deployment.configured = state.reader.verified; $('#setup-banner').hidden = state.reader.verified; }
       } else if (state.job.state === 'failed') state.readerError = state.job.message;

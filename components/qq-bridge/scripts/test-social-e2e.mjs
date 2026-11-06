@@ -52,7 +52,8 @@ test('OneBot group batch reaches plugin and only RESPOND sends a OneBot action',
   };
   const configPath = path.join(dir, 'config.json');
   fs.mkdirSync(path.join(dir,'config'));
-  fs.writeFileSync(path.join(dir,'config/wechatagent.json'),JSON.stringify({wechat:{...config.platforms.wechat,search:{enabled:false},stickers:{enabled:false}}}));
+  fs.mkdirSync(path.join(dir,'roles'));fs.writeFileSync(path.join(dir,'roles/Fixture.md'),'普通群友');
+  fs.writeFileSync(path.join(dir,'config/wechatagent.json'),JSON.stringify({persona:{default:'Fixture',chats:{}},social:config.social,wechat:{...config.platforms.wechat,search:{enabled:false},stickers:{enabled:false}}}));
   fs.writeFileSync(configPath, JSON.stringify(config));
   const child = spawn(process.execPath, ['src/social-bridge.js', configPath], {
     cwd: root, env: { ...process.env, SOCIAL_DSH_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
