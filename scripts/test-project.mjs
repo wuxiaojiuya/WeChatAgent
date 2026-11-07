@@ -55,6 +55,9 @@ try {
   const performancePluginPatch=fs.readFileSync(path.join(fixturePlugin,'cordis.patch.yml'),'utf8');
   assertPluginEntry(performancePluginPatch);
   assert.notEqual(performancePluginPatch,mediaPluginPatch,'performance controls must invalidate the loaded bridge module');
+  fs.appendFileSync(path.join(fixturePlugin,'identity-mind.mjs'),'\n// fixture continuous mind revision\n');prepare(fixture);
+  const mindPluginPatch=fs.readFileSync(path.join(fixturePlugin,'cordis.patch.yml'),'utf8');assertPluginEntry(mindPluginPatch);
+  assert.notEqual(mindPluginPatch,performancePluginPatch,'mind lifecycle changes must invalidate the loaded bridge module');
   const bridge = JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'bridge-config.json'), 'utf8'));
   const io = JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'wechat-io-config.json'), 'utf8'));
   assert.equal(bridge.role, '# Test role');

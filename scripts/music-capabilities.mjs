@@ -32,7 +32,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   const jobTime=value=>typeof value==='string'&&value.length<=40&&Number.isFinite(Date.parse(value));
   function savedJob(job){
     const value={version:1,id:job.id,state:job.state,stage:job.stage,startedAt:job.startedAt,sourceKind:job.sourceKind};
-    for(const key of ['conversationKey','accountScope','source','modelId','title','artist','seconds','previewOnly','sourceStartSeconds','completedAt','error','performance'])if(job[key]!==undefined)value[key]=job[key];
+    for(const key of ['conversationKey','accountScope','source','modelId','title','artist','seconds','previewOnly','deliveryMode','sourceStartSeconds','completedAt','error','performance'])if(job[key]!==undefined)value[key]=job[key];
     // Only public task metadata belongs here; process objects, settings and
     // credentials must never become part of a recovery record.
     for(const key of ['title','artist','error'])if(value[key]!==undefined&&!jobText(value[key],key==='error'?400:240))delete value[key];
@@ -64,8 +64,9 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
       try{
         const record=JSON.parse(fs.readFileSync(path.join(jobDirectory,entry.id,'job.json'),'utf8'));
         if(!record||record.version!==1||record.id!==entry.id||!['running','success','failed'].includes(record.state)||!jobText(record.stage)||!record.stage||!jobTime(record.startedAt)||!['song','video'].includes(record.sourceKind))continue;
-        if(Object.keys(record).some(key=>!['version','id','state','stage','startedAt','sourceKind','conversationKey','accountScope','source','modelId','title','artist','seconds','previewOnly','sourceStartSeconds','completedAt','error','performance'].includes(key)))continue;
+        if(Object.keys(record).some(key=>!['version','id','state','stage','startedAt','sourceKind','conversationKey','accountScope','source','modelId','title','artist','seconds','previewOnly','deliveryMode','sourceStartSeconds','completedAt','error','performance'].includes(key)))continue;
         if(record.accountScope!==undefined&&(typeof record.accountScope!=='string'||!/^[a-f0-9]{64}$/.test(record.accountScope)))continue;
+        if(record.deliveryMode!==undefined&&!['local','chat'].includes(record.deliveryMode))continue;
         if(record.conversationKey!==undefined&&!/^wechat:(private|group):[1-9]\d*$/.test(record.conversationKey)||record.seconds!==undefined&&(!Number.isFinite(record.seconds)||record.seconds<=0||record.seconds>30)||record.previewOnly!==undefined&&typeof record.previewOnly!=='boolean'||record.sourceStartSeconds!==undefined&&(!Number.isFinite(record.sourceStartSeconds)||record.sourceStartSeconds<0||record.sourceStartSeconds>14400)||record.completedAt!==undefined&&!jobTime(record.completedAt))continue;
         const safe=savedJob(record);if(JSON.stringify(safe)!==JSON.stringify(record)){
           // Compare fields, not property ordering: hand-migrated snapshots can
@@ -163,7 +164,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     } finally {if (fs.existsSync(temporary)) fs.unlinkSync(temporary);}
   }
   async function cache(body, {signal} = {}) {return publicEntry(await cacheSong(body?.songId, signal));}
-  async function requestSong(body,{signal,isAllowed=()=>true}={}) {
+  async function requestSong(body,{signal,isAllowed=()=>true,deliveryMode='chat'}={}) {
     const check=()=>{signal?.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);};
     check();
     const {conversationKey,direction='',...query}=body??{};
@@ -197,7 +198,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
       check();
       if(!selected)throw fault(lastError?.message??'没有取得可以使用的音频，暂时唱不了这首歌。',422);
       preparing=false;
-      const job=start({songId:'local:'+selected.key,seconds:settings().clipSeconds??30,conversationKey,direction,requestedTitle:wanted.title,requestedVersion:wanted.version},undefined,{isAllowed});
+      const job=start({songId:'local:'+selected.key,seconds:settings().clipSeconds??30,conversationKey,direction,requestedTitle:wanted.title,requestedVersion:wanted.version},undefined,{isAllowed,deliveryMode});
       return {...job,selectionAutomatic:true,requestedTitle:wanted.title,requestedVersion:wanted.version,sent:false};
     }finally{preparing=false;}
   }
@@ -255,7 +256,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     }catch(error){if(dir)fs.rmSync(dir,{recursive:true,force:true});throw error;}
     finally{preparing=false;controllers.delete(controller);}
   }
-  async function requestVideo(body,{signal,isAllowed=()=>true}={}){
+  async function requestVideo(body,{signal,isAllowed=()=>true,deliveryMode='chat'}={}){
     if(!body||Object.keys(body).some(k=>!['videoId','conversationKey','startSeconds','seconds','localOnly','referenceId','performance'].includes(k)))throw fault('视频演唱请求无效。');
     signal?.throwIfAborted();if(!isAllowed())throw fault('当前聊天的唱歌能力已关闭。',403);
     const entry=references.get(body.referenceId);
@@ -266,7 +267,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
       const file=path.join(entry.dir,'video-source.wav');
       return {file,title:'视频参考演唱',artist:'AI 自主编排',durationSeconds:entry.seconds,previewOnly:false};
     };
-    const job=start({songId:'video:'+entry.videoId,seconds:Math.max(10,Math.ceil(entry.seconds)),startSeconds:0,performance},{input,conversationKey:entry.conversationKey,videoId:entry.videoId,sourceStartSeconds:entry.startSeconds,isAllowed,reference:entry});
+    const job=start({songId:'video:'+entry.videoId,seconds:Math.max(10,Math.ceil(entry.seconds)),startSeconds:0,performance},{input,conversationKey:entry.conversationKey,videoId:entry.videoId,sourceStartSeconds:entry.startSeconds,isAllowed,reference:entry},{isAllowed,deliveryMode});
     entry.inUse=true;
     return {...job,sourceKind:'video',sent:false};
   }
@@ -284,7 +285,8 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   function status() {cleanup();const entries=readEntries();return {source:settings().musicSource ?? 'kugou', cachedSongs:entries.length,
     cacheBytes:entries.reduce((sum,e)=>sum+fs.statSync(audioPath(e.key)).size,0),retentionDays:7,localCoverAvailable:runtimeAvailable(),
     latestJob:jobs.size?publicJob([...jobs.values()].at(-1)):null};}
-  function start(body,source,{isAllowed=()=>true}={}) {
+  function start(body,source,{isAllowed=()=>true,deliveryMode='chat'}={}) {
+    if(!['local','chat'].includes(deliveryMode))throw fault('演唱作品保存方式无效。');
     cleanup();
     if (closed) throw fault('音乐服务已关闭。', 503);
     if (active||preparing) throw fault('已有歌曲正在处理，请稍后再试。', 429);
@@ -303,7 +305,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     if(models&&!model)throw fault('当前音色没有可用的翻唱模型，请在“语音回复”中补充配套 RVC 模型。',409);
     const accountScope=()=>fs.existsSync(path.join(root,'state/wechat-io-config.json'))?readerScope():null,scope=accountScope(),accountId=activeConnection(root).id;
     const id = crypto.randomUUID(), output = path.join(jobDirectory, id);
-    const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(accountId?{accountScope:accountId}:{}),...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
+    const job = {id, deliveryMode, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(accountId?{accountScope:accountId}:{}),...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
     persistJob(job);jobs.set(id, job); active = true;
     const controller = new AbortController(); controllers.add(controller);
     let reference=source?.reference,performance=body.performance;

@@ -3,6 +3,7 @@ import {consoleRoute,routeKey,SETTINGS_SECTIONS} from './layout-model.mjs';
 import {createWorkspaceLayout} from './workspace-layout.js';
 import {createAudioRuntimeUI} from './audio-runtime.js';
 import {createMemoryUI} from './memory-view.js';
+import {createIdentityMindUI} from './identity-mind.js';
 import {createFishNotebookUI} from './fish-notebook.js';
 import {createAssistantFeedbackUI} from './assistant-feedback.js';
 'use strict';
@@ -17,20 +18,22 @@ import { startUpdateUI } from './updates.js';
 import { createExtensionUI } from './extensions.js';
 import {createStickerManagerUI} from './sticker-manager.js';
 import {mergeConversationSave} from './conversation-settings.mjs';
+import {saveConfigDraft,rebasePendingConfig,assertConfigScope} from './config-draft.mjs';
 import {openProcessRecovery,needsWeChatRepair} from './process-recovery.js';
 const $ = selector => document.querySelector(selector);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = name => `<svg aria-hidden="true"><use href="/icons.svg#${name}"></use></svg>`;
-const state = { token: '', config: null, draft: null, revision: '', page: 'overview', roles: [], roleDrafts: new Map(), selectedRole: '', chatKind: 'all', names: new Map(), status: null, job: null, logs: null, loading: false, connection: null };
+const state = { token: '', config: null, draft: null, revision: '', configScope: null, page: 'overview', roles: [], roleDrafts: new Map(), selectedRole: '', chatKind: 'all', names: new Map(), status: null, job: null, logs: null, loading: false, connection: null };
 const roleSaves = new Map();
 const fishNotebookUI=createFishNotebookUI({api,state,escapeHtml,icon,renderPage,toast,onSave:result=>syncExtensionProject(result,'fishNotebook')});
-const memoryUI=createMemoryUI({api,state,escapeHtml,icon,renderPage,toast,notebookPage:()=>fishNotebookUI.page()});
+const identityMindUI=createIdentityMindUI({api,state,escapeHtml,icon});
+const memoryUI=createMemoryUI({api,state,escapeHtml,icon,renderPage,toast,notebookPage:()=>fishNotebookUI.page(),mindPage:()=>identityMindUI.page()});
 const assistantFeedbackUI=createAssistantFeedbackUI({api,modal,closeModal,escapeHtml,icon,toast});
 const personaCategoryUI=createPersonaCategoryUI({state,api,modal,closeModal,escapeHtml,renderPage,toast});
 const sessionGroupUI=createSessionGroupUI({api,modal,closeModal,escapeHtml,icon,renderPage,toast});
 const deletePersona=createPersonaDeletion({state,roleSaves,api,modal,closeModal,escapeHtml,renderPage,updateDraftUI,toast});
 installExternalLinks({report:message=>toast(message)});
-const extensionUI = createExtensionUI({api,modal,closeModal,confirmAction,escapeHtml,icon,state,renderPage,toast,onDshSave:(result,key)=>{state.draft=mergeConversationSave(state.config,state.draft,result.config,key,result.administratorIdentity);state.config=result.config;state.revision=result.revision;updateDraftUI();refreshStatus();},onProjectSave:syncExtensionProject});
+const extensionUI = createExtensionUI({api,modal,closeModal,confirmAction,escapeHtml,icon,state,renderPage,toast,onDshSave:(result,key)=>{assertConfigScope(state.configScope,result.accountScope);state.draft=mergeConversationSave(state.config,state.draft,result.config,key,result.administratorIdentity);state.config=result.config;state.revision=result.revision;state.configScope=result.accountScope??null;updateDraftUI();refreshStatus();},onProjectSave:syncExtensionProject});
 const stickerManagerUI=createStickerManagerUI({api,modal,closeModal,escapeHtml,icon,state,renderPage,toast});
 const audioRuntimeUI=createAudioRuntimeUI({api,escapeHtml,toast});
 const workspaceLayout=createWorkspaceLayout({api,state,escapeHtml,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage:typeof sessionUsage==='function'?sessionUsage:()=>'',getCards:settingsCards,contextSettingsCard,feedbackCard:()=>assistantFeedbackUI.card(),connectionsPage,audioRuntimePage:()=>audioRuntimeUI.page(),logsPage,toolsPage,dshPage:()=>extensionUI.dshPage(),stickerPage:()=>stickerManagerUI.page()});
@@ -71,7 +74,8 @@ const contextDefaults={enabled:false,maxTokens:100000,idleSeconds:60};
 const getPath = (object, path) => {const value=path.split('.').reduce((value,key)=>value?.[key],object);if(value!==undefined)return value;if(path==='wechat.stickers.collectEnabled')return object.wechat?.stickers?.collectGroups??true;if(path==='wechat.stickers.shareEnabled')return object.wechat?.stickers?.shareGroups??true;if(['wechat.stickers.enabled','wechat.stickers.labelCache','wechat.stickers.collectGroups','wechat.stickers.shareGroups'].includes(path))return true;if(path==='wechat.replyLayout.maxMessages')return 2;if(path==='wechat.stickers.candidateLimit')return 8;if(path==='wechat.webReader.enabled')return true;if(path.startsWith('wechat.search.'))return searchDefaults[path.split('.').at(-1)];if(path.startsWith('wechat.proactive.'))return proactiveDefaults[path.split('.').at(-1)];if(path.startsWith('wechat.context.'))return contextDefaults[path.split('.').at(-1)];return value;};
 function syncExtensionProject(result,feature) {
   const previous=state.config, draft=state.draft;
-  state.config=result.config;state.revision=result.revision;
+  assertConfigScope(state.configScope,result.accountScope);
+  state.config=result.config;state.revision=result.revision;state.configScope=result.accountScope??null;
   state.draft=structuredClone(result.config);
   // Retain unrelated pending form edits when an extension saves one feature.
   function retain(old,savedDraft,target) {
@@ -501,10 +505,13 @@ async function saveAll() {
   try {
     for (const name of [...state.roleDrafts.keys()]) await persistRole(name);
     if (configDirty()) {
-      const result = await api('/api/config', { config: state.draft, revision: state.revision });
-      state.config = result.config; state.draft = structuredClone(result.config); state.revision = result.revision;
+      const submitted=structuredClone(state.draft),base=structuredClone(state.config),accountScope=state.configScope;
+      const result=await saveConfigDraft({base,draft:submitted,revision:state.revision,accountScope,read:()=>api('/api/config'),save:body=>api('/api/config',body)});
+      assertConfigScope(accountScope,state.configScope);
+      const pending=rebasePendingConfig(submitted,state.draft,result.config);
+      state.config=result.config;state.draft=pending;state.revision=result.revision;state.configScope=result.accountScope??null;
     }
-    updateDraftUI(); await refreshStatus(); toast(state.status?.pendingApply ? '设置已保存，正在自动应用。' : '设置已保存，后续消息使用新设置。');
+    updateDraftUI(); await refreshStatus(); toast(configDirty()?'已保存提交时的设置，保存期间的新修改仍在草稿中。':state.status?.pendingApply ? '设置已保存，正在自动应用。' : '设置已保存，后续消息使用新设置。');
   } catch (error) { showError(error.message); }
   finally { state.savingAll = false; updateDraftUI(); }
 }
@@ -536,7 +543,7 @@ async function pollJob() {
       const [connection,deployment]=await Promise.all([api('/api/hook/connection'),api('/api/deployment')]);
       state.connection=connection;state.deployment=deployment;
       if(state.job.accountSwitched){
-        const updated=await api('/api/config');state.config=updated.config;state.draft=structuredClone(updated.config);state.revision=updated.revision;state.names.clear();
+        const updated=await api('/api/config');state.config=updated.config;state.draft=structuredClone(updated.config);state.revision=updated.revision;state.configScope=updated.accountScope??null;state.names.clear();
         toast('微信连接已更新，请为当前账号选择允许的聊天。');
       }
       $('#setup-banner').hidden=deployment.configured;$('#setup-nav').hidden=deployment.configured;
@@ -571,7 +578,7 @@ async function load() {
   const info = await fetch('/api/info').then(response => response.json()); state.token = info.token; state.root = info.root;
   const [config, roles, chats, deployment] = await Promise.all([api('/api/config'), api('/api/roles'), api('/api/chats'), api('/api/deployment').catch(() => ({installed:false}))]);
   state.deployment = deployment;
-  state.config = config.config; state.draft = structuredClone(config.config); state.revision = config.revision; state.roles = roles.roles; personaCategoryUI.setData(roles.categories);
+  state.config = config.config; state.draft = structuredClone(config.config); state.revision = config.revision;state.configScope=config.accountScope??null; state.roles = roles.roles; personaCategoryUI.setData(roles.categories);
   state.names.clear();
   for (const chat of chats.chats) if(chat.name)state.names.set(chat.key, chat.name);
   selectRoute(location.hash);
@@ -705,7 +712,7 @@ $('#refresh-button').addEventListener('click', async () => {
     const [config,roles]=await Promise.all([api('/api/config'),api('/api/roles')]);
     // A user can begin editing while the refresh request is in flight.
     if (hasDraft()) {await refreshStatus();toast('状态已刷新，新输入的草稿已保留。');return;}
-    state.config=config.config;state.draft=structuredClone(config.config);state.revision=config.revision;state.roles=roles.roles;personaCategoryUI.setData(roles.categories);state.connection=null;
+    state.config=config.config;state.draft=structuredClone(config.config);state.revision=config.revision;state.configScope=config.accountScope??null;state.roles=roles.roles;personaCategoryUI.setData(roles.categories);state.connection=null;
     await renderPage();await refreshStatus();
   } catch(error) {showError(error.message);}
   finally {state.refreshing=false;button.disabled=false;button.classList.remove('is-refreshing');button.setAttribute('aria-label','刷新当前页面');}

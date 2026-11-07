@@ -141,16 +141,17 @@ export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
           const reference=turn.references?.get(args.referenceId);
           if(!reference||reference.videoId!==args.videoId)throw Object.assign(Error('请先分析本轮对应的视频音轨，再编排自己的演唱方式。'),{public:true});
           const performance=validatePerformance(args.performance,reference.seconds);
-          turn.started??=request('/video-request',{videoId:args.videoId,referenceId:args.referenceId,performance,startSeconds:reference.startSeconds,conversationKey:key,localOnly:turn.networkOptOut===true},signal);
+          turn.started??=request('/video-request',{videoId:args.videoId,referenceId:args.referenceId,performance,startSeconds:reference.startSeconds,conversationKey:key,localOnly:turn.networkOptOut===true,...(turn.previewOnly?{previewOnly:true}:{})},signal);
           value=await turn.started;
-          if(value.id){owned.add(value.id);latest=value.id;while(owned.size>30)owned.delete(owned.values().next().value);}
+          if(value.id){if(turn.previewOnly)turn.singingLatest=value.id;else{owned.add(value.id);latest=value.id;while(owned.size>30)owned.delete(owned.values().next().value);}}
         }else if(def.name==='wechat_sing_song'){
           // A retry in the same model turn reuses the first submission.
-          if(!turn.started)turn.started=request('/request',{...args,conversationKey:key,localOnly:turn.networkOptOut===true},signal);
+          if(!turn.started)turn.started=request('/request',{...args,conversationKey:key,localOnly:turn.networkOptOut===true,...(turn.previewOnly?{previewOnly:true}:{})},signal);
           value=await turn.started;
-          if(value.id){owned.add(value.id);latest=value.id;while(owned.size>30)owned.delete(owned.values().next().value);}
+          if(value.id){if(turn.previewOnly)turn.singingLatest=value.id;else{owned.add(value.id);latest=value.id;while(owned.size>30)owned.delete(owned.values().next().value);}}
         }else{
-          if(latest&&owned.has(latest))value=await request('/jobs/'+latest,undefined,signal);
+          if(turn.previewOnly)value=turn.singingLatest?await request('/jobs/'+turn.singingLatest,undefined,signal):{state:'none',sent:false,message:'本次本地练习尚未提交生成。'};
+          else if(latest&&owned.has(latest))value=await request('/jobs/'+latest,undefined,signal);
           else{
             value=await request('/latest?conversationKey='+encodeURIComponent(key),undefined,signal);
             if(value?.id!==undefined){
@@ -162,7 +163,7 @@ export function bindSingingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
           }
         }
         if(def.kind==='voice')turn.voiceOutcome={state:value.state,sent:value.sent===true,code:value.code};
-        else if(def.name!=='wechat_analyze_singing')turn.singingOutcome={state:value.state,sent:value.sent===true,deliveryState:value.delivery?.state,message:singingReason(value.error??value.message)};
+        else if(def.name!=='wechat_analyze_singing')turn.singingOutcome={id:value.id,state:value.state,sent:value.sent===true,deliveryState:value.delivery?.state,message:singingReason(value.error??value.message)};
         if(!active(def.kind)||turnFor()!==turn)throw Error('音频操作已取消。');
         return {content:JSON.stringify({...value,sent:value.sent===true,notice:def.name==='wechat_analyze_singing'?'音轨已分析，尚未生成或发送演唱。请结合画面、转写和人格提交自己的演唱编排。':value.sent===true?'已取得微信服务器消息回执。':def.kind==='singing'&&value.state==='success'&&value.delivery?.state==='unconfirmed'?'翻唱音频已经生成；未确认的是微信发送回执。请按当前人格自然说明这两个阶段，先不重复发送；不要说还没生成、仍在生成、已送达或发送没问题。':'生成或排队不代表微信已发送；仅 sent:true 可以说已送达。失败时按当前人格自然解释工具已证实的环节，不照读系统模板，不把取源失败推断为版权、付费或登录问题。'}),isError:value.state==='failed'};
       }catch(error){

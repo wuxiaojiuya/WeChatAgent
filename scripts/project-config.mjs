@@ -19,6 +19,7 @@ import { validateWebReaderSettings } from '../packages/dsh-social-bridge-plugin/
 import {validateMemeLibrarySettings} from '../packages/dsh-social-bridge-plugin/meme-library-policy.mjs';
 import {validateFishNotebook} from '../packages/dsh-social-bridge-plugin/fish-notebook-policy.mjs';
 import {validateMemberMemory} from '../packages/dsh-social-bridge-plugin/member-memory-policy.mjs';
+import {validateMindPolicy} from '../packages/dsh-social-bridge-plugin/identity-mind-store.mjs';
 
 import {validateConversationSettings,conversationMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {migrateDshSettings} from '../packages/dsh-social-bridge-plugin/dsh-migration.mjs';
@@ -50,6 +51,7 @@ const write = (file, value) => {
   fs.renameSync(`${file}.tmp`, file);
 };
 export function validateConfig(config) {
+  validateMindPolicy(config.wechat?.identityMind);
   validateFishNotebook(config.wechat?.fishNotebook);
   validateHistorySettings(config.wechat?.history);
   validateMemberMemory(config.wechat?.memberMemory);
@@ -160,6 +162,7 @@ export function prepare(root = projectRoot) {
     sources.push(path.join(moduleDir,'singing-performance.mjs'));
     sources.push(path.join(moduleDir,'drawing-tools.mjs'));
     sources.push(path.join(moduleDir,'wechat-management-tools.mjs'));
+    for(const name of ['identity-mind-store.mjs','identity-mind.mjs','identity-mind-actions.mjs'])sources.push(path.join(moduleDir,name));
     if(hasCapabilities)for(const name of CAPABILITY_PLUGIN_FILES)sources.push(path.join(root,'packages/dsh-capabilities-plugin',name));
     for(const name of ['index.mjs','catalog.mjs','snapshots.mjs']){const file=path.join(root,'packages/extension-runtime',name);if(fs.existsSync(file))sources.push(file);}
     if(fs.existsSync(path.join(root,'packages/plugin-api')))for(const name of PLUGIN_HOST_FILES){const file=path.join(root,name);if(!fs.existsSync(file))throw new Error('插件宿主文件不完整，请更新 WeChatAgent：'+name);sources.push(file);}

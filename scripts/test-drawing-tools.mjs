@@ -162,3 +162,38 @@ test('social tool presentation and execution include only the live drawing polic
   const assembly={sections:[],tools:[{name:'pwsh'},{name:'wechat_draw_image'},{name:'wechat_drawing_status'}]};
   const shown=await handlers[0].handler(null,{scope:agent},async()=>assembly);assert.deepEqual(shown.tools.map(tool=>tool.name),['wechat_draw_image','wechat_drawing_status']);f.setAllowed(false);assert.equal(typeof guard({agent,name:'wechat_draw_image'}),'string');
 });
+
+test('local practice submits preview-only generation with the current revision and no chat target',async t=>{
+  const revision='a'.repeat(64);let f;
+  f=fixture(t,{fetchImpl:async(url,request,{root,capability})=>{
+    if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root,token:'fixture-token'});
+    if(url.endsWith('/api/drawing-capability'))return Response.json({settings:capability,revision});
+    return Response.json({job:{id,state:'queued',previewOnly:true}});
+  }});
+  const turn=f.setTurn({previewOnly:true}),draw=f.tools.get('wechat_draw_image');
+  const first=await result(draw,{prompt:'自己练习画一幅安静的雨夜。'});await result(draw,{prompt:'自己练习画一幅安静的雨夜。'});
+  const submissions=f.calls.filter(row=>row.url.endsWith('/generate'));assert.equal(submissions.length,1);
+  const body=JSON.parse(submissions[0].request.body);assert.deepEqual(Object.keys(body).sort(),['previewOnly','prompt','requestId','revision']);assert.equal(body.previewOnly,true);assert.equal(body.revision,revision);assert.equal(Object.hasOwn(body,'conversationKey'),false);assert.equal(first.job.state,'queued');assert.equal(first.job.sent,false);assert.equal(turn.drawingLatest,id);
+  const checked=await result(f.tools.get('wechat_drawing_status'));assert.equal(checked.job.id,id);assert(f.calls.at(-1).url.endsWith('/jobs/'+id));assert.equal(f.calls.at(-1).url.includes('conversationKey'),false);
+});
+
+test('local drawing status does not discover chat jobs and rejects a foreign or non-preview result',async t=>{
+  const f=fixture(t);f.setTurn({previewOnly:true});const status=f.tools.get('wechat_drawing_status');
+  const empty=await result(status);assert.equal(empty.job.state,'none');assert.equal(f.calls.some(row=>/\/(?:jobs|latest)(?:[/?]|$)/.test(row.url)),false);
+  for(const job of [{id,state:'success',conversationKey:'wechat:private:456',previewOnly:true},{id,state:'success',conversationKey:key,previewOnly:false},{id,state:'success',conversationKey:key}]){
+    f.setTurn({previewOnly:true});f.setJob(job);const response=await status.execute({jobId:id}),value=JSON.parse(response.content);assert.equal(response.isError,true);assert.equal(value.job.state,'unconfirmed');assert.equal(value.job.sent,false);assert(!response.content.includes('wechat:private:456'));
+  }
+});
+
+test('local drawing practice cannot replace the normal chat latest job',async t=>{
+  const localId='22222222-2222-4222-8222-222222222222';let f;
+  f=fixture(t,{fetchImpl:async(url,request,{root,capability})=>{
+    if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root,token:'fixture-token'});
+    if(url.endsWith('/api/drawing-capability'))return Response.json({settings:capability,revision:'b'.repeat(64)});
+    if(url.endsWith('/generate')){const local=JSON.parse(request.body).previewOnly;return Response.json({job:{id:local?localId:id,state:'queued',...(local?{previewOnly:true}:{conversationKey:key})}});}
+    return Response.json({job:{id,state:'running',conversationKey:key}});
+  }});
+  const draw=f.tools.get('wechat_draw_image'),status=f.tools.get('wechat_drawing_status');await result(draw,{prompt:'画给朋友的猫'});
+  f.setTurn({previewOnly:true});await result(draw,{prompt:'自己练习的雨夜'});
+  f.setTurn();const normal=await result(status);assert.equal(normal.job.id,id);assert(f.calls.at(-1).url.includes('/jobs/'+id+'?conversationKey='));assert(!f.calls.at(-1).url.includes(localId));
+});

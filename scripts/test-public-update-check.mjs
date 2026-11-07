@@ -6,7 +6,7 @@ import os from 'node:os';
 import {createUpdateChecker,compareVersions} from './update-check.mjs';
 const prefix='https://github.com/wuxiaojiuya/WeChatAgent/releases/download/';
 const release=(version,extra=[])=>({tag_name:'v'+version,assets:[{name:'WeChatAgent-Setup-'+version+'-x64.exe',state:'uploaded',browser_download_url:prefix+'v'+version+'/WeChatAgent-Setup-'+version+'-x64.exe'},...extra]});
-function fixture(t,local={version:'0.3.2'},responses=[]){const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-update-'));fs.writeFileSync(path.join(root,'deployment.json'),JSON.stringify(local));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));let calls=0,clock=1000000;const checker=createUpdateChecker({root,now:()=>clock,fetchImpl:async()=>{calls++;const next=responses.shift();if(next instanceof Error)throw next;return new Response(JSON.stringify(next??release('0.3.2')),{status:200});}});return {checker,get calls(){return calls;},advance:ms=>{clock+=ms;}};}
+function fixture(t,local={version:'0.3.2'},responses=[]){const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-update-'));fs.writeFileSync(path.join(root,'deployment.json'),JSON.stringify(local));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));let calls=0,clock=1000000;const checker=createUpdateChecker({root,now:()=>clock,fetchImpl:async()=>{calls++;const next=responses.shift();if(next instanceof Error)throw next;return new Response(JSON.stringify(next??release('0.3.2')),{status:200});}});return {root,checker,get calls(){return calls;},advance:ms=>{clock+=ms;}};}
 test('startup update metadata detects a newer version with only official download links and caches checks',async t=>{
  const f=fixture(t,undefined,[release('0.3.3')]);const result=await f.checker.check();assert.equal(result.status,'available');assert.equal(result.latestVersion,'0.3.3');assert(result.downloadUrl.startsWith(prefix));
  await f.checker.check();await f.checker.check({force:true});assert.equal(f.calls,1);assert(compareVersions('0.3.10','0.3.2')>0);
@@ -62,5 +62,37 @@ test('plus release downloads still require the exact repository path without cre
  for(const url of ['https://evil.example/v0.4.1%2B/setup.exe',prefix+'v0.4.1%2B/WeChatAgent-Setup-0.4.1%2B-x64.exe?redirect=1',prefix+'v0.4.1%2B/WeChatAgent-Setup-0.4.1%2B-x64.exe#fragment',prefix+'v0.4.1%2B/other.exe']){
   const data=release('0.4.1+');data.assets[0].browser_download_url=url;
   assert.equal((await fixture(t,{version:'0.4.1'},[data]).checker.check()).status,'up_to_date');
+ }
+});
+
+test('installed release identity overrides a stale workspace manifest and shares the displayed version',async t=>{
+ const f=fixture(t,{version:'0.2.15',buildId:'1111111111111111',builtAt:'2026-11-06T10:00:00Z'},[release('0.2.17')]);
+ fs.mkdirSync(path.join(f.root,'config'));
+ fs.writeFileSync(path.join(f.root,'config/distribution.json'),JSON.stringify({installed:true,version:'0.2.17',buildId:'2222222222222222'}));
+ const result=await f.checker.check();assert.equal(result.currentVersion,'0.2.17');assert.equal(result.status,'up_to_date');assert.equal(result.downloadUrl,undefined);
+});
+
+test('updated local installation invalidates a previous newer-release result without waiting for cache expiry',async t=>{
+ const f=fixture(t,{version:'0.2.15'},[release('0.2.17'),release('0.2.17')]);
+ assert.equal((await f.checker.check()).status,'available');
+ fs.mkdirSync(path.join(f.root,'config'));
+ fs.writeFileSync(path.join(f.root,'config/distribution.json'),JSON.stringify({installed:true,version:'0.2.17'}));
+ const result=await f.checker.check();assert.equal(result.status,'up_to_date');assert.equal(result.currentVersion,'0.2.17');assert.equal(f.calls,2);
+});
+
+test('matching installed metadata retains rebuild detection without borrowing an old build timestamp',async t=>{
+ const verification={name:'VERIFICATION.json',state:'uploaded',browser_download_url:prefix+'v0.3.2/VERIFICATION.json'};
+ for(const matching of [true,false]){
+  const f=fixture(t,{version:matching?'0.3.2':'0.3.1',buildId:matching?'1111111111111111':'3333333333333333',builtAt:'2026-10-12T10:00:00Z'},[release('0.3.2',[verification]),{version:'0.3.2',buildId:'2222222222222222',builtAt:'2026-10-12T11:00:00Z'}]);
+  fs.mkdirSync(path.join(f.root,'config'));
+  fs.writeFileSync(path.join(f.root,'config/distribution.json'),JSON.stringify({installed:true,version:'0.3.2',buildId:'1111111111111111'}));
+  const result=await f.checker.check();assert.equal(result.status,matching?'available':'up_to_date');
+ }
+});
+
+test('invalid or non-installed distribution metadata cannot override source release identity',async t=>{
+ for(const installed of [{installed:false,version:'9.9.9'},{installed:true,version:'not-a-version'}]){
+  const f=fixture(t,{version:'0.3.2'},[release('0.3.3')]);fs.mkdirSync(path.join(f.root,'config'));fs.writeFileSync(path.join(f.root,'config/distribution.json'),JSON.stringify(installed));
+  const result=await f.checker.check();assert.equal(result.currentVersion,'0.3.2');assert.equal(result.status,'available');
  }
 });

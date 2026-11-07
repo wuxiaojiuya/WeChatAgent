@@ -37,6 +37,7 @@ import {applyChatSettings} from '../public/console/conversation-settings.mjs';
 import { dshConfigurationMatches,sameProjectPath } from './dsh-configuration.mjs';
 import {refreshDsh} from './dsh-refresh.mjs';
 import {personaEvolutionStatus} from '../packages/dsh-social-bridge-plugin/persona-evolution.mjs';
+import {identityMindStatus,readMindPolicy} from '../packages/dsh-social-bridge-plugin/identity-mind-store.mjs';
 import { createProcessRecovery,startupConflictPorts } from './process-recovery.mjs';
 import {connectionScope,activeConnection,connectionChatSettings,ensureConnectionMigration} from './hook-connection-state.mjs';
 import {isDeepStrictEqual} from 'node:util';
@@ -83,6 +84,7 @@ export function validateConsoleConfig(config, root) {
       [/webReader/, '网页阅读设置必须是开关值。'],
       [/search/, '请检查联网搜索开关、聊天 ID 和单轮次数范围。每轮搜索次数为 1–3，摘要长度为 256–3000 字符。'],
       [/proactive/, '请检查主动聊天开关、内容方向、时间段和间隔。时间为 HH:MM，主动间隔为 30–1440 分钟。'],
+      [/identityMind|identity mind|MIND_POLICY/, '请检查自主思考设置：空闲至少 5–1440 分钟，回顾间隔 1–1440 分钟，每日自主行动上限 0–20，安静时段使用 HH:MM。'],
       [/context/, '请检查上下文压缩设置：阈值为 4,000–2,000,000 token，空闲等待为 15–3,600 秒；单个聊天填 0 可关闭。'],
       [/Hook/, '请检查发送请求超时、回执等待时间和并发上限。'],
     ];
@@ -131,6 +133,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
   const drawingCapability=createDrawingCapability({root,execution:generation,config:()=>snapshot().config,delivery:nativeImage});
   const voiceRequests=new Map(),musicDeliveries=new Map();
   async function musicJobStatus(job){
+    if(job.deliveryMode==='local')return {...job,sent:false,delivery:{state:'not-sent',sent:false,message:'本地练习作品，仅保存试听，不发送微信。'}};
     let entry=musicDeliveries.get(job.id);
     if(!entry&&job.conversationKey){
       const recovered=nativeVoice.lookup(job.conversationKey,'singing',job.id);
@@ -162,7 +165,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
     const raw = fs.readFileSync(fs.existsSync(configFile) ? configFile : path.join(root, 'config', 'wechatagent.example.json'), 'utf8');
     const config=JSON.parse(raw.replace(/^\uFEFF/, ''));
     configureBundledHook(config);
-    return { config, revision: hash(raw) };
+    return { config, revision: hash(raw),accountScope:activeConnection(root).id||null };
   };
   const safeText = input => {
     let text = String(input ?? '');
@@ -410,8 +413,10 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
         assets['/workspace-layout.css']=['workspace-layout.css','text/css; charset=utf-8'];
         assets['/assistant-feedback.js']=['assistant-feedback.js','text/javascript; charset=utf-8'];
         assets['/memory-view.js']=['memory-view.js','text/javascript; charset=utf-8'];assets['/memory-view.css']=['memory-view.css','text/css; charset=utf-8'];
+        assets['/identity-mind.js']=['identity-mind.js','text/javascript; charset=utf-8'];
         assets['/fish-notebook.js']=['fish-notebook.js','text/javascript; charset=utf-8'];assets['/fish-notebook.css']=['fish-notebook.css','text/css; charset=utf-8'];
         assets['/conversation-settings.mjs']=['conversation-settings.mjs','text/javascript; charset=utf-8'];
+        assets['/config-draft.mjs']=['config-draft.mjs','text/javascript; charset=utf-8'];
         assets['/dsh-catalog.mjs']=['dsh-catalog.mjs','text/javascript; charset=utf-8'];
         assets['/persona-delete.js']=['persona-delete.js','text/javascript; charset=utf-8'];
         assets['/persona-categories.js']=['persona-categories.js','text/javascript; charset=utf-8'];assets['/persona-categories.css']=['persona-categories.css','text/css; charset=utf-8'];
@@ -440,6 +445,10 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
       if(req.method==='GET'&&route==='/api/updates')return reply(200,await updates.check());
       if(req.method==='GET'&&route==='/api/assistant-feedback')return reply(200,feedbackSnapshot(root));
       if(req.method==='GET'&&route==='/api/memory')return reply(200,memoryView.overview());
+      if(req.method==='GET'&&route==='/api/identity-mind/status'){
+        const account=activeConnection(root).id,wechat=snapshot().config.wechat;
+        return reply(200,{...identityMindStatus(root,account,{allowed:key=>allowedConversation(wechat,key)}),accountScope:account||null,policy:readMindPolicy(root)});
+      }
       if(req.method==='GET'&&route==='/api/fish-notebook')return reply(200,fishNotebookSnapshot(root,snapshot(),url.searchParams));
       if(req.method==='GET'&&route==='/api/memory/members')return reply(200,memoryView.members(url.searchParams));
       if(req.method==='GET'&&route==='/api/memory/summaries')return reply(200,await memoryView.summaries(url.searchParams));
@@ -624,15 +633,17 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
         finally{res.removeListener('close',cancel);}
       }
       if(route==='/api/audio-capabilities/music/request'||route==='/api/audio-capabilities/music/video-request'){
-        const {conversationKey,...request}=body;
+        const {conversationKey,previewOnly=false,...request}=body;
+        if(typeof previewOnly!=='boolean')throw fault('试听模式无效。');
         const isAllowed=()=>{if(conversationKey===undefined)return true;const value=audioCapabilities.snapshot().settings.singing;
           return typeof conversationKey==='string'&&value.enabled&&value.chats.includes(conversationKey)&&allowedConversation(snapshot().config.wechat,conversationKey);};
         if(!isAllowed())throw fault('当前聊天的唱歌能力未开启。',403);
         if(route.endsWith('/video-request')&&conversationKey===undefined)throw fault('视频翻唱必须绑定当前微信聊天。',403);
         const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort();};res.once('close',cancel);
         try{
-          const context=conversationKey===undefined?null:await nativeVoice.capture(conversationKey,'singing',controller.signal);
-          const job=await (route.endsWith('/video-request')?musicCapabilities.requestVideo({...request,conversationKey},{signal:controller.signal,isAllowed}):musicCapabilities.requestSong({...request,conversationKey},{signal:controller.signal,isAllowed}));
+          const context=conversationKey===undefined||previewOnly?null:await nativeVoice.capture(conversationKey,'singing',controller.signal);
+          const options={signal:controller.signal,isAllowed,deliveryMode:previewOnly?'local':'chat'};
+          const job=await (route.endsWith('/video-request')?musicCapabilities.requestVideo({...request,conversationKey},options):musicCapabilities.requestSong({...request,conversationKey},options));
           if(context&&job.id){
             while(musicDeliveries.size>=30)musicDeliveries.delete(musicDeliveries.keys().next().value);
             const entry={key:conversationKey};musicDeliveries.set(job.id,entry);
@@ -754,12 +765,15 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
       if (route === '/api/config') {
         const previous = snapshot();
         if (body.revision !== previous.revision) throw fault('配置已在其他窗口更新，请重新载入后再保存。', 409);
+        if(Object.hasOwn(body,'accountScope')&&(body.accountScope??null)!==previous.accountScope)throw fault('微信连接已切换，未保存旧账号的设置。请核对当前账号，草稿仍保留。',409);
         const config = validateConsoleConfig(body.config, root);
         if (Object.values(config.ports).includes(boundPort) || Number(new URL(config.hook.baseUrl).port || 80) === boundPort) throw fault('服务端口不能与当前控制台端口重复。');
         const transport=value=>JSON.stringify({runtime:value.runtime,ports:value.ports,hook:value.hook,media:value.wechat.media});
         const transportChanged=transport(previous.config)!==transport(config),modelChanged=JSON.stringify(previous.config.dsh)!==JSON.stringify(config.dsh);
         const preferences=optionalJson(preferenceFile),needsApply=transportChanged||modelChanged||preferences.pendingApply||preferences.dshReloadRequired;
         const wasRunning=needsApply?(await getStatus()).running:false;
+        const current=snapshot();
+        if(current.revision!==previous.revision||current.accountScope!==previous.accountScope)throw fault('保存期间配置或微信连接已变化，草稿仍保留，请重试。',409);
         backup(configFile); atomic(configFile, config);statusTime=0;
         let applyJob;
         if(needsApply){

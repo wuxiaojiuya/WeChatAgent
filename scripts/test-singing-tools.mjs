@@ -47,6 +47,37 @@ test('chat model supplies song metadata, retries reuse the job, and status never
   assert.match(ready.notice,/不代表微信已发送/);assert.ok(!JSON.stringify(ready).includes('fixture-token'));
 });
 
+test('local singing practice forwards previewOnly while normal chat submissions retain their existing contract',async t=>{
+ const calls=[];let f;
+ f=fixture(t,{fetchImpl:async(url,options)=>{
+   if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+   calls.push({url,body:options.body&&JSON.parse(options.body)});return Response.json({id:'11111111-1111-4111-8111-111111111111',state:'queued',previewOnly:true});
+ }});
+ const sing=f.tools.get('wechat_sing_song');f.setTurn({previewOnly:true,networkOptOut:true});
+ const local=JSON.parse((await sing.execute({title:'朋友的酒',direction:'先轻声练习'})).content);await sing.execute({title:'朋友的酒',direction:'先轻声练习'});
+ assert.equal(calls.length,1);assert.deepEqual(calls[0].body,{title:'朋友的酒',direction:'先轻声练习',conversationKey:key,localOnly:true,previewOnly:true});assert.equal(local.sent,false);
+ f.setTurn();await sing.execute({title:'朋友的酒'});assert.equal(calls.length,2);assert.deepEqual(calls[1].body,{title:'朋友的酒',conversationKey:key,localOnly:false});
+});
+
+test('empty local singing status never reads a previous chat song',async t=>{
+ let f;const calls=[];
+ f=fixture(t,{fetchImpl:async(url)=>{if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});calls.push(url);return Response.json({id:'11111111-1111-4111-8111-111111111111',state:'success',sent:true,conversationKey:key});}});
+ f.setTurn({previewOnly:true});const value=JSON.parse((await f.tools.get('wechat_singing_status').execute({})).content);assert.equal(value.state,'none');assert.equal(value.sent,false);assert.equal(calls.length,0);
+});
+
+test('local singing status and normal chat latest stay separate across successive turns',async t=>{
+ const chatId='11111111-1111-4111-8111-111111111111',localId='22222222-2222-4222-8222-222222222222',calls=[];let f;
+ f=fixture(t,{fetchImpl:async(url,options)=>{
+   if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+   const body=options.body&&JSON.parse(options.body);calls.push({url,body});
+   const local=body?.previewOnly===true||url.endsWith('/'+localId);return Response.json({id:local?localId:chatId,state:'running',...(local?{previewOnly:true}:{conversationKey:key})});
+ }});
+ const sing=f.tools.get('wechat_sing_song'),status=f.tools.get('wechat_singing_status');await sing.execute({title:'朋友的酒'});
+ f.setTurn({previewOnly:true});await sing.execute({title:'另一首练习曲'});const local=JSON.parse((await status.execute({})).content);assert.equal(local.id,localId);assert(calls.at(-1).url.endsWith('/jobs/'+localId));
+ f.setTurn();const normal=JSON.parse((await status.execute({})).content);assert.equal(normal.id,chatId);assert(calls.at(-1).url.endsWith('/jobs/'+chatId));
+ f.setTurn({previewOnly:true});const blank=JSON.parse((await status.execute({})).content);assert.equal(blank.state,'none');assert.equal(blank.sent,false);
+});
+
 test('a fresh singing binding restores the latest authorized job without starting or resending it',async t=>{
  const id='12345678-1234-1234-1234-123456789abc',calls=[];let f;
  f=fixture(t,{fetchImpl:async(url,options)=>{
@@ -108,6 +139,20 @@ test('video requests use only current-turn references, reuse submissions and sha
   assert.deepEqual(calls[1].body,{videoId,referenceId:'ref-fixture',performance:plan,startSeconds:4,conversationKey:key,localOnly:true});
   f.setTurn();assert(!f.ctx[SINGING_POLICY].names().has('wechat_sing_video'));
   assert.equal(JSON.parse((await tool.execute({videoId})).content).state,'failed');
+});
+
+test('local video singing carries preview-only through the analyzed reference without changing normal requests',async t=>{
+ const videoId='d'.repeat(64),calls=[];let f;
+ f=fixture(t,{fetchImpl:async(url,options)=>{
+   if(url.endsWith('/api/info'))return Response.json({project:'WeChatAgent Console',root:f.root,token:'fixture-token'});
+   calls.push({url,body:options.body&&JSON.parse(options.body)});
+   if(url.endsWith('/video-reference'))return Response.json({referenceId:'local-ref',videoId,startSeconds:3,seconds:20,analysis:{phrases:[{start:0,end:20}]}});
+   return Response.json({id:'33333333-3333-4333-8333-333333333333',state:'queued',previewOnly:true});
+ }});
+ f.setTurn({previewOnly:true,videos:[{id:videoId}]});await f.tools.get('wechat_analyze_singing').execute({videoId,startSeconds:3});
+ const sing=f.tools.get('wechat_sing_video');await sing.execute({videoId,referenceId:'local-ref',performance:plan});await sing.execute({videoId,referenceId:'local-ref',performance:plan});
+ const request=calls.filter(row=>row.url.endsWith('/video-request'));assert.equal(request.length,1);assert.deepEqual(request[0].body,{videoId,referenceId:'local-ref',performance:plan,startSeconds:3,conversationKey:key,localOnly:false,previewOnly:true});
+ assert.equal(Object.hasOwn(calls[0].body,'previewOnly'),false,'reference analysis itself does not create or send a performance');
 });
 
 test('the model cannot skip reference analysis or submit overlapping expressive phrases',async t=>{

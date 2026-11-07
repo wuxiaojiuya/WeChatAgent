@@ -29,6 +29,39 @@ test('saved chat, persona, history and rhythm settings do not start or restart s
   const stale=await fetch(base+'/api/config',{method:'POST',headers,body:JSON.stringify({revision:'stale',config:changed})});assert.equal(stale.status,409);
 });
 
+test('configuration snapshots include connection scope and reject a stale scope even when file revision is unchanged',async t=>{
+  const f=fixture(t),app=createConsole({root:f.root,port:0,runner:async()=>0,fetchImpl:async()=>{throw Error('offline');}}),address=await app.start();t.after(()=>app.close());
+  const origin='http://127.0.0.1:'+address.port,{token}=await fetch(origin+'/api/info').then(r=>r.json()),headers={'X-Console-Token':token,'Content-Type':'application/json'};
+  const read=()=>fetch(origin+'/api/config',{headers}).then(r=>r.json()),initial=await read();assert.equal(initial.accountScope,null);
+  const file=path.join(f.root,'state/hook/active-connection.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({id:'a'.repeat(64),legacyId:''}));
+  const current=await read();assert.equal(current.revision,initial.revision);assert.equal(current.accountScope,'a'.repeat(64));
+  const changed=structuredClone(initial.config);changed.wechat.whitelist.private=['123'];
+  const refused=await fetch(origin+'/api/config',{method:'POST',headers,body:JSON.stringify({...initial,config:changed})});assert.equal(refused.status,409);assert.deepEqual((await read()).config.wechat.whitelist.private,initial.config.wechat.whitelist.private);
+  // Older clients omit the scope; revision CAS still applies for compatibility.
+  const legacy=await fetch(origin+'/api/config',{method:'POST',headers,body:JSON.stringify({revision:current.revision,config:changed})});assert.equal(legacy.status,200);assert.equal((await legacy.json()).accountScope,current.accountScope);
+  const module=await fetch(origin+'/config-draft.mjs');assert.equal(module.status,200);assert.match(module.headers.get('content-type'),/javascript/);assert.match(await module.text(),/export async function saveConfigDraft/);
+});
+
+test('configuration CAS rechecks background changes made while waiting for service status',async t=>{
+  for(const mode of ['configuration','connection'])await t.test(mode,async t=>{
+    const f=fixture(t),commands=[];let changed=false;
+    const app=createConsole({root:f.root,port:0,runner:async spec=>{commands.push(spec);return 0;},fetchImpl:async url=>{
+      if(!changed&&url==='http://127.0.0.1:'+f.config.ports.adapter+'/status'){
+        changed=true;
+        if(mode==='configuration'){const next=structuredClone(f.config);next.social.batch_ms=3333;fs.writeFileSync(path.join(f.root,'config/wechatagent.json'),JSON.stringify(next));}
+        else{const file=path.join(f.root,'state/hook/active-connection.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({id:'b'.repeat(64),legacyId:''}));}
+      }
+      return Response.json({});
+    }}),address=await app.start();t.after(()=>app.close());
+    const origin='http://127.0.0.1:'+address.port,{token}=await fetch(origin+'/api/info').then(r=>r.json()),headers={'X-Console-Token':token,'Content-Type':'application/json'},previous=await fetch(origin+'/api/config',{headers}).then(r=>r.json());
+    const draft=structuredClone(previous.config);draft.dsh.model='not-saved-model';
+    const response=await fetch(origin+'/api/config',{method:'POST',headers,body:JSON.stringify({...previous,config:draft})});assert.equal(changed,true);assert.equal(response.status,409);assert.equal(commands.length,0);
+    const after=await fetch(origin+'/api/config',{headers}).then(r=>r.json());assert.equal(after.config.dsh.model,f.config.dsh.model);
+    if(mode==='configuration')assert.equal(after.config.social.batch_ms,3333);else assert.equal(after.accountScope,'b'.repeat(64));
+    assert(!fs.existsSync(path.join(f.root,'state/console-state.json')));
+  });
+});
+
 test('wake changes take effect on the existing engine without resetting cooldowns or buffered messages',t=>{
   const f=fixture(t),buffer=new MessageBuffer(path.join(f.root,'state/messages.json')),engine=new SocialEngine({buffer,batchMs:60000,mode:'mention',wakeWords:['旧名字'],decide:async()=>{assert.fail('no model call');},send:async()=>{assert.fail('no send');}});t.after(()=>engine.stop());
   const groups=new Set(['old']),friends=new Set(['old']),key='wechat:group:123';engine.sentAt.set(key,[Date.now()]);

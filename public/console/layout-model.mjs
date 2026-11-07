@@ -7,7 +7,7 @@ export function consoleRoute(hash=''){
  const [page,section]=String(hash).replace(/^#/,'').split('/');
  if(aliases[page])return {...aliases[page]};
  if(page==='setup')return {page:'setup'};
- if(page==='memory')return {page,section:['summaries','notebook'].includes(section)?section:'members'};
+ if(page==='memory')return {page,section:['mind','summaries','notebook'].includes(section)?section:'members'};
  if(page==='settings')return {page,section:Object.hasOwn(SETTINGS_SECTIONS,section)?section:'chat'};
  if(page==='stickers')return {page,section:Object.hasOwn(STICKER_SECTIONS,section)?section:'library'};
  if(page==='extensions')return {page,section:Object.hasOwn(CAPABILITY_SECTIONS,section)?section:'catalog'};

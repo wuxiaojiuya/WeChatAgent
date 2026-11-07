@@ -5,6 +5,7 @@ import {packZip} from '../packages/plugin-api/zip.mjs';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {CAPABILITY_PLUGIN_FILES,CAPABILITY_EXECUTION_VERSION} from '../packages/dsh-capabilities-plugin/contract.mjs';
+import {CONTINUOUS_IDENTITY_FILES} from './source-release-policy.mjs';
 const root=path.resolve(import.meta.dirname,'..'),pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'))),version=pkg.releaseVersion??pkg.version;
 const output=path.join(root,'release/installer'),prefix='WeChatAgent-'+version;
 const files=['components/supplier-hook/4.1.8.27/files.sha256.json','components/supplier-hook/4.1.8.27/libGLESv1.dll','components/supplier-hook/4.1.8.27/x64 inject.exe','components/supplier-hook/README.md','docs/SUPPLIER_HOOK_41827.md'];
@@ -50,7 +51,7 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
   if(deployment.version!==version||deployment.buildId!==manifest.buildId||deployment.hookBackend!=='supplier-http'||deployment.wechatVersion!=='4.1.8.27'||deployment.privateAccountDataBundled!==false)throw Error('PACKAGED_DEPLOYMENT_MISMATCH');
   const packaged=JSON.parse(fs.readFileSync(path.join(directory,'package.json')));
   if(packaged.version!==version||packaged.releaseVersion!==version)throw Error('PACKAGED_VERSION_MISMATCH');
-  for(const relative of [...capabilityFiles,...deliveryFiles,...sharedMemoryAndHookFiles]){
+  for(const relative of [...capabilityFiles,...deliveryFiles,...sharedMemoryAndHookFiles,...CONTINUOUS_IDENTITY_FILES]){
     if(!Array.isArray(deployment.files)||!deployment.files.includes(relative)||!Object.hasOwn(deployment.sourceHashes,relative))throw Error('UPDATED_FEATURE_NOT_PACKAGED: '+relative);
     if(deployment.sourceHashes[relative]!==sha(path.join(root,relative)))throw Error('UPDATED_FEATURE_SOURCE_OUTDATED: '+relative);
   }
@@ -98,6 +99,7 @@ Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevisio
   ...(profile.verification?.publicRegression?{regression:profile.verification.publicRegression}:{}),
   capabilityHost:'dsh',capabilityManagementHost:'wechatagent',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,deliveryFixesPackaged:true,upgradeRequiresDshReload:true,
   sharedIdentityMemory:'account-shared-identity-v1',sharedMemoryAndHookFilesVerified:sharedMemoryAndHookFiles.length,
+  continuousIdentityMemory:'continuous-self-v1',continuousIdentityFilesVerified:CONTINUOUS_IDENTITY_FILES.length,configDraftMergePackaged:true,installedUpdateIdentityFixPackaged:true,
   wechatMessageSource:'hook-push-project-cache',wechatDatabaseAccess:false,autonomousWechatManagement:true,
   singingEngine:'source-vocal-rvc-v1',obsoleteSingingEngineBundled:false,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),

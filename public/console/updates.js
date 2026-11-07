@@ -2,7 +2,13 @@ export function startUpdateUI({api,toast}) {
   const button=document.querySelector('#check-updates'),banner=document.querySelector('#update-banner');
   if(!button||!banner)return;
   const show=result=>{
-    if(result.status!=='available')return;
+    if(result.status!=='available'){
+      banner.hidden=true;
+      document.querySelector('#update-message').textContent='';
+      document.querySelector('#update-download').removeAttribute('href');
+      document.querySelector('#update-notes').removeAttribute('href');
+      return;
+    }
     document.querySelector('#update-message').textContent='发现 '+result.latestVersion+(result.sameVersionBuild?' 的更新构建':' 新版本')+'，可下载后运行安装包更新。';
     document.querySelector('#update-download').href=result.downloadUrl;
     document.querySelector('#update-notes').href=result.releaseUrl;

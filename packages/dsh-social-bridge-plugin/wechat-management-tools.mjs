@@ -97,11 +97,14 @@ export function bindWechatManagementTools(agentCtx,root,key,turnFor,{isAllowed=(
           const receipt={operationId,state:value.state,apiAcknowledged:value.apiAcknowledged===true,confirmed:value.confirmed===true,
             ...Object.fromEntries(['imageId','imageIds','drawingJobId','drawingJobIds'].filter(field=>args[field]!==undefined).map(field=>[field,args[field]])),
             notice:value.confirmed===true?'操作已确认。':value.state==='api-acknowledged'?'接口已接受操作；尚无最终完成回执。':'操作结果未确认时查询状态，不能声称已经完成，也不重复提交。'};
+          if(!def.read)turn.managementOutcome={tool:def.name,...receipt};
           return pack(receipt,value.state==='rejected');
         }catch(error){
           const state=(submitted||def.status)&&(!error.status||error.status>=500)?'unconfirmed':'rejected';
-          return pack({operationId,state,apiAcknowledged:false,confirmed:false,...(error.code?{code:error.code}:{}),
-            message:state==='unconfirmed'?'这次操作的结果未确认，请查询 operationId；同一请求不会重复提交。':'本次微信操作未完成，后续对话可以继续。'},true);
+          const receipt={operationId,state,apiAcknowledged:false,confirmed:false,...(error.code?{code:error.code}:{}),
+            message:state==='unconfirmed'?'这次操作的结果未确认，请查询 operationId；同一请求不会重复提交。':'本次微信操作未完成，后续对话可以继续。'};
+          if(!def.read)turn.managementOutcome={tool:def.name,...receipt};
+          return pack(receipt,true);
         }
       })();
       if(!def.read)turn.managementRequests.set(fingerprint,promise);

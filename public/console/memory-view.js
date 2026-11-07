@@ -1,4 +1,4 @@
-export function createMemoryUI({api,state,escapeHtml:esc,icon,renderPage,toast,notebookPage=async()=>''}){
+export function createMemoryUI({api,state,escapeHtml:esc,icon,renderPage,toast,notebookPage=async()=>'',mindPage=async()=>''}){
   let overview,selected='',query='',status='all',source='all',offset=0,section='',sequence=0,rows=[];
   const date=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'尚无记录';
   const mode=value=>({'assistant':'助手任务','assistant-chat':'助手群聊','social':'聊天模式'})[value]??'聊天模式';
@@ -13,7 +13,8 @@ export function createMemoryUI({api,state,escapeHtml:esc,icon,renderPage,toast,n
   }
   async function page(){
     const request=++sequence,nextSection=state.memorySection??'members';if(section!==nextSection){section=nextSection;offset=0;selected='';}
-    const tabs=`<nav class="workspace-tabs" aria-label="记忆分类"><a href="#memory/members" ${section==='members'?'aria-current="page"':''}>群友记忆</a><a href="#memory/summaries" ${section==='summaries'?'aria-current="page"':''}>压缩记忆</a><a href="#memory/notebook" ${section==='notebook'?'aria-current="page"':''}>鱼的记事本</a></nav>`;
+    const tabs=`<nav class="workspace-tabs" aria-label="记忆分类"><a href="#memory/mind" ${section==='mind'?'aria-current="page"':''}>自主思考</a><a href="#memory/members" ${section==='members'?'aria-current="page"':''}>群友记忆</a><a href="#memory/summaries" ${section==='summaries'?'aria-current="page"':''}>压缩记忆</a><a href="#memory/notebook" ${section==='notebook'?'aria-current="page"':''}>鱼的记事本</a></nav>`;
+    if(section==='mind')return tabs+await mindPage();
     if(section==='notebook')return tabs+await notebookPage();
     overview=await api('/api/memory');
     if(!overview.available)return tabs+`<section class="card"><div class="empty-state"><h2>先连接微信账号</h2><p>${esc(overview.message??'连接后可查看该账号的记忆。')}</p><a class="button" href="#settings/connections">前往连接设置</a></div></section>`;

@@ -11,7 +11,7 @@ const apiAcknowledged=d=>d?.state==='api-acknowledged'&&d.sent===true&&d.confirm
 const delivered=job=>job?.delivery?.state==='confirmed'||apiAcknowledged(job?.delivery);
 function publicJob(value,key){
   if(!value||!jobId(value.id)||!['queued','running','success','failed','interrupted','cancelled'].includes(value.state)||value.conversationKey!==undefined&&value.conversationKey!==key)throw Error('DRAWING_JOB_INVALID');
-  return {id:value.id,state:value.state,stage:safeMessage(value.stage),error:safeMessage(value.error),sent:delivered(value),
+  return {id:value.id,state:value.state,...(value.previewOnly===true?{previewOnly:true}:{}),stage:safeMessage(value.stage),error:safeMessage(value.error),sent:delivered(value),
     ...(value.delivery?{delivery:{state:safeMessage(value.delivery.state),sent:delivered(value),confirmed:value.delivery.state==='confirmed',...(apiAcknowledged(value.delivery)?{apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'}:{}),...(value.delivery.state==='confirmed'&&['wechat-image-server-id','wechat-message-response'].includes(value.delivery.receipt)?{receipt:value.delivery.receipt}:{})}}:{})};
 }
 export function drawingReplyOutcome(text,turn){
@@ -47,6 +47,7 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
       try{
         const value=await request('/api/drawing-capability',undefined,{signal:AbortSignal.any([turn.controller.signal,AbortSignal.timeout(3000)])}),settings=value.settings;
         if(turnFor()!==turn||turn.controller.signal.aborted||!scopeAllowed())return false;
+        turn.drawingRevision=value.revision;
         turn.drawingCapability={enabled:settings?.enabled===true&&settings?.apiKeyConfigured===true&&Array.isArray(settings.chats)&&settings.chats.includes(key)};
         return turn.drawingCapability.enabled;
       }catch{turn.drawingCapability={enabled:false};return false;}
@@ -78,16 +79,18 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
             if(turn.drawingPrompt!==args.prompt.trim())return {content:JSON.stringify({job:turn.drawingOutcome??{state:'unconfirmed',sent:false},message:'本轮已经提交过绘画任务，请先等待这张图片的结果，不会生成第二张。'}),isError:true};
           }else{
             turn.drawingPrompt=args.prompt.trim();turn.drawingRequestId??=crypto.randomUUID();submitting=true;
-            turn.drawingStarted=request('/api/drawing-capability/generate',{prompt:turn.drawingPrompt,conversationKey:key,requestId:turn.drawingRequestId,previewOnly:false},{signal});
+            turn.drawingStarted=request('/api/drawing-capability/generate',{prompt:turn.drawingPrompt,...(turn.previewOnly?{revision:turn.drawingRevision}:{conversationKey:key}),requestId:turn.drawingRequestId,previewOnly:turn.previewOnly===true},{signal});
           }
           submitting=true;response=await turn.drawingStarted;
         }else{
-          const id=args.jobId??latest;
-          response=await request(id?'/api/drawing-capability/jobs/'+id+'?conversationKey='+encodeURIComponent(key):'/api/drawing-capability/latest?conversationKey='+encodeURIComponent(key),undefined,{signal});
+          const id=args.jobId??(turn.previewOnly?turn.drawingLatest:latest);
+          if(turn.previewOnly&&!id)response={job:null};
+          else response=await request(id?'/api/drawing-capability/jobs/'+id+(turn.previewOnly?'':'?conversationKey='+encodeURIComponent(key)):'/api/drawing-capability/latest?conversationKey='+encodeURIComponent(key),undefined,{signal});
         }
         if(!active()||turnFor()!==turn)throw Error('DRAWING_SCOPE_CHANGED');
         const job=response.job===null?{state:'none',sent:false}:publicJob(response.job,key);
-        if(job.id)latest=job.id;turn.drawingOutcome=job;
+        if(turn.previewOnly&&job.id&&job.previewOnly!==true)throw Error('DRAWING_PREVIEW_SCOPE_INVALID');
+        if(job.id){if(turn.previewOnly)turn.drawingLatest=job.id;else latest=job.id;}turn.drawingOutcome=job;
         return {content:JSON.stringify({job,notice:job.sent?(job.delivery.apiAcknowledged?'图片发送接口已返回成功，无需再等待微信消息号或重复发送；这不是对方已读回执。':'图片发送已取得微信服务器回执。'):'仅 sent:true 才能声称接口已确认发送。queued/running 表示处理中；success 只表示图片已生成。若查询的是旧任务，本轮正常接话即可，不必复述状态；用户表示已经收到时可自然回应，不将用户反馈伪造成接口确认，也不重复生成或发送。失败按当前人格自然解释，不编造进度、图片内容或送达。用户只让看图时不要生成新图。'}),isError:['failed','interrupted','cancelled'].includes(job.state)};
       }catch(error){
         const state=(submitting&&!error.status&&!error.public)||def.name==='wechat_drawing_status'?'unconfirmed':'failed';

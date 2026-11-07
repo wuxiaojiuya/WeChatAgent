@@ -10,8 +10,25 @@ import {PLUGIN_HOST_FILES,VOICE_HOST_FILES} from '../packages/plugin-api/contrac
 import {CAPABILITY_PLUGIN_FILES} from '../packages/dsh-capabilities-plugin/contract.mjs';
 export const SOURCE_PLUGIN_ZIP='optional-extensions/packages/fish-notebook-1.0.0.zip';
 export const SOURCE_PLUGIN_ZIPS=Object.freeze(BUNDLED_PLUGINS.filter(item=>item.zip).map(item=>item.zip));
+export const CONTINUOUS_IDENTITY_FILES=Object.freeze([
+  'packages/dsh-social-bridge-plugin/identity-mind-store.mjs',
+  'packages/dsh-social-bridge-plugin/identity-mind.mjs',
+  'packages/dsh-social-bridge-plugin/identity-mind-actions.mjs',
+  'packages/dsh-social-bridge-plugin/native-context.mjs',
+  'packages/dsh-social-bridge-plugin/social-tool-restrict.mjs',
+  'packages/dsh-social-bridge-plugin/drawing-tools.mjs',
+  'packages/dsh-social-bridge-plugin/singing-tools.mjs',
+  'packages/dsh-social-bridge-plugin/wechat-management-tools.mjs',
+  'components/qq-bridge/src/core/proactive-engine.js',
+  'public/console/identity-mind.js','public/console/config-draft.mjs',
+  'public/console/console.js','public/console/memory-view.js',
+  'public/console/memory-view.css','public/console/layout-model.mjs','public/console/updates.js',
+  'scripts/project-config.mjs','scripts/console-server.mjs','scripts/music-capabilities.mjs',
+  'scripts/update-check.mjs','apps/console-desktop/deployment.cjs',
+  'config/wechatagent.example.json','docs/IDENTITY_MIND.md'
+]);
 export function sourceHostFiles(root){
-  const required=[...PLUGIN_HOST_FILES,...VOICE_HOST_FILES,'packages/plugin-api/bundled.mjs',
+  const required=[...PLUGIN_HOST_FILES,...VOICE_HOST_FILES,...CONTINUOUS_IDENTITY_FILES,'packages/plugin-api/bundled.mjs',
     'packages/dsh-social-bridge-plugin/native-context.mjs','scripts/console-server.mjs','scripts/project-config.mjs',
     'scripts/plugin-host-check.mjs','scripts/speech-plugin-console.mjs','scripts/release-version.mjs','public/console/plugins.js','public/console/plugin-contract.mjs','public/console/speech-settings.mjs',
     'scripts/dsh-capability-client.mjs',...CAPABILITY_PLUGIN_FILES.map(name=>'packages/dsh-capabilities-plugin/'+name)];

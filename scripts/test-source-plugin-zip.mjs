@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {verifySourcePluginZip,SOURCE_PLUGIN_ZIPS,sourceHostFiles,assertSourceHostCoverage} from './source-release-policy.mjs';
+import {verifySourcePluginZip,SOURCE_PLUGIN_ZIPS,CONTINUOUS_IDENTITY_FILES,sourceHostFiles,assertSourceHostCoverage} from './source-release-policy.mjs';
 import {packZip} from '../packages/plugin-api/zip.mjs';
 import {packageFiles} from '../packages/plugin-api/catalog.mjs';
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'source-plugin-audit-')),source=path.join(root,'optional-extensions/fish-notebook');fs.cpSync(path.resolve('optional-extensions/fish-notebook'),source,{recursive:true});t.after(()=>{assert(root.startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(root,{recursive:true,force:true});});return {root,source,zip:()=>packZip(packageFiles(source))};}
@@ -24,4 +24,5 @@ test('the voice ZIP has its own exact first-party identity and cannot impersonat
 test('a locally present but Git-omitted host module cannot disappear from the source archive',()=>{
  const root=path.resolve('.'),files=sourceHostFiles(root);assert.doesNotThrow(()=>assertSourceHostCoverage(root,files));
  assert.throws(()=>assertSourceHostCoverage(root,files.filter(file=>file!=='packages/plugin-api/audio.mjs')),/SOURCE_PLUGIN_HOST_FILES_OMITTED.*audio\.mjs/);
+ for(const required of CONTINUOUS_IDENTITY_FILES)assert.throws(()=>assertSourceHostCoverage(root,files.filter(file=>file!==required)),/SOURCE_PLUGIN_HOST_FILES_OMITTED/,'Required release feature: '+required);
 });

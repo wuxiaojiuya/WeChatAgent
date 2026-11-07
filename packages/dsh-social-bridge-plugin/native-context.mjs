@@ -25,6 +25,9 @@ import {readWorkMode,createWorkModeSlots,scopeHistory,assistantChatInstructionsF
 import {createSessionGroups,groupFault} from './session-groups.mjs';
 import {API_VERSION,HOST_RUNTIME,HOST_FEATURES,PERMISSIONS,CONTRACT_REVISION} from '../plugin-api/contract.mjs';
 const runtimeQuery=new URL(import.meta.url).search;
+const {createIdentityMind,bindIdentityMindTools,mindQuietTime}=await import(new URL('./identity-mind.mjs'+runtimeQuery,import.meta.url));
+const {IDLE_ACTION_POLICY,idleActionTools,idleActionMessage,mindActionResult,mindJobResult}=await import(new URL('./identity-mind-actions.mjs'+runtimeQuery,import.meta.url));
+const {readMindPolicy}=await import(new URL('./identity-mind-store.mjs'+runtimeQuery,import.meta.url));
 const {createPersonaEvolution}=await import(new URL('./persona-evolution.mjs'+runtimeQuery,import.meta.url));
 const {bindPersonaProposalTools}=await import(new URL('./persona-proposal-tools.mjs'+runtimeQuery,import.meta.url));
 const {generateDefaultPersona}=await import(new URL('./persona-generation.mjs'+runtimeQuery,import.meta.url));
@@ -179,10 +182,11 @@ function createNativeRuntime(ctx, config={}) {
   const dshBindings=new Map();const fileBindings=new Map();const singingBindings=new Map();const drawingBindings=new Map();const personaBindings=new Map();const managementBindings=new Map();
   const memeBindings=new Map();
   const memberMemoryBindings=new Map();
-  const historyBindings=new Map();
+  const historyBindings=new Map();const mindBindings=new Map();
   const windowStates=new Map();
   const fixedPrefixBindings=new Map();
   let presetStopped=false;
+  let identityMind=internalGroupChat?config.identityMindRuntime:null;
   const history=scopeHistory(new HistoryStore(root,loadedAccount.id||loadedAccount.legacyId),key=>profiles[key]?.workMode??'social',internalGroupChat?{fixedMode:'assistant-chat'}:{});
   const personaEvolution=internalGroupChat?null:createPersonaEvolution({root,account:loadedAccount.id,request:consoleClient(root),
     generateText:createPluginModelUtility({ctx,provider,model,createUserMessage,BlockAssembler,recordUsage:row=>history.putUsage(row)}),
@@ -495,10 +499,12 @@ function createNativeRuntime(ctx, config={}) {
       return ctx.agents.withInitiator(agent,()=>web.search(request,signal));
     }}));
     Object.defineProperty(agent.ctx,ASSISTANT_ACCESS,{configurable:true,value:()=>!internalGroupChat&&(readWorkMode(root,key)!=='assistant'||assistantSenderAllowed(JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8')).wechat,key,pending.get(sid)?.assistantSender))});
+    Object.defineProperty(agent.ctx,IDLE_ACTION_POLICY,{configurable:true,value:name=>{const plan=pending.get(sid)?.idlePlan;return !plan||mindIdleAllowed(plan)&&idleActionTools(plan.kind).has(name);}});
     if(!fileBindings.has(sid))fileBindings.set(sid,bindFileTools(agent.ctx,root,key,agent,()=>pending.get(sid)?.fileTurn,{isAllowed:()=>accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!singingBindings.has(sid))singingBindings.set(sid,bindSingingTools(agent.ctx,root,key,()=>pending.get(sid)?.singingTurn,{isAllowed:()=>accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!drawingBindings.has(sid))drawingBindings.set(sid,bindDrawingTools(agent.ctx,root,key,()=>pending.get(sid)?.drawingTurn,{isAllowed:()=>accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!managementBindings.has(sid))managementBindings.set(sid,bindWechatManagementTools(agent.ctx,root,key,()=>pending.get(sid)?.managementTurn,{scope:loadedAccount.id||loadedAccount.legacyId,isAllowed:()=>!internalGroupChat&&accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
+    if(identityMind&&!internalGroupChat&&!mindBindings.has(sid))mindBindings.set(sid,bindIdentityMindTools(agent.ctx,identityMind,key,()=>pending.get(sid)?.managementTurn,{isAllowed:()=>mindAllowed(key)&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!personaBindings.has(sid))personaBindings.set(sid,bindPersonaProposalTools(agent.ctx,root,key,()=>pending.get(sid)?.singingTurn,{isAllowed:()=>!internalGroupChat&&accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!dshBindings.has(sid))dshBindings.set(sid,bindDshAccess(agent.ctx,ctx,agent,root,key,()=>pending.get(sid)?.dshAccessTurn,{isAllowed:accountReady}));
     if(!memeBindings.has(sid))memeBindings.set(sid,bindMemeLibrary(agent.ctx,memeLibrary,root,key,()=>pending.get(sid)?.memeTurn,{isAllowed:accountReady}));
@@ -613,6 +619,7 @@ function createNativeRuntime(ctx, config={}) {
     singingBindings.get(sid)?.dispose();singingBindings.delete(sid);
     drawingBindings.get(sid)?.dispose();drawingBindings.delete(sid);
     managementBindings.get(sid)?.dispose();managementBindings.delete(sid);
+    mindBindings.get(sid)?.dispose();mindBindings.delete(sid);
     personaBindings.get(sid)?.dispose();personaBindings.delete(sid);
     const handle=handles.get(sid);handles.delete(sid);if(handle)await handle.dispose();
   }
@@ -657,7 +664,7 @@ function createNativeRuntime(ctx, config={}) {
   async function syncExtensions(agent,key,admissionMessages) {
     const sid=String(agent.session.id),item=pending.get(sid);
     if(!item)return;
-    const sharedMemory=sharedIdentityMemoryNotice(root,history,{key,workMode:internalGroupChat?'assistant-chat':profiles[key]?.workMode});
+    const sharedMemory=[sharedIdentityMemoryNotice(root,history,{key,workMode:internalGroupChat?'assistant-chat':profiles[key]?.workMode}),identityMind?.context(key)].filter(Boolean).join('\n');
     if(internalGroupChat){
       // The member channel remains read-only, but participates in the same
       // identity and memories as other allowed WeChat conversations.
@@ -682,7 +689,7 @@ function createNativeRuntime(ctx, config={}) {
       readHistoryPolicy(root,key,internalGroupChat).enabled?'[聊天档案] 近期内容足够就直接接话。需要具体旧事时，每轮最多两次不同查询；多个关键词用 queries 一次合并检索，保留一次展开原文的机会。已返回的查询不重复调用，预算用完直接按发送协议回复；未找到不编造。':'',
     ];
     await drawingBindings.get(sid)?.refresh();
-    const singingInstructions=[singingBindings.get(sid)?.instructions(),drawingBindings.get(sid)?.instructions(),personaBindings.get(sid)?.instructions(),managementBindings.get(sid)?.instructions()].filter(Boolean).join('\n');
+    const singingInstructions=[singingBindings.get(sid)?.instructions(),drawingBindings.get(sid)?.instructions(),personaBindings.get(sid)?.instructions(),managementBindings.get(sid)?.instructions(),mindBindings.get(sid)?.instructions(),item.idlePlan?idleActionMessage(item.idlePlan):''].filter(Boolean).join('\n');
     const instructions=[...sections,singingInstructions].filter(Boolean).join('\n');
     // Keep shared memories in the replaceable turn context. They must never
     // become chat records or be recursively indexed as a new conversation.
@@ -848,7 +855,10 @@ function createNativeRuntime(ctx, config={}) {
     saveQuietly();return next();
   },{global:true});
 
-  async function nativeRequest(route,body,requestController=new AbortController(),onAdmitted=()=>{}) {
+  async function nativeRequest(route,body,requestController=new AbortController(),onAdmitted=()=>{},{idlePlan}={}) {
+    if(route==='/followup'&&!idlePlan)identityMind?.interrupt();
+    const checkIdle=()=>{requestController.signal.throwIfAborted();if(idlePlan&&(!accountReady()||presetStopped||!mindIdleAllowed(idlePlan)))throw Error('MIND_ACTION_NOT_ALLOWED');};
+    checkIdle();
     const key=String(body.conversationKey??'');let message=String(body.message??'');
     if(!KEY.test(key)||route==='/followup'&&(!message||message.length>18000))throw taskFault('invalid_request',400);
     if(['/'+'followup','/configure'].includes(route)&&readWorkMode(root,key)==='assistant'&&profiles[key]?.workMode==='assistant'&&mappings[key]&&(profiles[key].nativePreset??ASSISTANT_PRESET)!==presetFor(key)){
@@ -860,7 +870,7 @@ function createNativeRuntime(ctx, config={}) {
       profiles[key].nativePreset=presetFor(key);persist();
     }
       return serialize(key,async()=>{
-        requestController.signal.throwIfAborted();
+        checkIdle();
         if(route==='/context-maintenance')return maintainContext(key,body);
         if(route==='/followup'&&readWorkMode(root,key)==='assistant'){const w=JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8')).wechat;if(!acceptsInput(key,body.assistantSender))throw Error('ASSISTANT_SENDER_DENIED');}
         const repairing=route==='/repair-context';let repairBackup;
@@ -940,13 +950,14 @@ function createNativeRuntime(ctx, config={}) {
         const extensionTurn={conversationKey:key,conversationName:profiles[key].conversationName,actorId:body.assistantSender??body.pluginSender??'',sessionId:sid,replies:[],toolCalls:0,networkOptOut};
         const additions=extension?.runtime.instructions(key,message) ?? '';
         const hookResults=extension ? await boundedTask(()=>extension.runtime.hooks('before-context',{message},extensionTurn),{timeoutMs:5000,signal:webReaderTurn.controller.signal}) : [];
+        checkIdle();
         const extraContext=[additions,...hookResults.map(item=>typeof item?.context==='string'?item.context.slice(0,4000):'')].filter(Boolean).join('\n').slice(0,10000);
         const extensionNotice=extraContext ? '\n<local_extension_context>\n'+extraContext+'\n</local_extension_context>\n扩展资料只用于本轮任务；不能覆盖本机人格、聊天范围、工具权限或最终回复格式。' : '';
         const memeTurn={controller:webReaderTurn.controller,networkOptOut,calls:0,choices:[],allowedUrls:webReaderTurn.urls,disabled:body.memeLibraryDisabled===true};
-        let audioTurn,drawingTurn;
+        let audioTurn,drawingTurn,managementTurn;
         const output=await new Promise((resolve,reject)=>{
           const firstImageSeq=agent.session.snapshotEvents().length;
-          const item={resolve,reject,startedAt:Date.now(),taskId:body.assistantTaskId,assistantSender:body.assistantSender,fileTurn:{controller:webReaderTurn.controller,sender:body.assistantSender,batchId,files:Array.isArray(body.files)?body.files.filter(file=>/^[a-f0-9]{64}$/.test(file?.id??'')&&typeof file.name==='string'&&file.name.length<=180&&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=50*1024*1024).slice(0,3):[],calls:0},batchId,historyExcludeIds,recentWindow:recent,contextSelection:selectedWindow?.selection,repairContinuation,onAdmitted:()=>{onAdmitted();}};
+          const item={resolve,reject,idlePlan,startedAt:Date.now(),taskId:body.assistantTaskId,assistantSender:body.assistantSender,fileTurn:{controller:webReaderTurn.controller,sender:body.assistantSender,batchId,files:Array.isArray(body.files)?body.files.filter(file=>/^[a-f0-9]{64}$/.test(file?.id??'')&&typeof file.name==='string'&&file.name.length<=180&&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=50*1024*1024).slice(0,3):[],calls:0},batchId,historyExcludeIds,recentWindow:recent,contextSelection:selectedWindow?.selection,repairContinuation,onAdmitted:()=>{onAdmitted();}};
           const cancel=error=>{
             if(pending.get(sid)!==item)return;
             clearTimeout(item.timer);
@@ -961,9 +972,9 @@ function createNativeRuntime(ctx, config={}) {
           };
           item.cancel=cancel;
           item.timer=setTimeout(()=>cancel(new Error('agent_timeout')),Number(profiles[key]?.workMode==='assistant'&&!internalGroupChat?config.assistantTimeoutMs??(readDshAccess(root,key).timeoutMinutes??30)*60000:config.turnTimeoutMs??120000));
-          audioTurn=item.singingTurn={controller:webReaderTurn.controller,networkOptOut,calls:0,videos:Array.isArray(body.videos)?body.videos.filter(video=>/^[a-f0-9]{64}$/.test(video?.id??'')).slice(-3):[]};item.dshAccessTurn={controller:webReaderTurn.controller,networkOptOut,skillCalls:0,toolCalls:0};item.memberMemoryTurn=memberMemoryTurn;item.memeTurn=memeTurn;item.webReaderTurn=webReaderTurn;item.modelSearchTurn=modelSearchTurn;item.search=search;item.extensionTurn=extensionTurn;item.extensionContext=extensionNotice;pending.set(sid,item);if(item.taskId)assistantTasks.progress(item.taskId,'模型正在处理',{sessionId:sid});
-          drawingTurn=item.drawingTurn={controller:webReaderTurn.controller,networkOptOut};
-          item.managementTurn={controller:webReaderTurn.controller,batchId,images:Array.isArray(body.images)?body.images.filter(image=>/^[a-f0-9]{64}$/.test(image?.id??'')).slice(0,4):[]};
+          audioTurn=item.singingTurn={controller:webReaderTurn.controller,previewOnly:!!idlePlan&&idlePlan.delivery!=='chat',networkOptOut,calls:0,videos:Array.isArray(body.videos)?body.videos.filter(video=>/^[a-f0-9]{64}$/.test(video?.id??'')).slice(-3):[]};item.dshAccessTurn={controller:webReaderTurn.controller,networkOptOut,skillCalls:0,toolCalls:0};item.memberMemoryTurn=memberMemoryTurn;item.memeTurn=memeTurn;item.webReaderTurn=webReaderTurn;item.modelSearchTurn=modelSearchTurn;item.search=search;item.extensionTurn=extensionTurn;item.extensionContext=extensionNotice;pending.set(sid,item);if(item.taskId)assistantTasks.progress(item.taskId,'模型正在处理',{sessionId:sid});
+          drawingTurn=item.drawingTurn={controller:webReaderTurn.controller,previewOnly:!!idlePlan&&idlePlan.delivery!=='chat',networkOptOut};
+          managementTurn=item.managementTurn={controller:webReaderTurn.controller,batchId,images:Array.isArray(body.images)?body.images.filter(image=>/^[a-f0-9]{64}$/.test(image?.id??'')).slice(0,4):[]};
           // Local speech needs time for CPU synthesis, conversion and receipt.
           // Extend only an actual voice call, within the bridge's 190s RPC
           // budget; keep ordinary turns and explicit owner limits unchanged.
@@ -978,7 +989,7 @@ function createNativeRuntime(ctx, config={}) {
           requestController.signal.addEventListener('abort',()=>cancel(requestController.signal.reason??new Error('request_closed')),{once:true});
           webReaderTurn.controller.signal.addEventListener('abort',()=>cancel(new Error('request_closed')),{once:true});
           if(webReaderTurn.controller.signal.aborted){cancel(new Error('request_closed'));return;}
-          try{if(readWorkMode(root,key)==='assistant'&&!acceptsInput(key,body.assistantSender))throw Error('ASSISTANT_SENDER_DENIED');agent.followup(createUserMessage({content:[{type:'text',text:message+'\n'+SOCIAL_FINAL_OUTPUT_HINT},...images],source:{kind:'wechat-social-bridge',form:'relay',...(batchId?{socialBatchId:batchId}:{}),...(repairContinuation?{socialFormatRepair:true}:{}),...(historyExcludeIds.length?{socialArchiveRowIds:historyExcludeIds}:{}),...(images.length?{socialImageIds:body.images.map(image=>image.id)}:{})}}));}
+          try{checkIdle();if(readWorkMode(root,key)==='assistant'&&!acceptsInput(key,body.assistantSender))throw Error('ASSISTANT_SENDER_DENIED');agent.followup(createUserMessage({content:[{type:'text',text:message+'\n'+SOCIAL_FINAL_OUTPUT_HINT},...images],source:{kind:'wechat-social-bridge',form:'relay',...(batchId?{socialBatchId:batchId}:{}),...(idlePlan?{socialAutonomous:true}:{}),...(repairContinuation?{socialFormatRepair:true}:{}),...(historyExcludeIds.length?{socialArchiveRowIds:historyExcludeIds}:{}),...(images.length?{socialImageIds:body.images.map(image=>image.id)}:{})}}));}
           catch(error){webReaderTurn.controller.abort();clearTimeout(item.timer);pending.delete(sid);turns.delete(sid);staged.delete(sid);reject(error);}
         });
         offloadCompletedSessionImages(agent.session);
@@ -1005,7 +1016,12 @@ function createNativeRuntime(ctx, config={}) {
         await boundedTask(()=>ctx.sessions.flush(agent.session),{timeoutMs:10000});contextStatus(key,sid);recordSessionUsage(history,key,agent.session);history.archiveSession(key,agent.session);saveQuietly();
         // Count completed real inbox batches once, outside the ordinary model
         // turn. A background review never becomes a reply to this conversation.
-        try{personaEvolution?.observe({key,batchId,effective:!output.error&&!repairContinuation&&!!output.text?.trim()&&output.text.trim()!=='SILENT'&&!body.assistantTaskId&&!body.assistantParentId});}catch{log.warn('persona review progress unavailable');}
+        try{personaEvolution?.observe({key,batchId,effective:!idlePlan&&!output.error&&!repairContinuation&&!!output.text?.trim()&&output.text.trim()!=='SILENT'&&!body.assistantTaskId&&!body.assistantParentId});}catch{log.warn('persona review progress unavailable');}
+        if(idlePlan){
+          output.autonomousOutcome=idlePlan.kind==='moment'?managementTurn?.managementOutcome:idlePlan.kind==='drawing'?drawingTurn?.drawingStarted&&drawingTurn.drawingOutcome:audioTurn?.started&&audioTurn.singingOutcome;
+        }else if(!output.error&&!repairContinuation&&!body.proactiveWake&&!body.assistantTaskId&&!body.assistantParentId){
+          try{observeMind(key,batchId);}catch{log.warn('identity mind observation unavailable');}
+        }
         return output;
       });
   }
@@ -1035,7 +1051,55 @@ function createNativeRuntime(ctx, config={}) {
   if(!internalGroupChat)assistantTasks.pump();
   let requests=0;
   const capabilityRuntime=ctx.get?.('wechatCapabilities');
-  const isBusy=()=>requests>1||pending.size>0||operations.size>0||startup.size>0||capabilityRuntime?.isBusy()||[...assistantTasks.jobs.values()].some(job=>['queued','running','cancelling'].includes(job.state))||groupChatRuntime?.isBusy();
+  const foregroundBusy=()=>requests>1||pending.size>0||operations.size>0||startup.size>0||capabilityRuntime?.isBusy()||[...assistantTasks.jobs.values()].some(job=>['queued','running','cancelling'].includes(job.state))||groupChatRuntime?.isBusy();
+  const isBusy=()=>foregroundBusy()||!internalGroupChat&&identityMind?.isBusy()===true;
+  function mindAllowed(key){try{return !presetStopped&&accountReady()&&allowedConversation(JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8').replace(/^\uFEFF/,'' )).wechat,key)&&baseHistoryPolicy(root,key).enabled;}catch{return false;}}
+  function mindIdleAllowed(plan){try{const p=readMindPolicy(root),external=plan.kind==='moment'||plan.delivery==='chat';return mindAllowed(plan.conversationKey)&&readWorkMode(root,plan.conversationKey)==='social'&&mindCanSchedule()&&p.enabled&&p.idleEnabled&&(!external||p.dailyActionLimit>0&&!mindQuietTime(p,Date.now())&&(identityMind?.status().actionsToday??0)<=p.dailyActionLimit);}catch{return false;}}
+  function mindKeys(){
+    try{const w=JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8').replace(/^\uFEFF/,'' )).wechat;
+      return [...(w?.whitelist?.private??[]).map(id=>'wechat:private:'+id),...(w?.whitelist?.groups??[]).map(id=>'wechat:group:'+id)].filter(mindAllowed);
+    }catch{return [];}
+  }
+  function mindCanSchedule(){
+    if(presetStopped||!accountReady())return false;
+    try{const state=JSON.parse(fs.readFileSync(path.join(root,'state/runtime.json'),'utf8').replace(/^\uFEFF/,''));return ['bridge','adapter'].every(name=>{const pid=state[name]?.pid;if(!Number.isSafeInteger(pid)||pid<1)return false;try{process.kill(pid,0);return true;}catch{return false;}});}catch{return false;}
+  }
+  function observeMind(key,batchId){
+    if(!identityMind||!mindAllowed(key)||!batchId)return;
+    backfillHistory(key);
+    const rows=history.windowRows(key,{recentMessages:8}).filter(row=>!row.outgoing&&!row.forwardedRecord&&!row.quoteReply&&row.archiveSource!=='legacy-context');
+    const people=[...new Map(rows.filter(row=>row.sender_key||row.sender_id).map(row=>[row.sender_key||row.sender_id,{personId:String(row.sender_key||row.sender_id),name:String(row.sender_name||'').slice(0,80)}])).values()].slice(-8);
+    identityMind.observe({key,batchId,people,text:rows.map(row=>String(row.text??'').slice(0,350)).join('\n').slice(-1200)});
+  }
+  if(!internalGroupChat)identityMind=createIdentityMind({root,account:loadedAccount.id,allowed:mindAllowed,keys:mindKeys,isBusy:foregroundBusy,canSchedule:mindCanSchedule,
+    generateText:createPluginModelUtility({ctx,provider,model,createUserMessage,BlockAssembler,recordUsage:row=>history.putUsage(row)}),
+    personaFor:()=>{try{return localPersona(root,'wechat:private:default').persona.slice(0,2400);}catch{return '';}},
+    evidence:async keys=>{
+      for(const key of keys)backfillHistory(key);
+      return history.sharedRecent(keys.flatMap(key=>[key,key+':assistant',key+':assistant-chat']),{recentMessages:40,recentChars:12000,maxPerConversation:10})
+        .filter(row=>row.source!=='legacy-context'&&(row.speaker!=='AI'||row.delivery_status==='confirmed'))
+        .map(row=>({...row,outgoing:row.speaker==='AI'}));
+    },
+    reconcile:async(plan,{signal})=>{
+      if(!mindAllowed(plan.conversationKey)||!['drawing','singing'].includes(plan.kind)||!plan.jobId)return null;
+      if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(plan.jobId))return {state:'unknown',reason:'任务编号无法安全查询，未重复执行。'};
+      try{
+        const request=consoleClient(root),local=plan.delivery!=='chat';
+        const value=await request(plan.kind==='singing'?'/api/audio-capabilities/music/jobs/'+plan.jobId:'/api/drawing-capability/jobs/'+plan.jobId+(local?'':'?conversationKey='+encodeURIComponent(plan.conversationKey)),undefined,{signal:AbortSignal.any([signal,AbortSignal.timeout(5000)])});
+        const job=plan.kind==='singing'?value:value.job;
+        if(plan.kind==='singing'&&(job?.conversationKey!==plan.conversationKey||job?.accountScope!==loadedAccount.id||local&&job?.deliveryMode!=='local')||plan.kind==='drawing'&&local&&job?.previewOnly!==true)return {state:'unknown',reason:'任务来源或账号与计划不匹配，未继续操作。'};
+        return mindJobResult(plan,job);
+      }catch(error){if(error.status===404)return {state:'unknown',reason:'能力任务记录已不存在，保留记录，不重复生成。'};return null;}
+    },
+    execute:async(plan,{signal,batchId})=>{
+      if(!mindAllowed(plan.conversationKey)||readWorkMode(root,plan.conversationKey)!=='social')return {state:'postponed',reason:'当前来源会话不适合空闲行动，已保留计划。',notBefore:Date.now()+3600000};
+      const controller=new AbortController(),abort=()=>controller.abort(signal.reason);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
+      try{
+        const output=await nativeRequest('/followup',{conversationKey:plan.conversationKey,message:idleActionMessage(plan),batchId,memeLibraryDisabled:true},controller,()=>{},{idlePlan:plan});
+        return mindActionResult(plan,output);
+      }catch(error){return {state:error.admitted||signal.aborted?'unknown':'failed',reason:'空闲行动未取得明确结果，保留记录，不自动重复提交。'};}
+      finally{signal.removeEventListener('abort',abort);}
+    }});
   const server=http.createServer(async(req,res)=>{
     requests++;let released=false;const release=()=>{if(!released){released=true;requests--;}};res.once('finish',release);res.once('close',release);
     const reply=(code,body)=>{if(!res.destroyed){res.writeHead(code,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify(body));}};
@@ -1067,7 +1131,7 @@ function createNativeRuntime(ctx, config={}) {
       try{req.resume();return config.reload?.()?reply(202,{ok:true,status:'reloading'}):reply(409,{error:'CONFIGURATION_BUSY'});}
       catch{return reply(400,{error:'CONFIGURATION_INVALID'});}
     }
-    if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),configurationReload:'native-runtime-v1',capabilityExecution:capabilityRuntime?.status().version,capabilityHost:'dsh',instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
+    if(req.method==='GET' && req.url==='/health')return reply(200,{ok:accountReady(),configurationReload:'native-runtime-v1',capabilityExecution:capabilityRuntime?.status().version,capabilityHost:'dsh',instanceId,instanceStartedAt,assistantGroupChat:'read-only-member-channel-v1',offlineReplay:'skip-old-v1',accountScope:loadedAccount.id,messageSource:'wechat-social-bridge',project:'WeChatAgent',projectRoot:root,extensionApiVersion:API_VERSION,pluginApiVersion:API_VERSION,pluginRuntime:HOST_RUNTIME,pluginHostFeatures:HOST_FEATURES,pluginPermissions:PERMISSIONS,pluginContractRevision:CONTRACT_REVISION,voiceInput:'api-v1',fishNotebookMode:'optional-plugin-v1',assistantAccess:'sender-admin-v1',fileTransfer:'workspace-files-v1',assistantController:ASSISTANT_CONTROLLER,assistantFeedback:'thinking-heartbeat-v1',assistantNotifications:'text-result-v2',replyLayout:'adjustable-parts-v1',provider,model,pluginRevision:new URL(import.meta.url).searchParams.get('wechatagent')??'',workModes:WORK_MODE_POLICY,contextMode:'native-session-v1',historyMode:'external-bounded-v1',requestWindow:REQUEST_WINDOW_MODE,continuousTranscript:true,historyArchive:'account-sqlite-v1',costPolicy:COST_POLICY,inputDedup:'confirmed-window-reply-v1',contextMaintenance:'idle-threshold-v1',promptContext:PROMPT_POLICY,sessionNaming:true,sessionGroups:'dsh-workspace-v1',imageInput:'native-attachment-v1',replyText:'final-message-v1',imageRecovery:'per-image-v1',imageOffloadMode:'after-turn-v1',sessionLifecycle:'archive-rotation-v1',turnRecovery:'cancel-on-timeout-v1',followupDedup:'durable-batch-v1',builtinSkills:'web-reader-v1',webPriceRead:'zxsj-api-v1',searchTool:'model-search-v1',searchRoute:'dsh-native-only-v1',dshAccess:'per-chat-v1',identityMind:'continuous-self-v1',idleReflection:!internalGroupChat,memberMemory:'group-scoped-json-v1',stickerPoolReview:'ds-select-v1',searchBudget:'per-turn-count-v1',searchReasoning:'model-default-v1',toolIsolation:SOCIAL_TOOL_ISOLATION,pendingTurns:pending.size,behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY});
     if(config.isReloading?.())return reply(503,{error:'configuration_reloading'});
     if(!accountReady())return reply(409,{error:'account_changed',detail:'ACCOUNT_SWITCH_REQUIRES_DSH_RESTART'});
     if(req.method==='POST'&&req.url==='/persona-generate'){
@@ -1197,7 +1261,8 @@ function createNativeRuntime(ctx, config={}) {
       if(req.url==='/assistant-chat'){
         if(!chatInputAllowed(key,body.assistantSender))throw taskFault('ASSISTANT_SENDER_DENIED',403);
         if(body.files?.length||body.assistantTaskId||body.assistantParentId)throw taskFault('ASSISTANT_ADMIN_REQUIRED',403);
-        groupChatRuntime??=createNativeRuntime(ctx,{...config,internalGroupChat:true});
+        identityMind?.interrupt();
+        groupChatRuntime??=createNativeRuntime(ctx,{...config,internalGroupChat:true,identityMindRuntime:identityMind});
         output=await groupChatRuntime.followup({...body,workMode:'assistant',assistantChatOnly:true,files:[],searchTicket:undefined,searchContext:undefined,webReaderUrls:[],searchOptOut:true,memeLibraryDisabled:true},requestController,()=>{requestAdmitted=true;});
       }else output=await nativeRequest(req.url,body,requestController,()=>{requestAdmitted=true;});
       reply(output.error?502:200,output);
@@ -1211,11 +1276,13 @@ function createNativeRuntime(ctx, config={}) {
   if(!internalGroupChat)extensions().then(async extension=>{if(extension){await extension.runtime.sync();extension.runtime.start();}}).catch(error=>log.warn('extension preload failed:',error.message));
   if(!internalGroupChat)server.listen(port,host,()=>log.info(`Native-session WeChat plugin listening on ${host}:${port}`));
   let closing;const dispose=()=>closing??=(async()=>{presetStopped=true;await groupChatRuntime?.dispose();thinkingFeedback.close();assistantControl.dispose();assistantTasks.close();disposeToolOrigins();bundledDispose?.();for(const dispose of memeBindings.values())dispose();for(const binding of dshBindings.values())binding.dispose();for(const binding of fileBindings.values())binding.dispose();
+    if(!internalGroupChat)await identityMind?.close();
     await personaEvolution?.close();
     for(const sid of fixedPrefixBindings.keys())disposeFixedPrefix(sid);
     for(const binding of singingBindings.values())binding.dispose();
     for(const binding of drawingBindings.values())binding.dispose();
     for(const binding of managementBindings.values())binding.dispose();
+    for(const binding of mindBindings.values())binding.dispose();
     for(const binding of personaBindings.values())binding.dispose();
     for(const dispose of memberMemoryBindings.values())dispose();
     for(const dispose of historyBindings.values())dispose();

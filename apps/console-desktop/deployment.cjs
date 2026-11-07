@@ -82,7 +82,10 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
       fs.writeFileSync(pendingFile,JSON.stringify({...pending,pendingApply:true,dshReloadRequired:true},null,2));
     }
   }
-  fs.writeFileSync(distributionFile, JSON.stringify({ version: manifest.version, buildId:manifest.buildId, runtimeRevision:manifest.runtimeRevision, wechatVersion, hookBackend:'supplier-http', installed: true, dataHome, python, node, dshBundled, dsh, dshHome, externalDshHome, assets: resourcesPath }, null, 2));
+  fs.writeFileSync(distributionFile, JSON.stringify({ version: manifest.version, packageVersion:manifest.packageVersion, buildId:manifest.buildId, builtAt:manifest.builtAt, runtimeRevision:manifest.runtimeRevision, wechatVersion, hookBackend:'supplier-http', installed: true, dataHome, python, node, dshBundled, dsh, dshHome, externalDshHome, assets: resourcesPath }, null, 2));
+  // deployment.json is generated after source packaging and is not necessarily
+  // listed in manifest.files. Keep the workspace snapshot in sync after install.
+  fs.writeFileSync(path.join(workspace,'deployment.json'),JSON.stringify(manifest,null,2)+'\n');
   progress('本机运行环境已准备，正在打开控制台…');
   return { root: workspace, node, python, dataHome, version: manifest.version };
 }

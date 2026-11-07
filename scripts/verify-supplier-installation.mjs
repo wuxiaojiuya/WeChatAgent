@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import deployment from '../apps/console-desktop/deployment.cjs';
 import hookPolicy from '../apps/console-desktop/hook-only-policy.cjs';
 import {CAPABILITY_PLUGIN_FILES,CAPABILITY_EXECUTION_VERSION} from '../packages/dsh-capabilities-plugin/contract.mjs';
+import {CONTINUOUS_IDENTITY_FILES} from './source-release-policy.mjs';
 
 const root=path.resolve(import.meta.dirname,'..');
 const resources=path.resolve(process.argv[2]??path.join(root,'release/installer/win-unpacked/resources'));
@@ -22,7 +23,7 @@ const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/s
   'packages/dsh-social-bridge-plugin/prompt-context.mjs','packages/dsh-social-bridge-plugin/history-runtime.mjs',
   'packages/dsh-social-bridge-plugin/native-context.mjs','packages/dsh-social-bridge-plugin/persona-generation.mjs',
   'packages/dsh-social-bridge-plugin/persona-evolution.mjs','packages/dsh-social-bridge-plugin/persona-proposal-tools.mjs'];
-const updatedFiles=[...capabilityFiles,...deliveryFiles];
+const updatedFiles=[...new Set([...capabilityFiles,...deliveryFiles,...CONTINUOUS_IDENTITY_FILES])];
 const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 try {
   const manifest=JSON.parse(fs.readFileSync(path.join(resources,'project/deployment.json')));
@@ -60,7 +61,8 @@ try {
   const fixtures=[['roles/验证保留.md','custom persona fixture'],['state/custom-models/validation.pth','custom model fixture'],['state/voice-output/validation-key.txt','private-key-fixture-only'],
     ['state/voice-output/capabilities.json',JSON.stringify({singing:{provider:'feiyu-rvc',musicSource:'netease',neteaseCookie:'MUSIC_U=private-upgrade-fixture'}})],
     ['state/drawing/capability.json',JSON.stringify({enabled:false,apiKey:'private-drawing-upgrade-fixture'})],
-    ['state/persona-backups/validation/original.md','original persona backup fixture']];
+    ['state/persona-backups/validation/original.md','original persona backup fixture'],
+    ['state/identity-mind/'+ 'a'.repeat(64)+'.json',JSON.stringify({fixture:'identity-mind-upgrade',thoughts:[{id:'preserved-plan',status:'planned'}]})]];
   for(const [relative,text]of fixtures){const file=path.join(installed.root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,text);}
   const distributionFile=path.join(installed.root,'config/distribution.json');
   const previous=JSON.parse(fs.readFileSync(distributionFile));
@@ -90,6 +92,7 @@ try {
     capabilityHost:'dsh',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,capabilityFilesDeployed:true,upgradeReplacesCapabilityAndDeliveryFiles:true,upgradeRequiresDshReload:true,
     setupWechatLocation:true,upgradePreservesChatSettings:true,upgradePreservesPersona:true,upgradePreservesPrivateKey:true,
     upgradePreservesCustomModel:true,upgradePreservesMusicCredential:true,upgradePreservesDrawingCredential:true,upgradePreservesPersonaBackup:true,
+    continuousIdentityMemory:'continuous-self-v1',continuousIdentityFilesVerified:CONTINUOUS_IDENTITY_FILES.length,upgradePreservesIdentityMind:true,
     drawingAndPersonaFiles:true,neteaseLoginPage:true,obsoleteSingingEnvironmentRemoved:true,legacyConnectionProgramsRemoved:true,wechatDatabaseAccess:false,servicesStarted:false}));
 } finally {
   const resolved=path.resolve(temporary),parent=path.resolve(os.tmpdir());

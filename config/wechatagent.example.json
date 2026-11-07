@@ -29,6 +29,15 @@
     ]
   },
   "wechat": {
+    "identityMind": {
+      "enabled": true,
+      "idleEnabled": true,
+      "idleMinutes": 20,
+      "reflectionMinutes": 5,
+      "dailyActionLimit": 4,
+      "quietStart": "23:00",
+      "quietEnd": "08:00"
+    },
     "whitelist": {
       "groups": [],
       "private": []

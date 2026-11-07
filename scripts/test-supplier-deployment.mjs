@@ -41,3 +41,19 @@ test('deployment refuses old backends and database programs before creating a wo
     assert(!fs.existsSync(path.join(home,'workspace')));
   }
 });
+
+test('upgrading synchronizes workspace and displayed release metadata even when manifest is not listed as a source file',async t=>{
+ const base=fs.mkdtempSync(path.join(os.tmpdir(),'supplier-version-'));t.after(()=>fs.rmSync(base,{recursive:true,force:true}));
+ const resources=path.join(base,'resources'),home=path.join(base,'data'),template=path.join(resources,'project');
+ for(const dir of [template,path.join(resources,'runtime/python'),path.join(template,'config')])fs.mkdirSync(dir,{recursive:true});
+ const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url)));
+ fs.writeFileSync(path.join(template,'config/wechatagent.example.json'),JSON.stringify(config));
+ fs.writeFileSync(path.join(resources,'runtime/python/python.exe'),'fixture');fs.writeFileSync(path.join(resources,'runtime/node.exe'),'fixture');
+ const manifest={version:'0.2.17',packageVersion:'0.2.17',buildId:'2222222222222222',builtAt:'2026-11-07T10:00:00Z',wechatVersion:'4.1.8.27',hookBackend:'supplier-http',dshBundled:false,files:['config/wechatagent.example.json']};
+ fs.writeFileSync(path.join(template,'deployment.json'),JSON.stringify(manifest));
+ const workspace=path.join(home,'workspace');fs.mkdirSync(workspace,{recursive:true});fs.writeFileSync(path.join(workspace,'deployment.json'),JSON.stringify({...manifest,version:'0.2.15'}));
+ await deployment.bootstrapDeployment(resources,home);
+ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(workspace,'deployment.json'))),manifest);
+ const installed=JSON.parse(fs.readFileSync(path.join(workspace,'config/distribution.json')));
+ for(const field of ['version','packageVersion','buildId','builtAt'])assert.equal(installed[field],manifest[field]);
+});

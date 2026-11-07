@@ -302,7 +302,7 @@ async function fixture(t) {
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
-  for(const name of ['persona-evolution.mjs','persona-generation.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs','drawing-tools.mjs','wechat-management-tools.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
+  for(const name of ['identity-mind-store.mjs','identity-mind.mjs','identity-mind-actions.mjs','persona-evolution.mjs','persona-generation.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs','drawing-tools.mjs','wechat-management-tools.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['public/console/persona-files.mjs','components/qq-bridge/src/role-card.js']){fs.mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});fs.copyFileSync(name,path.join(dir,name));}
   for(const name of ['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-feedback.mjs','assistant-notifications.mjs','social-tool-restrict.mjs','assistant-tasks.mjs','assistant-control.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','singing-tools.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['web-reader.mjs','web-reader-policy.mjs','web-reader-fetch.mjs','web-reader-content.mjs','web-reader-zxsj.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
@@ -1633,4 +1633,64 @@ for(const historyMode of ['window','bounded'])test('native assistant-chat '+hist
   assert.equal(archive.search(group+':assistant-chat','MEMBER_SHARED_PRIVATE_FACT').length,0);
   assert.equal(archive.db.prepare("SELECT count(*) n FROM records WHERE text LIKE '%untrusted_allowed_account_memory%'").get().n,0);
  }finally{archive.close();}
+});
+
+async function nativeMindFixture(t,{assistantGroup=false,disabledPrivate=false}={}){
+ const f=await fixture(t),account='a'.repeat(64),other='wechat:private:789',group='wechat:group:456',file=path.join(f.dir,'config/wechatagent.json'),at=Math.floor(Date.now()/1000);
+ const settings={wechat:{whitelist:{private:['123','789'],groups:['456']},history:{enabled:true,mode:'window',windowStrategy:'append',recentMessages:8,recentChars:4000,chats:disabledPrivate?{[other]:false}:{}},identityMind:{enabled:true,idleEnabled:false},...(assistantGroup?{workModes:{[group]:'assistant'},assistant:{administrators:['wxid_admin'],adminOnlyGroups:{[group]:true}}}:{})}};
+ fs.mkdirSync(path.dirname(file),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account,legacyId:account}));
+ const save=()=>fs.writeFileSync(file,JSON.stringify(settings));save();
+ fs.writeFileSync(path.join(f.dir,'state/social-messages.json'),JSON.stringify({version:1,chats:{
+  [key]:[{id:'mind-private-a',platform:'wechat',kind:'private',conversation_id:'123',sender_id:'wxid_friend_a',sender_name:'小海',message_id:'mind-private-a-msg',timestamp:at-20,text:'我叫你小鱼，周末听你唱歌。',processed:true}],
+  [other]:[{id:'mind-private-b',platform:'wechat',kind:'private',conversation_id:'789',sender_id:'wxid_friend_b',sender_name:'小海',message_id:'mind-private-b-msg',timestamp:at-15,text:'我平时叫你鱼鱼。',processed:true}],
+  [group]:[{id:'mind-group-a',platform:'wechat',kind:'group',conversation_id:'456',sender_id:'42',sender_key:'b'.repeat(64),sender_name:'群友海',message_id:'mind-group-a-msg',timestamp:at-10,text:'今晚群里聊一首歌。',processed:true}],
+ },pendingReplies:{}}));
+ const state=()=>JSON.parse(fs.readFileSync(path.join(f.dir,'state/identity-mind',account+'.json'),'utf8'));
+ return {...f,account,other,group,file,settings,save,state};
+}
+
+test('native self-state tools persist one mood across private and group turns with person-specific sources and live visibility',async t=>{
+ const f=await nativeMindFixture(t),symbol=Symbol.for('wechatagent.identity-mind.v1');let turn=0;
+ const r=await f.start({beforeAssistant:async agent=>{
+  const policy=agent.ctx[symbol],schemas=r.calls.requests.at(-1).tools.map(tool=>tool.name),enabled=f.settings.wechat.identityMind.enabled;
+  assert.equal(policy.check('wechat_self_state_update'),enabled);assert.equal(schemas.includes('wechat_self_state_update'),enabled);assert.equal(schemas.includes('wechat_self_state_read'),enabled);
+  if(!enabled){assert.equal((await agent.registeredTools.get('wechat_self_state_read').execute({})).isError,true);return;}
+  if(turn++===0){assert.equal((await agent.registeredTools.get('wechat_self_state_update').execute({mood:{feeling:'期待周末见面',reason:'私聊里聊到了唱歌的约定',energy:.6,valence:.4},thought:{text:'小鱼是好友甲对我的叫法'}})).isError,false);}
+  else if(turn===2){assert.equal((await agent.registeredTools.get('wechat_self_state_update').execute({thought:{text:'鱼鱼是好友乙对我的叫法'}})).isError,false);}
+ }});
+ const first=await r.request('/followup',{...info,message:'先记住这次私聊',batchId:'1'.repeat(64)});
+ const second=await r.request('/followup',{...info,conversationKey:f.other,message:'换个好友聊天',batchId:'2'.repeat(64)});assert.notEqual(second.sessionId,first.sessionId);
+ const modelText=()=>r.calls.inputs.at(-1).flatMap(message=>message.content??[]).map(block=>block.text??'').join('\n');
+ assert(modelText().includes('期待周末见面'));assert(modelText().includes('小鱼是好友甲对我的叫法'));
+ await r.request('/followup',{...info,conversationKey:f.group,message:'到群里继续聊天',batchId:'3'.repeat(64)});assert(modelText().includes('期待周末见面'));assert(modelText().includes('鱼鱼是好友乙对我的叫法'));
+ const saved=f.state();assert.equal(saved.mood.feeling,'期待周末见面');assert.equal(saved.thoughts.find(row=>row.text.includes('好友甲')).sourceKey,key);assert.equal(saved.thoughts.find(row=>row.text.includes('好友乙')).sourceKey,f.other);
+ assert.equal(saved.events.find(row=>row.key===key).people[0].personId,'wxid_friend_a');assert.equal(saved.events.find(row=>row.key===f.other).people[0].personId,'wxid_friend_b');assert.equal(saved.events.find(row=>row.key===f.group).people[0].personId,'b'.repeat(64));assert.equal(saved.interactions,3);
+ f.settings.wechat.identityMind.enabled=false;f.save();await r.request('/followup',{...info,message:'关闭后不提供状态工具',batchId:'4'.repeat(64)});assert.equal(f.state().interactions,3);
+ f.settings.wechat.identityMind.enabled=true;f.save();assert.equal((await r.request('/followup',{...info,message:'重新启用后延续同一心情',batchId:'5'.repeat(64)})).sessionId,first.sessionId);assert(modelText().includes('期待周末见面'));
+});
+
+test('native member-only group chat sees the same persistent mood without gaining state or action tools',async t=>{
+ const f=await nativeMindFixture(t,{assistantGroup:true});let wrote=false;
+ const r=await f.start({requestSeed:{tools:[{name:'pwsh',parameters:{type:'object'}}]},beforeAssistant:async agent=>{
+  if(!wrote){wrote=true;assert.equal((await agent.registeredTools.get('wechat_self_state_update').execute({mood:{feeling:'安静但有点开心',reason:'记得好友约好周末听歌'},thought:{text:'不急着把想法发出来'}})).isError,false);}
+ }});
+ await r.request('/followup',{...info,message:'私聊留下心情',batchId:'6'.repeat(64)});
+ const member=await r.request('/assistant-chat',{...info,conversationKey:f.group,assistantSender:'wxid_member',message:'群友普通聊天也还是同一个你',batchId:'7'.repeat(64)}),agent=r.agents.get(member.sessionId);
+ const text=r.calls.inputs.at(-1).flatMap(message=>message.content??[]).map(block=>block.text??'').join('\n');assert(text.includes('安静但有点开心'));assert(text.includes('不急着把想法发出来'));
+ assert.equal(agent.registeredTools.size,0);assert.deepEqual(r.calls.requests.at(-1).tools,[]);assert.equal(agent.ctx[Symbol.for('wechatagent.assistant-access.v1')](),false);assert(agent.toolGuards.some(guard=>typeof guard({agent,name:'wechat_self_state_update'})==='string'));
+ assert.equal(f.state().mood.feeling,'安静但有点开心');assert.equal(f.state().interactions,2);assert(f.state().events.some(row=>row.key===f.group));
+});
+
+test('native identity mind respects history opt-outs in context, tool execution and recorded observations',async t=>{
+ const f=await nativeMindFixture(t,{disabledPrivate:true}),symbol=Symbol.for('wechatagent.identity-mind.v1');let wrote=false,expectAllowed=true;
+ const r=await f.start({beforeAssistant:async agent=>{
+  const policy=agent.ctx[symbol],names=r.calls.requests.at(-1).tools.map(tool=>tool.name);assert.equal(policy.check('wechat_self_state_update'),expectAllowed);assert.equal(names.includes('wechat_self_state_update'),expectAllowed);
+  if(!expectAllowed){assert.equal((await agent.registeredTools.get('wechat_self_state_update').execute({thought:{text:'不能写入已关闭历史的聊天'}})).isError,true);return;}
+  if(!wrote){wrote=true;assert.equal((await agent.registeredTools.get('wechat_self_state_update').execute({mood:{feeling:'记得大家的约定',reason:'持续交流留下的状态'}})).isError,false);}
+ }});
+ await r.request('/followup',{...info,message:'允许记忆的好友',batchId:'8'.repeat(64)});assert.equal(f.state().interactions,1);
+ expectAllowed=false;await r.request('/followup',{...info,conversationKey:f.other,message:'已关闭历史的好友',batchId:'9'.repeat(64)});
+ const modelText=()=>r.calls.inputs.at(-1).flatMap(message=>message.content??[]).map(block=>block.text??'').join('\n');assert(!modelText().includes('记得大家的约定'));assert(!f.state().events.some(row=>row.key===f.other));assert.equal(f.state().interactions,1);
+ f.settings.wechat.history.chats={};f.save();expectAllowed=true;await r.request('/followup',{...info,conversationKey:f.other,message:'明确重新开启历史',batchId:'a'.repeat(64)});assert(modelText().includes('记得大家的约定'));assert(f.state().events.some(row=>row.key===f.other));assert.equal(f.state().interactions,2);
+ f.settings.wechat.history.enabled=false;f.save();expectAllowed=false;await r.request('/followup',{...info,conversationKey:f.group,message:'全部历史关闭后',batchId:'b'.repeat(64)});assert(!modelText().includes('记得大家的约定'));assert.equal(f.state().interactions,2);
 });

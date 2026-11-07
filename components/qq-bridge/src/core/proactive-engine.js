@@ -98,7 +98,7 @@ export class ProactiveEngine {
         const day=localTime(this.now()).slice(0,10),query=mode==='meme'?`帮我搜索 ${day} 最近热门 新梗 meme 含义`:`帮我搜索 ${day} 最新 热点 新闻`;
         try{search=await this.searchFor(message,[{text:query}],job.id);}catch{search={status:'unavailable'};}
       }
-      const metadata={persona:persona.persona,personaName:persona.personaName,conversationName:message.conversation_name,images:[],batchId:job.id,searchOptOut:mode==='greeting'||!policy.useSearch||search?.status==='unavailable'};
+      const metadata={proactiveWake:true,persona:persona.persona,personaName:persona.personaName,conversationName:message.conversation_name,images:[],batchId:job.id,searchOptOut:mode==='greeting'||!policy.useSearch||search?.status==='unavailable'};
       if(search?.status==='ready'){metadata.searchTicket=search.id;metadata.searchContext=search.context;
         job.topicDigest=hash(search.context.slice(Math.max(0,search.context.indexOf('\n1.'))));}
       if(job.topicDigest&&item.history.some(entry=>entry.topicDigest===job.topicDigest&&this.now()-entry.at<7*86400000)){
