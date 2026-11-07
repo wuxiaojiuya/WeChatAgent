@@ -392,8 +392,8 @@ export class HookOneBot {
         data = { user_id: (await this.checkNative()).selfId, nickname: this.project.account.nicknames[0] };
       } else if (['get_friend_list', 'get_group_list'].includes(action)) {
         const kind = action === 'get_group_list' ? 'group' : 'private';
-        const sessions = (await this.reader('/api/v1/sessions?limit=500')).sessions ?? [];
-        data = sessions.filter(s => s.username && (s.username.includes('@chatroom') ? 'group' : 'private') === kind)
+        const sessions = (await this.reader('/api/v1/contacts?selected=1')).contacts ?? [];
+        data = sessions.filter(s => s.username && (s.username.includes('@chatroom') ? 'group' : 'private') === kind && (kind==='group'||s.isFriend===true))
           .map(s => ({ id: conversationId(s.username, s.displayName, s.conversationId), name: s.displayName ?? s.username }))
           .filter(s => this.allowed(kind, s.id)).map(s => kind === 'group' ? { group_id: s.id, group_name: s.name } : { user_id: s.id, nickname: s.name, remark: s.name });
       } else fail('ACTION_UNSUPPORTED');

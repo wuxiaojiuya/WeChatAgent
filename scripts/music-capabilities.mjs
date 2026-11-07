@@ -19,7 +19,6 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
   const directory = path.join(root, 'state', 'music-library');
   const runtime = path.join(root, 'state', 'maintenance', 'audio-capabilities', 'feiyu-cover');
   const python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
-  const singer = path.join(root, 'state/maintenance/audio-capabilities/soulx-singer');
   const jobDirectory = path.join(root, 'state', 'music-jobs');
   const tickets = new Map(), jobs = new Map(), controllers = new Set();
   const references=new Map(),referenceDirectory=path.join(root,'state/music-references');
@@ -73,7 +72,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
           // use a different order but may not contain paths or extra values.
           if(Object.keys(record).some(key=>JSON.stringify(record[key])!==JSON.stringify(safe[key])))continue;
         }
-        if(record.performance)validatePerformance(record.performance,record.seconds??30);
+        if(record.performance)validatePerformance(record.performance,record.seconds??30,{allowLegacy:true});
         if(record.state==='success'){
           const preview=regularJobFile(entry.id,'preview.mp3');
           if(!Number.isFinite(record.seconds)||!jobTime(record.completedAt)||!preview||preview.size<=0||preview.size>4*1024*1024)continue;
@@ -202,9 +201,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
       return {...job,selectionAutomatic:true,requestedTitle:wanted.title,requestedVersion:wanted.version,sent:false};
     }finally{preparing=false;}
   }
-  const runtimeAvailable = () => fs.existsSync(python) && fs.existsSync(path.join(runtime, 'runtime.cpu.json')) && fs.existsSync(path.join(runtime, 'cover_demo.py')) &&
-    fs.existsSync(path.join(singer,'venv/Scripts/python.exe')) && fs.existsSync(path.join(singer,'runtime.cpu.json')) &&
-    fs.existsSync(path.join(singer,'source/pretrained_models/SoulX-Singer/model.pt'));
+  const runtimeAvailable = () => fs.existsSync(python) && fs.existsSync(path.join(runtime, 'runtime.cpu.json')) && fs.existsSync(path.join(runtime, 'cover_demo.py'));
   async function fetchVideoAudio(body,{signal,isAllowed=()=>true}={}){
     const {videoId,conversationKey,startSeconds=0,seconds=settings().clipSeconds??30,localOnly=false}=body??{};
     if(Object.keys(body??{}).some(key=>!['videoId','conversationKey','startSeconds','seconds','localOnly'].includes(key))||typeof localOnly!=='boolean'||!/^[a-f0-9]{64}$/.test(videoId??'')||!/^wechat:(private|group):[1-9]\d*$/.test(conversationKey??'')||!Number.isFinite(startSeconds)||startSeconds<0||startSeconds>14400||!Number.isInteger(seconds)||seconds<10||seconds>30)throw fault('请选择当前聊天中已收到的视频，片段长度为 10～30 秒。');
@@ -296,7 +293,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
         !Number.isInteger(seconds) || seconds < 10 || seconds > 30) throw fault('请选择歌曲，试听长度为 10～30 秒，开始时间不能为负数。');
     if(body.performance&&!source?.reference)throw fault('演唱编排必须绑定已分析的参考。',409);
     if(!source?.reference&&typeof planPerformance!=='function')throw fault('AI 演唱编排服务尚未就绪，请启动 DSH 并启用项目插件。',503);
-    if (!runCover && !runtimeAvailable()) throw fault('SoulX 翻唱环境尚未准备，请在设置中安装或修复翻唱环境；仍可搜歌和缓存音频。', 503);
+    if (!runCover && !runtimeAvailable()) throw fault('RVC 翻唱环境尚未准备，请在设置中安装或修复翻唱环境；仍可搜歌和缓存音频。', 503);
     if (!source && !findCached(body.songId) && !tickets.has(body.songId)) throw fault('请重新搜索并选择歌曲。', 409);
     while (jobs.size >= 30) {
       const oldest=jobs.keys().next().value;jobs.delete(oldest);
@@ -324,13 +321,13 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
           cleanupReferences();
           const referenceId=crypto.randomUUID(),dir=path.join(referenceDirectory,referenceId);fs.mkdirSync(dir,{recursive:false});
           reference={id:referenceId,dir,inUse:true};references.set(referenceId,reference);
-          stageJob(job,'正在分析歌词、旋律、节奏与分句');
-          if(runReference)await runReference({input:inputFile,output:dir,seconds:duration,startSeconds,withScore:true,signal:controller.signal});
-          else await executeCapability('singing.reference',{input:inputFile,output:dir,startSeconds,seconds:duration,withScore:true},{signal:controller.signal,timeoutMs:11*60*1000});
+          stageJob(job,'正在分析原曲人声、节奏与分句');
+          if(runReference)await runReference({input:inputFile,output:dir,seconds:duration,startSeconds,signal:controller.signal});
+          else await executeCapability('singing.reference',{input:inputFile,output:dir,startSeconds,seconds:duration},{signal:controller.signal,timeoutMs:180000});
           check();
           const record=JSON.parse(fs.readFileSync(path.join(dir,'reference.json'),'utf8'));
-          if(record.schema!=='singing-reference-v1'||record.source_sha256!==crypto.createHash('sha256').update(fs.readFileSync(inputFile)).digest('hex')||Math.abs(record.seconds-duration)>.05||!record.analysis?.phrases?.length||!record.analysis?.lyrics?.length)throw fault('歌曲参考分析未完成，未生成演唱。',502);
-          stageJob(job,'AI 正在结合歌词与人格编排演唱');
+          if(record.schema!=='singing-reference-v1'||record.source_sha256!==crypto.createHash('sha256').update(fs.readFileSync(inputFile)).digest('hex')||Math.abs(record.seconds-duration)>.05||!record.analysis?.phrases?.length)throw fault('歌曲参考分析未完成，未生成演唱。',502);
+          stageJob(job,'AI 正在结合音轨与人格编排换声');
           performance=validatePerformance(await planPerformance({analysis:record.analysis,seconds:duration,song:{title:song.title,artist:song.artist,requestedTitle:body.requestedTitle??song.title,version:body.requestedVersion??''},direction:body.direction??'',conversationKey:body.conversationKey,signal:controller.signal}),duration);
           check();updateJob(job,{performance});
         }
@@ -340,9 +337,9 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
         else await executeCapability('singing.render',{input:inputFile,output,seconds:duration,modelId:config.modelId??'FeiyuVoice-RVC-v1',pitch:config.pitch??0,accompaniment:config.accompaniment!==false,performance,reference:reference.dir},{signal:controller.signal,timeoutMs:46*60*1000,onProgress:stage=>stageJob(job,stage)});
         const receipt = JSON.parse(fs.readFileSync(path.join(output, 'result.json'), 'utf8'));
         if (receipt.status !== 'success' || Math.abs(receipt.seconds - duration) > 0.05) throw fault('翻唱结果校验失败。', 502);
-        if(!runCover&&(receipt.route!=='SoulX -> selected RVC -> accompaniment remix'||receipt.original_vocals_mixed!==false))throw fault('翻唱链路校验失败，未返回 SoulX 演唱结果。',502);
+        if(!runCover&&(receipt.route!=='source vocal -> AI arrangement -> selected RVC -> accompaniment remix'||receipt.source_vocals_used!==true||receipt.original_vocals_mixed!==false))throw fault('翻唱链路校验失败，未返回原曲人声编排换声结果。',502);
         check();
-        if(!runCover&&(receipt.performance_sha256!==crypto.createHash('sha256').update(fs.readFileSync(performanceFile)).digest('hex')||receipt.performance?.control!=='score'||receipt.performance?.source_f0_used!==false||receipt.performance?.dynamics?.applied!==true))throw fault('演唱编排未实际执行，未返回音频。',502);
+        if(!runCover&&(receipt.performance_sha256!==crypto.createHash('sha256').update(fs.readFileSync(performanceFile)).digest('hex')||receipt.performance?.control!=='source-vocal'||receipt.performance?.source_f0_used!==true||receipt.performance?.dynamics?.applied!==true||receipt.performance?.pitch_shift!==(config.pitch??0)+performance.pitchShift||receipt.accompaniment_pitch_shift!==receipt.performance.pitch_shift||receipt.accompaniment_gain_db!==performance.accompanimentGainDb))throw fault('演唱编排未实际执行，未返回音频。',502);
         stageJob(job,'正在准备试听文件');
         await executeCapability('singing.preview',{output,seconds:duration},{signal:controller.signal,timeoutMs:150000});
         check();

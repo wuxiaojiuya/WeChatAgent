@@ -37,7 +37,7 @@ await assertPluginHost(project,{compareRoot:root});
 const runtime=path.join(stage,'runtime');fs.mkdirSync(runtime,{recursive:true});copy(process.execPath,path.join(runtime,'node.exe'));
 if(!fs.existsSync(path.join(runtime,'python/python.exe')))throw Error('Run npm run installer:runtime first.');
 if(!fs.existsSync(path.join(runtime,'NODE-LICENSE.txt')))throw Error('Node.js redistribution license missing; run installer:runtime.');
-for(const name of ['package.json','main.cjs','preload.cjs','shutdown.cjs','storage-location.cjs','desktop-policy.cjs','deployment.cjs','appearance.cjs','loading-preload.cjs','loading.html','loading.css','loading.js'])copy(path.join(root,'apps/console-desktop',name),path.join(app,name));
+for(const name of ['package.json','main.cjs','preload.cjs','shutdown.cjs','storage-location.cjs','desktop-policy.cjs','deployment.cjs','retired-audio.cjs','appearance.cjs','loading-preload.cjs','loading.html','loading.css','loading.js'])copy(path.join(root,'apps/console-desktop',name),path.join(app,name));
 fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({name:'wechatagent',version,main:'main.cjs',author:'wuxiaojiuya',description:pkg.description,license:'SEE LICENSE.txt'}));
 await buildIcons(root,app,require('sharp'));
 copy(path.join(root,'LICENSE'),path.join(app,'LICENSE.txt'));copy(path.join(root,'LICENSES.md'),path.join(app,'THIRD-PARTY-NOTICES.txt'));

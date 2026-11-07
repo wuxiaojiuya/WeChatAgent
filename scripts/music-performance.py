@@ -1,7 +1,6 @@
-"""Measure reference stems and execute bounded, model-selected score phrasing.
+"""Measure stems and execute bounded dynamics for source-vocal RVC covers.
 
-Acoustic measurements are estimates, not emotion recognition. No source vocal
-samples enter the generated output. Score timing stays inside each phrase.
+Legacy plan validation is retained for historical task receipts.
 """
 import copy
 import json
@@ -12,6 +11,22 @@ from scipy.signal import find_peaks, resample_poly
 from math import gcd
 
 VERSION = 'score-performance-v1'
+ARRANGEMENT_VERSION = 'source-vocal-arrangement-v1'
+
+
+def validate_arrangement(plan, seconds):
+    if not isinstance(plan, dict) or set(plan) != {'version', 'emotion', 'intention', 'pitchShift', 'accompanimentGainDb', 'phrases'}:
+        raise ValueError('Invalid source-vocal arrangement')
+    if plan['version'] != ARRANGEMENT_VERSION or type(plan['pitchShift']) is not int or abs(plan['pitchShift']) > 3:
+        raise ValueError('Invalid arrangement pitch')
+    gain = plan['accompanimentGainDb']
+    if not isinstance(gain, (float, int)) or isinstance(gain, bool) or not np.isfinite(gain) or not -6 <= gain <= 3:
+        raise ValueError('Invalid accompaniment gain')
+    if not isinstance(plan['phrases'], list) or any(not isinstance(p, dict) or set(p) != {'start', 'end', 'gainDb', 'contour'} for p in plan['phrases']):
+        raise ValueError('Invalid source-vocal phrases')
+    validate_plan({'version': VERSION, 'emotion': plan['emotion'], 'intention': plan['intention'],
+                   'phrases': [{**p, 'articulation': 'flowing', 'timingMs': 0, 'tail': 'natural'} for p in plan['phrases']]}, seconds)
+    return copy.deepcopy(plan)
 
 
 def validate_plan(plan, seconds):
@@ -39,63 +54,6 @@ def validate_plan(plan, seconds):
     return copy.deepcopy(plan)
 
 
-def arrange_score(metadata, plan, seconds):
-    """Change rest/note allocation before SoulX inference, retaining total times."""
-    validate_plan(plan, seconds)
-    result = copy.deepcopy(metadata)
-    changes, applied = 0, []
-    for segment in result:
-        phones = segment['phoneme'].split()
-        durations = np.array([float(x) for x in segment['duration'].split()])
-        pitches = [int(x) for x in segment['note_pitch'].split()]
-        types = segment['note_type'].split()
-        if not len(phones) == len(durations) == len(pitches) == len(types) or np.any(durations <= 0) or not np.isfinite(durations).all():
-            raise ValueError('Invalid source score alignment')
-        before = durations.copy()
-        starts = np.r_[0, np.cumsum(durations)[:-1]] + float(segment['time'][0])/1000
-        centers = starts+durations/2
-        for index, phrase in enumerate(plan['phrases']):
-            ids = np.flatnonzero((centers >= phrase['start']) & (centers < phrase['end']))
-            if not len(ids):
-                continue
-            rests = [int(i) for i in ids if phones[i] in ['<SP>', '<AP>']]
-            voiced = [int(i) for i in ids if phones[i] not in ['<SP>', '<AP>']]
-            if not voiced:
-                continue
-            # Borrow only a few milliseconds from adjacent notes. Every transfer
-            # preserves the note-group duration and hence the accompaniment grid.
-            for rest in rests:
-                near = min(voiced, key=lambda i: abs(i-rest))
-                factor = {'clear': 1.12, 'flowing': .8, 'relaxed': 1.08}[phrase['articulation']]
-                delta = np.clip(durations[rest]*(factor-1), -.035, .035)
-                delta = np.clip(delta, -max(0, durations[rest]-.025), max(0, durations[near]-.06))
-                durations[rest] += delta
-                durations[near] -= delta
-            leading = next((i for i in rests if i < voiced[0]), None)
-            trailing = next((i for i in reversed(rests) if i > voiced[-1]), None)
-            shift = 0.
-            if leading is not None and trailing is not None:
-                shift = float(np.clip(phrase['timingMs']/1000, -max(0, durations[leading]-.025), max(0, durations[trailing]-.025)))
-                durations[leading] += shift
-                durations[trailing] -= shift
-            tail = 0.
-            if trailing is not None and phrase['tail'] != 'natural':
-                last = voiced[-1]
-                tail = min(.1, durations[last]*.12, max(0, durations[trailing]-.025)) if phrase['tail'] == 'hold' else -min(.08, durations[last]*.1, max(0, durations[last]-.06))
-                durations[last] += tail
-                durations[trailing] -= tail
-            applied.append({'segment': segment.get('index'), 'phrase': index+1,
-                            'onset_shift_ms': round(shift*1000, 2), 'tail_change_ms': round(tail*1000, 2)})
-        if abs(float(durations.sum()-before.sum())) > 1e-6 or np.any(durations <= 0):
-            raise ValueError('Score edit broke phrase alignment')
-        changes += int(np.count_nonzero(np.abs(durations-before) > 1e-6))
-        segment['duration'] = ' '.join(f'{x:.6f}' for x in durations)
-        segment['f0'] = ''  # Score inference must not copy the source F0 contour.
-        segment['note_pitch'] = ' '.join('0' if ph in ['<SP>', '<AP>'] else str(pitch) for ph, pitch in zip(phones, pitches))
-    return result, {'control': 'score', 'source_f0_used': False, 'edited_note_durations': changes,
-                    'phrase_edits': applied, 'timing_preserved': True}
-
-
 def apply_dynamics(audio, rate, plan, seconds=None):
     """Apply model-selected phrase dynamics after RVC, before accompaniment mix."""
     samples = np.asarray(audio, dtype=np.float64)
@@ -108,7 +66,8 @@ def apply_dynamics(audio, rate, plan, seconds=None):
         samples = samples[:expected]
         if padding:
             samples = np.pad(samples, ((0,padding),(0,0)) if samples.ndim == 2 else (0,padding))
-    validate_plan(plan, seconds if seconds is not None else len(samples)/rate)
+    validator = validate_arrangement if plan.get('version') == ARRANGEMENT_VERSION else validate_plan
+    validator(plan, seconds if seconds is not None else len(samples)/rate)
     db = np.zeros(len(samples))
     for phrase in plan['phrases']:
         start, end = round(phrase['start']*rate), min(len(samples), round(phrase['end']*rate))
@@ -194,4 +153,4 @@ def analyze_stems(vocal, accompaniment, rate):
         'limits': ['节拍可能有半速/倍速误差；音高是自相关估计。',
                    '分句按能量划分，不等于准确歌词边界。',
                    '声学测量不能确定喜怒哀乐或准确识别气声、真假声和转音；结合画面、转写与用户要求判断。',
-                   '可执行控制是谱面时值、休止、句尾与力度；不支持文字直接控制嘶吼、哭腔或特定唱腔。']}
+                   '沿用原曲旋律、节奏与咬字；可执行控制是升降调、分句力度和伴奏比例，不重新生成演唱。']}

@@ -13,8 +13,3 @@ export function parseConversationKey(key) {
   if (!match) return null;
   return { platform: match[1], kind: match[2], conversationId: match[3] };
 }
-
-export function legacyQqKey(key) {
-  const match = /^qq:(private|group):(\d+)$/.exec(String(key ?? ''));
-  return match ? `${match[1]}:${match[2]}` : null;
-}

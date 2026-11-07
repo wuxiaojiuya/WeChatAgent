@@ -12,7 +12,7 @@ import {songRequest,rankSongCandidates} from '../packages/music-source/song-requ
 import {createSingingExecutor} from '../packages/dsh-capabilities-plugin/singing.mjs';
 const kgHash='A'.repeat(32);
 const kgResult={status:1,data:{lists:[{FileHash:kgHash,AlbumID:'123',SongName:'同名歌（DJ版）',SingerName:'歌手甲',Duration:120,PayType:3}]}};
-const plan={version:'score-performance-v1',emotion:'warm',intention:'前段轻唱，后段逐渐加强。',phrases:[{start:0,end:30,articulation:'flowing',timingMs:12,tail:'hold',gainDb:.6,contour:'build'}]};
+const plan={version:'source-vocal-arrangement-v1',pitchShift:0,accompanimentGainDb:0,emotion:'warm',intention:'前段轻唱，后段逐渐加强。',phrases:[{start:0,end:30,gainDb:.6,contour:'build'}]};
 const referenceFixture=async({input,output,seconds})=>fs.writeFileSync(path.join(output,'reference.json'),JSON.stringify({schema:'singing-reference-v1',source_sha256:crypto.createHash('sha256').update(fs.readFileSync(input)).digest('hex'),seconds,analysis:{phrases:[{start:0,end:seconds}],lyrics:[{start:0,end:seconds,text:'测试歌词'}]}}));
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'music-source-'));let clock=Date.now();
@@ -45,6 +45,17 @@ test('completed singing metadata and audio remain queryable after service restar
     const audio=service.preview({jobId:job.id});assert.deepEqual(Buffer.from(audio.audio,'base64'),bytes);assert.equal(audio.seconds,30);
     assert.equal(service.status().latestJob.id,job.id);assert.equal(service.isBusy(),false);service.close();
   }
+});
+
+test('legacy SoulX task plans remain readable while source-vocal readiness only needs the RVC environment',t=>{
+  const f=recoveryFixture(t),legacy={version:'score-performance-v1',emotion:'warm',intention:'旧任务。',phrases:[{start:0,end:30,gainDb:0,contour:'even',articulation:'flowing',timingMs:0,tail:'natural'}]};
+  const job=f.save({performance:legacy},Buffer.from('ID3historical'));
+  const runtime=path.join(f.root,'state/maintenance/audio-capabilities/feiyu-cover');
+  fs.mkdirSync(path.join(runtime,'venv/Scripts'),{recursive:true});
+  for(const file of ['venv/Scripts/python.exe','runtime.cpu.json','cover_demo.py'])fs.writeFileSync(path.join(runtime,file),'fixture');
+  const service=f.open();assert.deepEqual(service.getJob(job.id).performance,legacy);
+  assert.equal(service.status().localCoverAvailable,true);
+  assert.equal(fs.existsSync(path.join(f.root,'state/maintenance/audio-capabilities/soulx-singer')),false);
 });
 
 test('restart closes a persisted running job as interrupted and never treats incidental audio as a completed job',async t=>{
@@ -121,7 +132,7 @@ test('live job stages and failures are atomically saved with only public metadat
   assert.equal(JSON.parse(fs.readFileSync(journal,'utf8')).stage,'正在获取歌曲音频');
   try{
     await ready;const persisted=JSON.parse(fs.readFileSync(journal,'utf8'));
-    assert.equal(persisted.state,'running');assert.equal(persisted.stage,'AI 正在结合歌词与人格编排演唱');assert.deepEqual(persisted.performance,plan);
+    assert.equal(persisted.state,'running');assert.equal(persisted.stage,'AI 正在结合音轨与人格编排换声');assert.deepEqual(persisted.performance,plan);
     assert.equal(persisted.accountScope,account);fs.writeFileSync(accountFile,JSON.stringify({id:'b'.repeat(64)}));assert.equal(f.service.getJob(job.id).accountScope,account);
     assert.equal(persisted.conversationKey,'wechat:private:123');assert(!JSON.stringify(persisted).includes('private-fixture-key'));assert(!JSON.stringify(persisted).includes(f.root));
     assert.equal(Object.hasOwn(persisted,'finished'),false);assert.equal(fs.readdirSync(path.dirname(journal)).some(name=>name.endsWith('.tmp')),false);
@@ -138,11 +149,11 @@ test('conversational requests distinguish a capability question from a DJ song r
   assert.throws(()=>songRequest({title:'朋友的酒',unknown:'override'}));
 });
 
-test('direct requests and local jobs analyze once, obtain a real model plan, then synthesize from that score',async t=>{
+test('direct jobs without lyrics analyze once, obtain AI arrangement, then convert the verified source vocal',async t=>{
   const calls=[];let options;
   const {root,service}=fixture(t,{settings:()=>({musicSource:'local'}),
-    runReference:async value=>{calls.push('analysis');assert(value.withScore);assert.equal(value.startSeconds,5);await referenceFixture(value);},
-    planPerformance:async value=>{calls.push('plan');assert.equal(value.analysis.lyrics[0].text,'测试歌词');assert.equal(value.direction,'先轻后强');assert.equal(value.conversationKey,'wechat:private:123');return plan;},
+    runReference:async value=>{calls.push('analysis');assert.equal(value.withScore,undefined);assert.equal(value.startSeconds,5);await referenceFixture(value);const f=path.join(value.output,'reference.json'),r=JSON.parse(fs.readFileSync(f));delete r.analysis.lyrics;fs.writeFileSync(f,JSON.stringify(r));},
+    planPerformance:async value=>{calls.push('plan');assert.equal(value.analysis.lyrics,undefined);assert(value.analysis.phrases.length);assert.equal(value.direction,'先轻后强');assert.equal(value.conversationKey,'wechat:private:123');return plan;},
     runCover:async value=>{calls.push('sing');options=value;throw Error('fixture stops after score handoff');}});
   const file=path.join(root,'歌.mp3');fs.writeFileSync(file,'audio');const song=await service.importFile({path:file});
   const job=service.start({songId:song.id,startSeconds:5,seconds:30,direction:'先轻后强',conversationKey:'wechat:private:123'});
@@ -151,11 +162,11 @@ test('direct requests and local jobs analyze once, obtain a real model plan, the
   assert.deepEqual(service.getJob(job.id).performance,plan);
 });
 
-test('planning failure, invalid score, missing lyrics, account switches and scope revocation never fall back to vocal conversion',async t=>{
-  for(const failure of ['model','invalid','lyrics','account','scope']){
+test('planning failure, invalid arrangement, missing phrases, account switches and revocation never convert unplanned vocals',async t=>{
+  for(const failure of ['model','invalid','phrases','account','scope']){
     let allowed=true;
     const f=fixture(t,{settings:()=>({musicSource:'local'}),runCover:async()=>assert.fail('must not synthesize without verified planning'),
-      runReference:async options=>{await referenceFixture(options);if(failure==='lyrics'){const file=path.join(options.output,'reference.json'),record=JSON.parse(fs.readFileSync(file));delete record.analysis.lyrics;fs.writeFileSync(file,JSON.stringify(record));}},
+      runReference:async options=>{await referenceFixture(options);if(failure==='phrases'){const file=path.join(options.output,'reference.json'),record=JSON.parse(fs.readFileSync(file));delete record.analysis.phrases;fs.writeFileSync(file,JSON.stringify(record));}},
       planPerformance:async()=>{if(failure==='model')throw Error('secret upstream details');if(failure==='invalid')return {...plan,phrases:[{...plan.phrases[0],end:31}]};if(failure==='account')fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),'{}');if(failure==='scope')allowed=false;return plan;}});
     const file=path.join(f.root,'测试歌曲.mp3');fs.writeFileSync(file,'audio');await f.service.importFile({path:file});
     const job=await f.service.requestSong({title:'测试歌曲'},{isAllowed:()=>allowed});const result=await f.service.settled(job.id);

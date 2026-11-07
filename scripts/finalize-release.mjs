@@ -40,11 +40,16 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
     packagedFiles++;
   }
   for(const relative of ['state','config/wechatagent.json','config/plugins.json','config/extensions.json'])if(fs.existsSync(path.join(directory,relative)))throw Error('PACKAGED_PRIVATE_DATA_REJECTED');
+  for(const relative of ['scripts/music-soulx-worker.py','scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md'])
+    if(deployment.files.includes(relative)||fs.existsSync(path.join(directory,relative)))throw Error('OBSOLETE_SINGING_ENGINE_PACKAGED: '+relative);
+  const audioManifest=JSON.parse(fs.readFileSync(path.join(directory,'scripts/audio-runtime-manifest.json')));
+  if(Object.keys(audioManifest.bundles).sort().join(',')!=='rvc,tts'||Object.keys(audioManifest.sources).sort().join(',')!=='rvc,tts')throw Error('OBSOLETE_AUDIO_INSTALL_TARGET');
+  if(/soulx/i.test(fs.readFileSync(path.join(directory,'public/console/audio-runtime.js'),'utf8')))throw Error('OBSOLETE_AUDIO_SETTINGS_PACKAGED');
   for(const relative of ['scripts/audio-runtime-installer.mjs','scripts/install-audio-runtime.py','scripts/audio-runtime-manifest.json','public/console/audio-runtime.js','docs/AUDIO_INSTALLER.md',
     'scripts/voice-profiles.mjs','scripts/voice-reference.py','scripts/direct-tts.mjs','scripts/direct-tts-worker.py','scripts/feiyu_voice_reference.py','public/console/voice-profiles.js',
     'scripts/speech-rvc.mjs','scripts/speech-rvc-worker.py','scripts/music-rvc-worker.py','scripts/feiyu_speech_pool.py','scripts/feiyu_tts_cache.py',
-    'scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md',
-    'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','scripts/music-reference.py','scripts/music-performance.py','scripts/music-soulx-worker.py',
+    'apps/console-desktop/retired-audio.cjs','scripts/wechat_contacts.py','scripts/chat-contact-names.mjs',
+    'scripts/wechat_video.py','scripts/douyin_video.py','scripts/media_tools.py','scripts/media-tools.mjs','scripts/music-capabilities.mjs','scripts/music-reference.py','scripts/music-performance.py',
     'packages/dsh-social-bridge-plugin/singing-performance.mjs','docs/SINGING_PERFORMANCE.md','docs/VIDEO_SINGING.md',
     'packages/dsh-social-bridge-plugin/persona-evolution.mjs','docs/PERSONA_EVOLUTION.md',
     'packages/music-source/netease.mjs','packages/music-source/providers.mjs','public/console/music-source.js','public/console/audio-capabilities.js','docs/FEIYU_MUSIC.md'])if(!deployment.sourceHashes[relative])throw Error('AUDIO_OR_VIDEO_FEATURE_NOT_PACKAGED: '+relative);
@@ -57,6 +62,7 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
 }
 const desktop=JSON.parse(fs.readFileSync(path.join(output,'win-unpacked/resources/app/package.json')));
 if(desktop.version!==version)throw Error('DESKTOP_VERSION_MISMATCH');
+for(const relative of ['deployment.cjs','retired-audio.cjs'])if(sha(path.join(output,'win-unpacked/resources/app',relative))!==sha(path.join(root,'apps/console-desktop',relative)))throw Error('UPGRADE_MIGRATION_NOT_PACKAGED');
 const runtimeProbe=spawnSync(path.join(output,'win-unpacked/resources/runtime/python/python.exe'),['-B','-c',
   'import yt_dlp,imageio_ffmpeg,subprocess,sqlcipher3,PIL; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("PACKAGED_MEDIA_RUNTIME_OK")'],{windowsHide:true,encoding:'utf8',timeout:30000});
 if(runtimeProbe.status!==0)throw Error('PACKAGED_MEDIA_RUNTIME_INVALID');
@@ -69,8 +75,9 @@ const identity=spawnSync('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true,e
 if(identity.status!==0)throw Error('SOURCE_REVISION_UNAVAILABLE');
 Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,installedChecks,
   capabilityHost:'dsh',capabilityManagementHost:'wechatagent',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,deliveryFixesPackaged:true,upgradeRequiresDshReload:true,
+  singingEngine:'source-vocal-rvc-v1',obsoleteSingingEngineBundled:false,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),
-  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC/SoulX pipeline checks are separate from packaging; full first-time model downloads require access to official sources.','Packaging checks do not generate singing audio or verify arbitrary third-party links. Real local song/video singing preview evidence is described in the release notes; platform downloads may require valid cookies.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
+  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC source-vocal pipeline checks are separate from packaging; full first-time model downloads require access to official sources.','Packaging checks do not generate singing audio or verify arbitrary third-party links. Real local song/video singing preview evidence is described in the release notes; platform downloads may require valid cookies.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
 fs.writeFileSync(path.join(output,'VERIFICATION.json'),JSON.stringify(manifest,null,2)+'\n');
 const sums=assets.map(name=>sha(path.join(output,name))+'  '+name).join('\n')+'\n';
 fs.writeFileSync(path.join(output,'SHA256SUMS.txt'),sums);

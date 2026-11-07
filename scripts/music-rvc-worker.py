@@ -127,4 +127,9 @@ if (model_dir / "manifest.json").is_file():
     expected_index = json.loads((model_dir / "manifest.json").read_text(encoding="utf-8"))["model"]["index_sha256"]
     if not reads or reads[0]["sha256"] != expected_index:
         raise ValueError("Built-in FAISS index was not actually loaded")
+receipt_file = output/'cover_result.json'
+receipt = json.loads(receipt_file.read_text('utf-8'))
+receipt['input_sha256'] = sha(source)
+receipt.setdefault('inference', {})['pitch_shift'] = a.pitch
+receipt_file.write_text(json.dumps(receipt, indent=2), encoding='utf-8')
 (output / "faiss_reads.json").write_text(json.dumps(reads, indent=2), encoding="utf-8")

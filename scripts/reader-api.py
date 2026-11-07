@@ -39,6 +39,7 @@ from wechat_sticker_manager import StickerManager, ManagerError
 from wechat_meme_library import import_library_sticker,inspect_library_sticker
 from wechat_group_bindings import GroupBindings, group_username
 from wechat_video import VideoCatalog, video_info
+from wechat_contacts import read_contact_catalog, RELATIONSHIP_ERROR
 
 PAT_TYPE = (62 << 32) | 49
 
@@ -181,6 +182,8 @@ class Reader:
         settings = read_json(self.settings_file)
         self.initialize_source(settings)
         self.names = {}
+        self.friend_contacts = {}
+        self.contact_catalog_error = RELATIONSHIP_ERROR
         self.names_lock = threading.Lock()
         self.names_refreshed_at = 0
         self.group_bindings = GroupBindings(self.root, self.account, readonly=metadata_readonly)
@@ -238,8 +241,10 @@ class Reader:
         with self.names_lock:
             if max_age and time.monotonic() - self.names_refreshed_at < max_age:
                 return
-            key, salt = nt.derive_database_key(str(self.contact_db), '', '', self.passphrase)
-            names = nt.load_contact_names(str(self.contact_db), key, salt)
+            try:
+                names, friends, catalog_error = self.load_contact_catalog()
+            except Exception:
+                names, friends, catalog_error = {}, {}, RELATIONSHIP_ERROR
             retained_names = not names
             if not names:
                 if not self.names:
@@ -259,7 +264,17 @@ class Reader:
                 allowed = config['wechat']['whitelist']['groups']
                 self.group_bindings.reconcile(names, allowed, self.legacy_group_hints(allowed), {u: [n] for u, n in session_names.items() if n != u})
             self.names = names
+            self.friend_contacts, self.contact_catalog_error = friends, catalog_error
             self.names_refreshed_at = time.monotonic()
+
+    def load_contact_catalog(self):
+        key, salt = nt.derive_database_key(str(self.contact_db), '', '', self.passphrase)
+        connection, _ = nt.connect_nt_db(str(self.contact_db), key, salt)
+        try:
+            connection.execute('PRAGMA query_only=ON')
+            return read_contact_catalog(connection, self.own_wxid)
+        finally:
+            connection.close()
 
     def group_session_names(self):
         """Read only group identifiers/titles, never message summaries/bodies."""
@@ -462,10 +477,14 @@ class Reader:
         self.videos.record(descriptor['videoId'], key)
         return read_json(self.image_dir/(image_id+'.json'))
 
-    def contacts(self, keyword='', kind='', limit=100, refresh=False):
+    def contacts(self, keyword='', kind='', limit=100, refresh=False, selected=False):
         # Metadata discovery includes unselected chats without opening message shards.
         self.refresh_names(max_age=0 if refresh else 30)
         names = self.names
+        friends = getattr(self, 'friend_contacts', {})
+        if not selected and kind != 'groups' and getattr(self, 'contact_catalog_error', RELATIONSHIP_ERROR):
+            raise RuntimeError(RELATIONSHIP_ERROR)
+        allowed = set(self.selected_talkers()) if selected else None
         keyword = keyword.strip().casefold()
         counts = {}
         for talker in names:
@@ -475,13 +494,18 @@ class Reader:
         contacts = []
         for talker, name in names.items():
             group = '@chatroom' in talker
+            if allowed is not None and talker not in allowed:
+                continue
+            if allowed is None and not group and talker not in friends:
+                continue
             if kind in ('groups', 'private') and group != (kind == 'groups'):
                 continue
             aliases = getattr(self, 'group_bindings', None)
             aliases = aliases.records.get(talker, {}).get('aliases', []) if aliases else []
-            if keyword not in (talker + name + ''.join(aliases)).casefold():
+            if keyword not in (talker + name + ''.join(aliases) + ''.join(friends.get(talker, {}).get('searchTerms', []))).casefold():
                 continue
             contacts.append({'username': talker, 'displayName': name,
+                'isFriend': not group and talker in friends,
                 **({'conversationId': self.conversation_id(talker)} if hasattr(self, 'group_bindings') else {}),
                 'ambiguous': group and counts[self.conversation_id(talker)] > 1})
             if len(contacts) >= limit:
@@ -1152,7 +1176,8 @@ def serve(reader, port, token):
                     target_id = query.get('conversationId', [''])[0]
                     if target_id and not re.fullmatch(r'[1-9]\d{0,15}', target_id):
                         raise ValueError('Invalid contact conversation ID')
-                    contacts = reader.contacts(query.get('keyword', [''])[0], query.get('kind', [''])[0], 1000000 if target_id else limit, refresh=query.get('refresh', [''])[0] == '1')
+                    selected = query.get('selected', [''])[0] == '1'
+                    contacts = reader.contacts(query.get('keyword', [''])[0], query.get('kind', [''])[0], 1000000 if target_id or selected else limit, refresh=query.get('refresh', [''])[0] == '1', selected=selected)
                     if target_id:
                         contacts = [c for c in contacts if str(reader.conversation_id(c['username'])) == target_id]
                     self.respond({'success': True, 'contacts': contacts})
@@ -1161,6 +1186,7 @@ def serve(reader, port, token):
                     self.respond({'success': True, 'messages': reader.messages(talker, limit) if talker else []})
                 elif url.path == '/api/v1/reader/status':
                     self.respond({'success': True, 'backend': getattr(reader, 'backend', 'weflow-cli-nt'), 'lastPoll': reader.last_poll,
+                        'startedAt': reader.started_at, 'lastContactCatalogError': reader.contact_catalog_error,
                         'lastError': reader.last_error, 'subscribers': len(reader.clients), 'pushed': reader.pushed,
                         'ownWxid': reader.own_wxid, 'accountDirectory': reader.account.name,
                         'imagesRegistered': len(reader.image_index), 'lastImageError': reader.image_error,

@@ -56,8 +56,12 @@ try {
   fs.writeFileSync(distributionFile,JSON.stringify({...previous,version:'0.2.0',buildId:'previous-build-fixture'}));
   // An upgrade must replace prior capability/transport code, while leaving the
   // user's settings, credentials, custom voices and personas intact.
+  const retired=['scripts/music-soulx-worker.py','scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md',
+    'state/maintenance/audio-capabilities/soulx-singer/source/pretrained_models/model.pt'];
+  for(const relative of retired){const file=path.join(installed.root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'retired engine fixture');}
   for(const relative of updatedFiles)fs.writeFileSync(path.join(installed.root,relative),'prior-version feature fixture\n');
   await deployment.bootstrapDeployment(resources,temporary);
+  for(const relative of retired)assert(!fs.existsSync(path.join(installed.root,relative)),'Upgrade retained obsolete singing engine: '+relative);
   for(const relative of updatedFiles)assert.equal(sha(path.join(installed.root,relative)),manifest.sourceHashes[relative],'Upgrade retained stale feature code: '+relative);
   const upgradeState=JSON.parse(fs.readFileSync(path.join(installed.root,'state/console-state.json')));
   assert.equal(upgradeState.pendingApply,true);assert.equal(upgradeState.dshRestartRequired,true);
@@ -71,7 +75,7 @@ try {
     capabilityHost:'dsh',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,capabilityFilesDeployed:true,upgradeReplacesCapabilityAndDeliveryFiles:true,upgradeRequiresDshReload:true,
     setupWechatLocation:true,upgradePreservesChatSettings:true,upgradePreservesPersona:true,upgradePreservesPrivateKey:true,
     upgradePreservesCustomModel:true,upgradePreservesMusicCredential:true,upgradePreservesDrawingCredential:true,upgradePreservesPersonaBackup:true,
-    drawingAndPersonaFiles:true,neteaseLoginPage:true,servicesStarted:false}));
+    drawingAndPersonaFiles:true,neteaseLoginPage:true,obsoleteSingingEnvironmentRemoved:true,servicesStarted:false}));
 } finally {
   const resolved=path.resolve(temporary),parent=path.resolve(os.tmpdir());
   if(path.dirname(resolved)!==parent||!path.basename(resolved).startsWith('WeChatAgent installation '))throw Error('Invalid verification cleanup path');

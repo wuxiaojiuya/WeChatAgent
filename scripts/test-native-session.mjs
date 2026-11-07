@@ -28,7 +28,7 @@ test('named-song planning uses the configured model and local persona without ch
  fs.mkdirSync(path.join(f.dir,'state/voice-output'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/voice-output/capabilities.json'),JSON.stringify({singing:{provider:'feiyu-rvc',enabled:true,chats:[key]}}));
  const r=await f.start(),{BlockAssembler}=await import(pathToFileURL(path.join(f.dir,'node_modules/@deepseek-ai/dsh-llm/index.js')).href);
  BlockAssembler.prototype.push=function(chunk){if(chunk.type==='text-delta')this.text=(this.text??'')+chunk.text;};BlockAssembler.prototype.blocks=function(){return [{type:'text',text:this.text??''}];};Object.defineProperty(BlockAssembler.prototype,'finish',{get:()=>({kind:'stop'})});
- const performance={version:'score-performance-v1',emotion:'tender',intention:'结合实际歌词，先轻后强。',phrases:[{start:0,end:20,articulation:'flowing',timingMs:12,tail:'hold',gainDb:.6,contour:'build'}]},calls=[];
+ const performance={version:'source-vocal-arrangement-v1',pitchShift:0,accompanimentGainDb:0,emotion:'tender',intention:'结合实际歌词，先轻后强。',phrases:[{start:0,end:20,gainDb:.6,contour:'build'}]},calls=[];
  r.ctx.llm.stream=async function*(options){calls.push(options);yield {type:'text-delta',text:JSON.stringify(performance)};};
  const body={analysis:{phrases:[{start:0,end:20}],lyrics:[{start:0,end:20,text:'实际识别的歌词'}]},seconds:20,song:{title:'朋友的酒'},direction:'先轻后强',conversationKey:key};
  assert.deepEqual((await r.request('/singing-performance',body)).performance,performance);
@@ -985,12 +985,12 @@ test('a native video turn analyzes acoustic evidence before the model submits it
   assert(agent.ctx[Symbol.for('wechatagent.singing.v1')].names().has('wechat_analyze_singing'));
   const reference=JSON.parse((await agent.registeredTools.get('wechat_analyze_singing').execute({videoId})).content);
   assert.equal(reference.analysis.tempo_bpm_estimate,120);
-  const performance={version:'score-performance-v1',emotion:'warm',intention:'结合画面与节拍估计，以温暖连贯的方式演唱。',phrases:[{start:0,end:12,articulation:'flowing',timingMs:10,tail:'hold',gainDb:.5,contour:'build'}]};
+  const performance={version:'source-vocal-arrangement-v1',pitchShift:0,accompanimentGainDb:0,emotion:'warm',intention:'结合画面与节拍估计，以温暖连贯的方式演唱。',phrases:[{start:0,end:12,gainDb:.5,contour:'build'}]};
   assert.equal((await agent.registeredTools.get('wechat_sing_video').execute({videoId,referenceId:reference.referenceId,performance})).isError,false);
  }});
  await r.request('/followup',{...info,message:'看看这个视频，学着这样唱给我听。',videos:[{id:videoId}]});
  assert.equal(received.length,2);assert(received[0].route.endsWith('/video-reference'));assert(received[1].route.endsWith('/video-request'));
- assert.equal(received[1].body.performance.phrases[0].articulation,'flowing');assert.equal(received[1].body.conversationKey,key);
+ assert.equal(received[1].body.performance.accompanimentGainDb,0);assert.equal(received[1].body.conversationKey,key);
  assert.match(r.calls.model.at(-1),/AI|自主决定情绪与分句演唱编排/);
 });
 

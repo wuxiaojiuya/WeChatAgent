@@ -1,6 +1,6 @@
 # 音频运行环境
 
-当前源码支持在「设置 → 语音与翻唱环境」一键安装、修复或检查 TTS / RVC / SoulX。安装器自动准备三套独立的 Windows x64 CPU 环境、固定版本源码与官方音色，无需自行混装依赖，详见 [安装操作与故障处理](AUDIO_INSTALLER.md)。
+当前源码支持在「设置 → 语音与翻唱环境」一键安装、修复或检查 TTS / RVC。安装器自动准备两套独立的 Windows x64 CPU 环境、固定版本源码与官方音色，无需自行混装依赖，详见 [安装操作与故障处理](AUDIO_INSTALLER.md)。
 
 当前源码按三层分工：WeChatAgent 保存能力设置、密钥和任务记录，管理环境安装及微信收发；DSH 能力插件调用语音服务并执行音乐搜索、下载、分析和音频推理；DSH 中的 AI 理解用户要求，决定文字或语音、是否唱歌，并编排调用步骤。绘画采用相同分工。
 
@@ -20,18 +20,14 @@ CPU 线程默认使用 4 个；若已进行本机对比测试，可在服务数�
 
 ## 翻唱
 
-参考 [astrbot_plugin_feiyu_voice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice) 的环境和适配器，当前链路为：歌曲检索/本地音源/聊天视频 → 分离参考与伴奏并提取歌词、旋律和声学测量 → DSH 中的 AI 编排情绪、节奏、咬字和分句力度 → SoulX 按谱重新演唱干声 → 所选 `.pth` 换声 → 分句力度处理、混音与限幅 → WeChatAgent 微信发送。能力插件执行来源访问、分析和生成，AI 负责演唱决策。
+当前源码采用 **原曲人声 → AI 分析编排 → 所选 `.pth` 换声 → 混入伴奏**。DSH 能力插件执行歌曲检索/本地音源/聊天视频的获取、Demucs 分离、声学测量、RVC 换声和混音；DSH 中的 AI 结合人格、用户要求与可用视频转写，选择整段变调、分句轻重、渐强渐弱及伴奏比例。人声和伴奏同步变调，时长不变。详见 [AI 编排翻唱](SINGING_PERFORMANCE.md)。
 
-原唱人声仅作为分析参考，不直接换声成为成品；伴奏来自所选歌曲或视频的分离结果。分析、歌词识别、AI 编排或换声失败时明确失败，不切回原唱换声或其他音色。直接点歌、视频点唱与页面试听走同一条演唱流程，最长 30 秒，详见 [自主演唱编排](SINGING_PERFORMANCE.md)。
+原唱人声是 RVC 的输入，旋律、节奏、咬字与主要唱腔沿用原唱；未经换声的原唱干声不直接混入成品。伴奏来自同一歌曲或视频的分离结果。分析、AI 编排或换声失败时明确失败，不返回其他音色。直接点歌、视频点唱与页面试听使用同一流程，最长 30 秒。
 
-在「能力 → 语音回复」统一选择和上传音色，翻唱自动沿用同一份音色档案的配套 RVC 模型。QQ/网易云/酷狗音源受服务及账号权限限制。聊天中可直接点歌，由 AI 判断歌曲与版本。
+在「能力 → 语音回复」统一选择和上传 `.pth` 推理模型及可选 `.index`，唱歌沿用同一份 RVC 音色。无需另传说话录音或训练音色。QQ/网易云/酷狗音源受服务及账号权限限制；聊天中由 AI 判断歌曲与版本。
 
-说话采用「CosyVoice3 合成带情绪的基础语音 → 所选 RVC 模型换声」，翻唱采用「SoulX 演唱干声 → 同一 RVC 模型换声 → 混入原曲伴奏」。在「语音回复 → 上传音色」上传 `.pth` 推理模型及可选 `.index` 即可共用，无需说话录音和录音文字。已有 RVC 音色可直接选择，不必重新上传。说话需 TTS 与 RVC；唱歌需 SoulX 与 RVC。换声失败会明确报错，不会返回其他音色的基础语音。
+语音回复保持「CosyVoice3 合成带情绪的基础语音 → 所选 RVC 模型换声」。说话需 TTS 与 RVC；唱歌仅需 RVC/分离环境，不调用 TTS。上传文件保存在本机 `state/voice-profiles` 和 `state/rvc-models`，不会发布到代码仓库。
 
-上传文件只保存在本机 `state/voice-profiles` 和 `state/rvc-models`，不会发布到代码仓库。模型需为已训练并导出的 RVC 推理模型，上传不会自动训练音色。情绪来自基础语音的表达，最终音色与清晰度以实际试听为准。
+RVC/分离环境位于数据工作区的 `state/maintenance/audio-capabilities/feiyu-cover/`，需 `venv/Scripts/python.exe`、`runtime.cpu.json`、固定源码、Demucs/ContentVec/RMVPE 基础模型与依赖。一键安装器准备这些文件及兼容入口 `cover_demo.py`。DSH 能力插件调用 `scripts/music-reference.py`、`scripts/music-cover.py` 和 `scripts/music-rvc-worker.py`。`rvc_worker_cpu.py` 是早期实验脚本，不是当前前置文件。
 
-当前 CPU 适配需要在数据工作区的 state/maintenance/audio-capabilities/feiyu-cover/ 准备 venv/Scripts/python.exe、runtime.cpu.json，以及相关依赖、固定源码与基础模型。一键安装器会准备这些文件和兼容入口 cover_demo.py；翻唱还需要独立的 soulx-singer 环境。DSH 能力插件调用固定的 scripts/music-reference.py、scripts/music-cover.py、scripts/music-soulx-worker.py 和 scripts/music-rvc-worker.py；这些脚本保留在原位置供安装器复用，不表示 WeChatAgent 控制台承担推理。rvc_worker_cpu.py 是早期实验脚本，不是当前正式链路的前置文件。
-
-基础安装包不分发大型音频环境或权重。从 v0.2.0 起可在设置页单独下载安装。手动部署时重新创建虚拟环境、安装依赖并调整配置路径，不应直接搬运带开发机绝对路径的 venv。缺少依赖时能力页显示未就绪。模型和音源遵循各自的许可及平台规则。
-
-SoulX 翻唱的新链路、安装与模型来源详见 [SoulX 翻唱说明](SOULX_SINGING.md)。
+基础安装包不分发大型音频环境或权重。模型从官方来源下载，依赖包按固定摘要校验。手动部署应重新创建虚拟环境、安装依赖并生成本机路径配置，不直接搬运带开发机绝对路径的 venv。升级会移除应用管理的旧演唱环境；用户上传音色、生成音频和 TTS/RVC 环境保留。

@@ -3,6 +3,7 @@
 const fs = process.versions.electron ? require('original-fs') : require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {retireSoulx} = require('./retired-audio.cjs');
 
 async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {}, options = {}) {
   const template = path.join(resourcesPath, 'project');
@@ -19,6 +20,8 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
   const externalDshHome=options.externalDshHome || previousSettings.externalDshHome || process.env.DSH_HOME || path.join(require('node:os').homedir(),'.dsh');
   const dshHome=options.dshHome || previousSettings.dshHome || (dshBundled && !fs.existsSync(path.join(workspace,'config/wechatagent.json')) ? path.join(dataHome,'dsh') : externalDshHome);
   fs.mkdirSync(workspace, { recursive: true });
+  progress('正在清理已停用的旧演唱组件…');
+  retireSoulx(workspace);
   for (const relative of manifest.files) {
     if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..') || relative.startsWith('state/') || relative === 'config/wechatagent.json') throw new Error('发行包文件清单无效。');
     const source = path.join(template, relative), target = path.join(workspace, relative);

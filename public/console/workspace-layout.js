@@ -5,7 +5,8 @@ export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,fiel
  const scope=message=>`<p class="scope-note">${icon('info')}${esc(message)}</p>`;
  const recovery=()=>`<section class="card">${header('端口与进程排查','连接失败或端口占用时，先查看实际进程。','','tool')}<p class="card-description">检查不会停止程序；停止选中的进程仍需再次确认。</p><button class="button" data-process-recovery>检查端口与进程</button></section>`;
  async function chatsPage(){
-  const results=await Promise.allSettled([api('/api/sessions'),api('/api/session-groups')]);
+  const results=await Promise.allSettled([api('/api/sessions'),api('/api/session-groups'),api('/api/chats')]);
+  if(results[2].status==='fulfilled')for(const chat of results[2].value.chats??[])if(chat.name)state.names.set(chat.key,chat.name);
   const sessions=results[0].status==='fulfilled'?results[0].value.sessions??[]:[],groups=results[1].status==='fulfilled'?results[1].value:{available:false,groups:[],assignments:{}};
   const savedKeys=new Set(chatRows(state.config).map(row=>row.key));sessionGroupUI.prepare(groups,sessions,savedKeys);
   const all=chatRows(state.draft,state.names,sessions),rows=filterChats(all,{kind:state.chatKind??'all',mode:state.chatModeFilter??'all',query:state.chatQuery??''}).filter(row=>sessionGroupUI.visible(row.key));
@@ -14,7 +15,7 @@ export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,fiel
   const filters=`<form id="chat-filter-form" class="chat-filters"><div class="field"><label for="chat-search-query">查找聊天</label><input id="chat-search-query" type="search" value="${esc(state.chatQuery??'')}" placeholder="名称、人格或 ID"></div><div class="field"><label for="chat-mode-filter">工作模式</label><select id="chat-mode-filter"><option value="all">全部模式</option><option value="social" ${state.chatModeFilter==='social'?'selected':''}>聊天模式</option><option value="assistant" ${state.chatModeFilter==='assistant'?'selected':''}>助手模式</option></select></div><button class="button" type="submit">查找</button></form>`;
   const list=`<section class="card chat-picker" aria-label="聊天列表">${filters}<p class="subtle">显示 ${rows.length} / ${all.length} 个聊天</p><div class="chat-picker-list">${rows.map(row=>`<button class="chat-picker-item" data-chat-select="${row.key}" ${row.key===selected?.key?'aria-current="true"':''}><span class="avatar">${icon(row.kind==='groups'?'users':'person')}</span><span><strong>${esc(row.name)}</strong><small>${row.mode==='assistant'?'助手模式':'聊天模式'} · ${esc(row.persona)}</small></span><span class="chat-row-status">${!savedKeys.has(row.key)?'待保存':row.session?.running?'执行中':'已允许'}</span></button>`).join('')||'<p class="empty-state">没有匹配的聊天，试试其他筛选。</p>'}</div></section>`;
   const detail=selected?await chatDetail(selected,savedKeys.has(selected.key)):`<section class="card">${empty('选择或添加一个聊天','允许的好友和群聊，以及各自的会话都在这里管理。','<button class="button" data-add-chat-kind="private">添加好友</button>','users')}</section>`;
-  return `<div class="section-stack">${toolbar}${sessionGroupUI.toolbar()}${results[0].status==='rejected'?'<p class="scope-note">会话服务暂不可用，已有聊天与设置保留。连接 DSH 后可查看任务和用量。</p>':''}<div class="chat-workspace">${list}${detail}</div>${scope('新增或移出聊天仍需保存设置并重启服务；单个聊天使用“设置此聊天”独立保存。')}</div>`;
+  return `<div class="section-stack">${toolbar}${sessionGroupUI.toolbar()}${results[0].status==='rejected'?'<p class="scope-note">会话服务暂不可用，已有聊天与设置保留。连接 DSH 后可查看任务和用量。</p>':''}<div class="chat-workspace">${list}${detail}</div>${scope('新增或移出聊天需保存设置，保存后自动生效；单个聊天使用“设置此聊天”独立保存。')}</div>`;
  }
  async function chatDetail(row,saved){
   const {key,session}=row,tab=['summary','tasks','usage'].includes(state.chatDetailTab)?state.chatDetailTab:'summary';

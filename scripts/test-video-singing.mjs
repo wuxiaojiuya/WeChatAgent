@@ -39,12 +39,12 @@ test('verified video clip uses original stereo bytes, skips music search and kee
     assert(new URL(url).pathname.endsWith('/'+videoId+'/singing-audio'));assert.equal(options.headers.Authorization,'Bearer fixture-reader-token');return Response.json(packet);
   },runCover:async options=>{
     seenInput=options.input;assert.deepEqual(fs.readFileSync(options.input),bytes);assert.equal(options.seconds,1);assert.equal(options.pitch,2);assert.equal(options.accompaniment,true);
-    assert.equal(options.performance.version,'score-performance-v1');assert(options.reference);
+    assert.equal(options.performance.version,'source-vocal-arrangement-v1');assert(options.reference);
     fs.writeFileSync(path.join(options.output,'result.json'),JSON.stringify({status:'success',seconds:1}));fs.writeFileSync(path.join(options.output,'feiyu-cover-1s.wav'),bytes);
   }});({packet,bytes,root}=f);
   const reference=await f.service.prepareVideoReference({videoId,conversationKey});
   assert.equal(f.service.status().latestJob,null,'analysis must not generate or send singing');
-  const performance={version:'score-performance-v1',emotion:'warm',intention:'自然连贯地唱。',phrases:[{start:0,end:1,articulation:'flowing',timingMs:10,tail:'hold',gainDb:1,contour:'build'}]};
+  const performance={version:'source-vocal-arrangement-v1',pitchShift:0,accompanimentGainDb:0,emotion:'warm',intention:'自然连贯地唱。',phrases:[{start:0,end:1,gainDb:1,contour:'build'}]};
   await assert.rejects(f.service.requestVideo({videoId,conversationKey:'wechat:private:456',referenceId:reference.referenceId,performance}),error=>error.status===409);
   const job=await f.service.requestVideo({videoId,conversationKey,referenceId:reference.referenceId,performance});
   await assert.rejects(f.service.requestVideo({videoId,conversationKey,referenceId:reference.referenceId,performance}),error=>error.status===409);

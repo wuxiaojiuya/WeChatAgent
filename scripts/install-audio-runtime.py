@@ -19,7 +19,7 @@ import uuid
 import zipfile
 
 MANIFEST=json.loads(Path(__file__).with_name('audio-runtime-manifest.json').read_text('utf-8'))
-RUNTIME_NAMES={'tts':'feiyu-tts','rvc':'feiyu-cover','soulx':'soulx-singer'}
+RUNTIME_NAMES={'tts':'feiyu-tts','rvc':'feiyu-cover'}
 CURRENT_LOG=None
 
 
@@ -197,17 +197,6 @@ def verify(root,kind,log,smoke=False):
     if not (folder/'venv/Scripts/python.exe').is_file() or not (folder/'runtime.cpu.json').is_file():
         raise RuntimeError('AUDIO_ENVIRONMENT_NOT_INSTALLED')
     python=folder/'venv/Scripts/python.exe';git=folder/'git/cmd/git.exe';env=local_env(git,root)
-    if kind=='soulx':
-        worker=Path(__file__).with_name('music-soulx-worker.py')
-        run([python,worker,'--runtime',folder,'--phase','check'],env=env,timeout=600,log=log)
-        if smoke:
-            output=root/'state/audio-install/previews'/('soulx-'+uuid.uuid4().hex)
-            run([python,worker,'--runtime',folder,'--input',folder/'source/example/audio/zh_prompt.mp3',
-                 '--seconds','5','--output',output],env=env,timeout=2700,log=log)
-            receipt=json.loads((output/'result.json').read_text('utf-8'))
-            if not receipt.get('actual_inference') or abs(receipt.get('seconds',0)-5)>.05:raise RuntimeError('AUDIO_SMOKE_FAILED')
-            emit('validation','SoulX 实际演唱验证通过；最终音色将在翻唱时使用所选 .pth 换声',preview=str(output/'soulx-vocals.wav'),seconds=5)
-        return
     server=root/'state/maintenance/audio-capabilities/feiyu-cover/source'/('astrbot_plugin_feiyu_voice-'+MANIFEST['adapter']['commit'])/'server'
     script='import sys,json;sys.path.insert(0,sys.argv[1]);from feiyu_runtime.common import load,verify_repo,verify_package,prepare,verify_audio_library;import torch; p=load(sys.argv[2]);verify_repo(p);verify_package(sys.argv[3]);prepare(torch,p);verify_audio_library(p)'
     package=folder/'models'/MANIFEST['models'][kind]['folder']
@@ -238,7 +227,7 @@ def verify(root,kind,log,smoke=False):
              '--output-dir',output,'--quality','enhanced'],env=env,timeout=1800,log=log)
         receipt=json.loads((output/'cover_result.json').read_text('utf-8'))
         if receipt.get('status')!='success' or not receipt.get('actual_synth_calls'):raise RuntimeError('AUDIO_SMOKE_FAILED')
-        emit('validation','共享 RVC 实际换声验证通过；翻唱还需 SoulX 演唱环境',preview=str(output/'rvc_native.wav'))
+        emit('validation','共享 RVC 实际换声验证通过；翻唱使用原曲人声、AI 编排与伴奏混音',preview=str(output/'rvc_native.wav'))
 
 
 def activate(root,changes,validate,log):
@@ -289,7 +278,6 @@ def install(root,kind,action,log):
 
 
 def install_environment(root,kind,action,log,staging):
-    if kind=='soulx':return install_soulx(root,action,log,staging)
     name=RUNTIME_NAMES[kind];target=root/'state/maintenance/audio-capabilities'/name
     if action=='install' and (target/'installed.json').is_file():
         try:verify(root,kind,log);emit('complete','已安装且检查通过',kind=kind);return
@@ -377,61 +365,13 @@ def install_environment(root,kind,action,log,staging):
     emit('complete','环境、模型与本地音频验证通过',kind=kind)
 
 
-def install_soulx(root,action,log,staging):
-    target=root/'state/maintenance/audio-capabilities/soulx-singer'
-    if action=='install' and (target/'installed.json').is_file():
-        try:verify(root,'soulx',log);emit('complete','SoulX 已安装且检查通过',kind='soulx');return
-        except Exception:raise RuntimeError('AUDIO_REPAIR_REQUIRED')
-    if shutil.disk_usage(root).free<35*1024**3:raise RuntimeError('AUDIO_DISK_SPACE_LOW')
-    staging.mkdir(parents=True)
-    bundle=MANIFEST['bundles']['soulx']
-    emit('download','正在下载 SoulX 独立 CPU 预部署环境',kind='soulx')
-    archive=download(MANIFEST['baseUrl']+bundle['file'],root/'state/audio-install/downloads'/bundle['file'],bundle['sha256'],bundle['bytes'])
-    emit('extract','正在建立 SoulX 独立 Python 环境',kind='soulx')
-    extract(archive,staging)
-    python=staging/'python/python.exe';venv=staging/'venv'
-    run([python,'-m','venv','--without-pip',venv],log=log)
-    site=venv/'Lib/site-packages';site.rmdir();(staging/'site-packages').replace(site)
-    python=venv/'Scripts/python.exe';git=staging/'git/cmd/git.exe';env=local_env(git,root)
-    source=staging/'source'
-    emit('sources','正在获取固定版本 SoulX 官方源码',kind='soulx')
-    clone(git,MANIFEST['sources']['soulx'],source,log)
-    spec=json.loads(Path(__file__).with_name('soulx-assets.json').read_text('utf-8'))
-    # Check source and prompts before any model code is imported.
-    for relative,sha in spec['sourceFiles'].items():
-        if digest(source/relative)!=sha:raise RuntimeError('AUDIO_SOULX_SOURCE_INVALID')
-    emit('models','正在从 SoulX 官方来源下载演唱及歌词旋律模型（约 4.6 GB，可断点续传）',kind='soulx')
-    for asset in spec['assets']:
-        existing=target/'source/pretrained_models'/asset['destination']
-        cached=root/'state/audio-install/official-assets'/asset['sha256']
-        if existing.is_file() and digest(existing)==asset['sha256'] and not cached.exists():
-            cached.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(existing,cached)
-        download(asset['url'],cached,asset['sha256'],asset['bytes'])
-        destination=source/'pretrained_models'/asset['destination']
-        destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(cached,destination)
-    for asset in spec['nltk']:
-        cached=root/'state/audio-install/official-assets'/asset['sha256']
-        download(asset['url'],cached,asset['sha256'],asset['bytes'])
-        destination=staging/'nltk_data'/asset['destination'];destination.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copyfile(cached,destination);extract(cached,destination.parent)
-    config=venv/'pyvenv.cfg'
-    config.write_text(config.read_text('utf-8').replace(str(staging/'python'),str(target/'python')),encoding='utf-8')
-    write_json(staging/'runtime.cpu.json',{'schema':'wechatagent-soulx-v1','backend':'cpu','precision':'float32','language':'Mandarin',
-        'commit':MANIFEST['sources']['soulx']['commit'],'modelsSource':'official','route':'SoulX -> selected RVC -> accompaniment remix'})
-    changes=[(staging/name,target/name) for name in ['python','venv','git','source','nltk_data','runtime.cpu.json']]
-    emit('activate','正在启用 SoulX 并生成短演唱验证；失败时恢复旧环境',kind='soulx')
-    activate(root,changes,lambda:verify(root,'soulx',log,smoke=True),log)
-    write_json(target/'installed.json',{'schema':1,'version':MANIFEST['version'],'verifiedAt':time.time(),'kind':'soulx','modelSource':'official','localAudioVerified':True})
-    emit('complete','SoulX 演唱环境及本地音频验证通过',kind='soulx')
-
-
 def targets_for(kind):
-    return {'all':['tts','rvc','soulx'],'voice':['tts','rvc'],'singing':['rvc','soulx']}.get(kind,[kind])
+    return {'all':['tts','rvc'],'voice':['tts','rvc'],'singing':['rvc']}.get(kind,[kind])
 
 
 def main():
     global CURRENT_LOG
-    p=argparse.ArgumentParser();p.add_argument('--root',required=True,type=Path);p.add_argument('--kind',required=True,choices=['all','voice','singing','tts','rvc','soulx']);p.add_argument('--action',required=True,choices=['install','repair','check']);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--root',required=True,type=Path);p.add_argument('--kind',required=True,choices=['all','voice','singing','tts','rvc']);p.add_argument('--action',required=True,choices=['install','repair','check']);a=p.parse_args()
     if sys.platform!='win32':raise RuntimeError('AUDIO_WINDOWS_REQUIRED')
     root=a.root.resolve();work=root/'state/audio-install';work.mkdir(parents=True,exist_ok=True)
     log=work/('install-'+uuid.uuid4().hex+'.log')

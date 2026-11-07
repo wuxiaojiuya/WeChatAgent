@@ -120,7 +120,7 @@ class GroupRecovery(unittest.TestCase):
         reader.names = {}; reader.names_lock = threading.Lock(); reader.names_refreshed_at = 0
         reader.contact_db = self.root/'contact.db'; reader.passphrase = 'fixture'; reader.group_bindings = self.bindings
         reader.group_session_names = lambda: {'room@chatroom': '会话库里的新群名'}
-        with patch.object(api.nt, 'derive_database_key', return_value=('key', 'salt')), patch.object(api.nt, 'load_contact_names', return_value={'friend': 'Friend', 'room@chatroom': 'room@chatroom'}):
+        with patch.object(reader, 'load_contact_catalog', return_value=({'friend': 'Friend', 'room@chatroom': 'room@chatroom'}, {}, '')):
             found = reader.contacts('新群名', 'groups', refresh=True)
         self.assertEqual(found[0]['displayName'], '会话库里的新群名')
         self.assertEqual(found[0]['conversationId'], self.bindings.identifier('room@chatroom'))

@@ -229,7 +229,7 @@ function addChats(kind = state.chatKind==='groups'?'groups':'private') {
     if(adminPicked.size){state.draft.wechat.assistant??={};state.draft.wechat.assistant.administrators=[...admins];}
     state.draft.wechat.whitelist[kind] = [...new Set([...state.draft.wechat.whitelist[kind].map(String), ...picked.keys(), ...manual])];
     for (const [id, name] of picked) state.names.set(`wechat:${kind === 'groups' ? 'group' : 'private'}:${id}`, name);
-    closeModal(); renderPage(); updateDraftUI(); toast('已加入草稿，保存后重启应用。');
+    closeModal(); renderPage(); updateDraftUI(); toast('已加入草稿，保存设置后自动生效。');
   });
 }
 function reconnectGroup(id) {
@@ -618,7 +618,8 @@ async function load() {
   const [config, roles, chats, deployment] = await Promise.all([api('/api/config'), api('/api/roles'), api('/api/chats'), api('/api/deployment').catch(() => ({installed:false}))]);
   state.deployment = deployment;
   state.config = config.config; state.draft = structuredClone(config.config); state.revision = config.revision; state.roles = roles.roles; personaCategoryUI.setData(roles.categories);
-  for (const chat of chats.chats) state.names.set(chat.key, chat.name);
+  state.names.clear();
+  for (const chat of chats.chats) if(chat.name)state.names.set(chat.key, chat.name);
   selectRoute(location.hash);
   if (deployment.installed) {
     $('#setup-nav').hidden = deployment.configured; $('#setup-banner').hidden = deployment.configured;

@@ -27,7 +27,7 @@
 | components.json | 组件来源与历史固定版本记录 | 不是程序当前版本号；程序版本看 package.json。 |
 | package-lock.json | 根项目依赖锁定 | 保留，不能当作缓存删除。 |
 
-开发版中的 `apps/bridge/`、`apps/weflow/` 属于历史整合参考，当前主链路使用 `components/qq-bridge/` 和独立 NT 读取器。保留原路径以兼容历史资料；新增改动不要同时复制到旧目录，除非确有调用方。
+当前仓库不存在 `apps/bridge/`、`apps/weflow/`；它们是历史资料中的目录名。当前主链路使用 `components/qq-bridge/` 的微信桥接子集和独立 NT 读取器，新增改动应落在当前入口，不要按历史资料重建旧目录。
 
 ## 私有数据放在哪里
 

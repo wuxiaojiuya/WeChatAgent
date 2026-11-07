@@ -7,29 +7,34 @@ import crypto from 'node:crypto';
 import {createSingingExecutor} from '../packages/dsh-capabilities-plugin/singing.mjs';
 import {createMusicCapabilities} from './music-capabilities.mjs';
 
-const plan={version:'score-performance-v1',emotion:'warm',intention:'先轻后强地演唱。',phrases:[{start:0,end:30,articulation:'flowing',timingMs:12,tail:'hold',gainDb:.6,contour:'build'}]};
+const plan={version:'source-vocal-arrangement-v1',pitchShift:0,accompanimentGainDb:0,emotion:'warm',intention:'先轻后强地演唱。',phrases:[{start:0,end:30,gainDb:.6,contour:'build'}]};
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'dsh-singing-executor-')),id=crypto.randomUUID(),calls=[];
   const input=path.join(root,'state/music-library',id+'.audio'),reference=path.join(root,'state/music-references',id),output=path.join(root,'state/music-jobs',id),model=path.join(root,'state/rvc-models',id);
   for(const directory of [path.dirname(input),reference,output,model])fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(input,'audio');fs.writeFileSync(path.join(output,'performance.json'),JSON.stringify(plan));fs.writeFileSync(path.join(output,'feiyu-cover-30s.wav'),'RIFFfixture');
-  const execute=createSingingExecutor({root,models:{get:key=>key==='test-model'?{directory:model}:undefined},probeAudio:async()=>({streams:[{codec_type:'audio'}],format:{duration:120}}),runProcess:async(executable,args,options)=>{calls.push({executable,args,options});options.onData?.('soulx_loading\nsoulx_singing\n"mixing"');},...options});
+  const execute=createSingingExecutor({root,models:{get:key=>key==='test-model'?{directory:model}:undefined},probeAudio:async()=>({streams:[{codec_type:'audio'}],format:{duration:120}}),runProcess:async(executable,args,options)=>{calls.push({executable,args,options});options.onData?.('"source_vocal_arranged"\nConverting with\n"mixing"');},...options});
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return {root,input,reference,output,model,calls,execute};
 }
 
-test('DSH singing executor owns probing, reference analysis, score-driven generation and preview conversion',async t=>{
+test('DSH singing executor owns probing, reference analysis, source-vocal arrangement and RVC and preview conversion',async t=>{
   const f=fixture(t),stages=[];
   assert.deepEqual(await f.execute('audio.probe',{file:f.input}),{durationSeconds:120});
-  assert.deepEqual(await f.execute('singing.reference',{input:f.input,output:f.reference,seconds:30,startSeconds:5,withScore:true}),{reference:true});
+  assert.deepEqual(await f.execute('singing.reference',{input:f.input,output:f.reference,seconds:30,startSeconds:5}),{reference:true});
   assert.deepEqual(await f.execute('singing.render',{input:f.input,output:f.output,reference:f.reference,seconds:30,modelId:'test-model',pitch:2,accompaniment:true,performance:plan},{onProgress:stage=>stages.push(stage)}),{rendered:true});
   assert.deepEqual(await f.execute('singing.preview',{output:f.output,seconds:30}),{preview:true});
-  assert.equal(f.calls.length,3);assert.equal(path.basename(f.calls[0].args[0]),'music-reference.py');assert(f.calls[0].args.includes('--soulx-runtime'));
+  assert.equal(f.calls.length,3);assert.equal(path.basename(f.calls[0].args[0]),'music-reference.py');assert(!f.calls[0].args.includes('--soulx-runtime'));
   assert.equal(path.basename(f.calls[1].args[0]),'music-cover.py');assert.equal(f.calls[1].args[f.calls[1].args.indexOf('--model')+1],f.model);assert(f.calls[1].args.includes('--performance'));assert(f.calls[1].args.includes('--reference'));
-  assert(f.calls[2].args.includes('libmp3lame'));assert(stages.some(stage=>stage.includes('SoulX 正在重新演唱')));
+  assert(f.calls[2].args.includes('libmp3lame'));assert(stages.some(stage=>stage.includes('原曲人声换声')));
 });
 
 test('DSH singing executor refuses command overrides, external paths, invalid score and foreign models before processing',async t=>{
   const f=fixture(t),base={input:f.input,output:f.output,reference:f.reference,seconds:30,modelId:'test-model',performance:plan};
   for(const [operation,payload]of [['singing.render',{...base,command:'arbitrary'}],['singing.render',{...base,modelId:'../private'}],['singing.render',{...base,input:path.join(f.root,'private.mp3')}],['singing.render',{...base,performance:{...plan,phrases:[{...plan.phrases[0],end:31}]}}],['singing.reference',{input:f.input,output:f.output,seconds:30}],['audio.probe',{file:path.join(os.tmpdir(),'outside.mp3')}],['unknown',{}]])await assert.rejects(f.execute(operation,payload));
+  assert.equal(f.calls.length,0);
+  await assert.rejects(f.execute('singing.reference',{input:f.input,output:f.reference,seconds:30,withScore:true}));
+  await assert.rejects(f.execute('singing.render',{...base,pitch:12,performance:{...plan,pitchShift:1}}),/合计变调/);
+  const {pitchShift,accompanimentGainDb,...legacy}=plan;
+  await assert.rejects(f.execute('singing.render',{...base,performance:{...legacy,version:'score-performance-v1'}}),/编排无效/);
   assert.equal(f.calls.length,0);
   const foreign=fixture(t,{models:{get:()=>({directory:path.join(os.tmpdir(),'outside-model')})}});await assert.rejects(foreign.execute('singing.render',{...base,input:foreign.input,output:foreign.output,reference:foreign.reference}));assert.equal(foreign.calls.length,0);
   const controller=new AbortController();controller.abort();await assert.rejects(f.execute('singing.preview',{output:f.output,seconds:30},{signal:controller.signal}));assert.equal(f.calls.length,0);

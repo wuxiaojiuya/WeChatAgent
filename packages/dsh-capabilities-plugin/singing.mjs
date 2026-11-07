@@ -9,7 +9,7 @@ import {checkNeteaseLogin,neteaseCookie} from '../music-source/netease.mjs';
 
 const fault=(message,status=400)=>Object.assign(new Error(message),{status});
 const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value);
-const stages=[['soulx_preprocess','正在提取歌词、旋律与节奏'],['soulx_loading','正在加载 SoulX 演唱模型'],['performance_arranged','AI 编排已应用，正在按谱重新演唱'],['soulx_singing','SoulX 正在重新演唱（CPU 处理需要数分钟）'],['Converting with','正在用所选 .pth 音色换声'],['"mixing"','正在混入原歌曲伴奏并优化音量']];
+const stages=[['Separating vocals','正在分离原曲人声和伴奏'],['"source_vocal_arranged"','AI 编排已应用，正在准备原曲人声换声'],['Converting with','正在用所选 .pth 音色换声'],['"mixing"','正在混入原歌曲伴奏并优化音量']];
 
 // This process runner belongs to the DSH capability executor. The console only
 // requests named operations; neither a chat tool nor RPC can supply a command.
@@ -28,7 +28,7 @@ function execute(executable,args,{signal,cwd,timeoutMs=120000,onData=()=>{}}={})
 
 export function createSingingExecutor({root,models=createRvcModels({root}),runProcess=execute,probeAudio=probeMedia,fetchImpl=fetch}={}){
   root=path.resolve(root);
-  const runtime=path.join(root,'state/maintenance/audio-capabilities/feiyu-cover'),python=path.join(runtime,'venv/Scripts/python.exe'),singer=path.join(root,'state/maintenance/audio-capabilities/soulx-singer');
+  const runtime=path.join(root,'state/maintenance/audio-capabilities/feiyu-cover'),python=path.join(runtime,'venv/Scripts/python.exe');
   function safe(value,kind){
     if(typeof value!=='string'||!path.isAbsolute(value)||/[\0\r\n]/.test(value))throw fault('唱歌插件文件引用无效。');
     const resolved=path.resolve(value),relative=path.relative(root,resolved),parts=relative.split(path.sep);
@@ -96,9 +96,9 @@ export function createSingingExecutor({root,models=createRvcModels({root}),runPr
       const durationSeconds=Number(value.format?.duration);if(!Number.isFinite(durationSeconds)||durationSeconds<=0||durationSeconds>14400)throw fault('音频时长无效。');return {durationSeconds};
     }
     if(operation==='singing.reference'){
-      properties(payload,['input','output','seconds','startSeconds','withScore']);const input=safe(payload.input,'input'),output=safe(payload.output,'reference'),duration=seconds(payload.seconds),start=payload.startSeconds??0;
-      if(!Number.isFinite(start)||start<0||start>14400||payload.withScore!==undefined&&typeof payload.withScore!=='boolean')throw fault('参考音轨片段参数无效。');
-      await runProcess(python,[path.join(root,'scripts/music-reference.py'),'--input',input,'--output',output,'--start',String(start),'--seconds',String(duration),...(payload.withScore?['--soulx-runtime',singer]:[])],{cwd:runtime,signal,timeoutMs:payload.withScore?10*60*1000:150000});
+      properties(payload,['input','output','seconds','startSeconds']);const input=safe(payload.input,'input'),output=safe(payload.output,'reference'),duration=seconds(payload.seconds),start=payload.startSeconds??0;
+      if(!Number.isFinite(start)||start<0||start>14400)throw fault('参考音轨片段参数无效。');
+      await runProcess(python,[path.join(root,'scripts/music-reference.py'),'--input',input,'--output',output,'--start',String(start),'--seconds',String(duration)],{cwd:runtime,signal,timeoutMs:150000});
       signal?.throwIfAborted();return {reference:true};
     }
     if(operation==='singing.render'){
@@ -106,6 +106,7 @@ export function createSingingExecutor({root,models=createRvcModels({root}),runPr
       const input=safe(payload.input,'input'),output=safe(payload.output,'output'),reference=safe(payload.reference,'reference'),duration=seconds(payload.seconds),pitch=payload.pitch??0;
       if(!Number.isInteger(pitch)||pitch< -12||pitch>12||payload.accompaniment!==undefined&&typeof payload.accompaniment!=='boolean')throw fault('演唱音色或混音参数无效。');
       const performance=validatePerformance(payload.performance,duration),performanceFile=path.join(output,'performance.json');
+      if(Math.abs(pitch+performance.pitchShift)>12)throw fault('配置与 AI 编排的合计变调超出 ±12 半音，请降低变调幅度。');
       if(fs.lstatSync(performanceFile).isSymbolicLink()||JSON.stringify(JSON.parse(fs.readFileSync(performanceFile,'utf8')))!==JSON.stringify(performance))throw fault('演唱编排与当前任务不一致。',409);
       await runProcess(python,[path.join(root,'scripts/music-cover.py'),'--input',input,'--start','0','--seconds',String(duration),'--output',output,'--model',modelDirectory(payload.modelId),'--pitch',String(pitch),'--performance',performanceFile,'--reference',reference,...(payload.accompaniment===false?['--vocals-only']:[])],{cwd:runtime,signal,timeoutMs:45*60*1000,onData:chunk=>{for(const [marker,stage]of stages)if(chunk.includes(marker))onProgress(stage);}});
       signal?.throwIfAborted();return {rendered:true};

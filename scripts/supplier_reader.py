@@ -21,6 +21,7 @@ from wechat_image_normalize import normalize_image
 from wechat_sticker import resolve_sticker
 from supplier_images import download_image
 from supplier_videos import download_video
+from wechat_contacts import read_contact_catalog
 
 
 _voice_diagnostic_lock = threading.Lock()
@@ -188,8 +189,7 @@ def create_reader(Base):
                     return
                 self.active_identity()
                 connection = RemoteConnection(self.api, 'contact.db')
-                rows = connection.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), NULLIF(alias,''), username) FROM contact").fetchall()
-                names = {u: n for u, n in rows if isinstance(u, str) and isinstance(n, str)}
+                names, friends, catalog_error = read_contact_catalog(connection, self.own_wxid)
                 if not names:
                     raise RuntimeError('HOOK_CONTACTS_UNAVAILABLE')
                 session_names = self.group_session_names()
@@ -199,6 +199,7 @@ def create_reader(Base):
                         names[u] = n
                 self.group_bindings.reconcile(names, read_json(self.root/'config/wechatagent.json')['wechat']['whitelist']['groups'], self.legacy_group_hints([]), {u: [n] for u, n in session_names.items() if n != u})
                 self.names, self.names_refreshed_at = names, time.monotonic()
+                self.friend_contacts, self.contact_catalog_error = friends, catalog_error
 
         def group_session_names(self):
             result = {}

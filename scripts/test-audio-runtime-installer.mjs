@@ -88,9 +88,18 @@ test('running service blocks repair while read-only checks remain available; inv
   const root=fixture(t);let launches=0;const c=worker();
   const app=createAudioRuntimeInstaller({...options(root),portProbe:async()=>true,launch:()=>{launches++;return c;}});
   await assert.rejects(app.start({kind:'all',action:'repair',url:'http://untrusted.invalid'}),e=>e.status===400);
+  await assert.rejects(app.start({kind:'soulx',action:'install'}),e=>e.status===400);
   await app.start({kind:'rvc',action:'repair'});await waitUntil(()=>!app.isBusy());assert.equal(launches,0);assert.equal(app.status().job.code,'AUDIO_SERVICES_RUNNING');
   await app.start({kind:'tts',action:'check'});await waitUntil(()=>launches===1);c.emit('close',0);
   assert.equal(app.status().job.state,'success');assert.match(app.status().job.message,/检查通过/);
+});
+
+test('settings retain only TTS and RVC and discard obsolete check results from the current status',t=>{
+  const root=fixture(t),file=path.join(root,'state/audio-install/last-job.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+  fs.writeFileSync(file,JSON.stringify({kind:'all',state:'success',events:[{message:'正在检查 SOULX 环境'}]}));
+  const app=createAudioRuntimeInstaller(options(root)),status=app.status();
+  assert.deepEqual(status.environments.map(e=>e.kind),['tts','rvc']);assert.equal(status.job,null);
+  const html=audioRuntimeMarkup(status,String);assert(!/soulx/i.test(html));
 });
 
 test('settings expose install, repair, progress and failure without claiming an installed model from file presence',()=>{

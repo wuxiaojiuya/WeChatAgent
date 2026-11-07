@@ -7,7 +7,7 @@ import {bindSingingTools,SINGING_POLICY,voiceReplyOutcome,singingReplyOutcome} f
 import {consoleClient,consolePort} from '../packages/dsh-social-bridge-plugin/console-client.mjs';
 
 const key='wechat:private:123';
-const plan={version:'score-performance-v1',emotion:'warm',intention:'结合歌词从容起句，后半句稍加强，再自然收尾。',phrases:[{start:0,end:20,articulation:'flowing',timingMs:10,tail:'hold',gainDb:.5,contour:'build'}]};
+const plan={version:'source-vocal-arrangement-v1',pitchShift:0,accompanimentGainDb:0,emotion:'warm',intention:'结合歌词从容起句，后半句稍加强，再自然收尾。',phrases:[{start:0,end:20,gainDb:.5,contour:'build'}]};
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'singing-tools-')),tools=new Map();
   fs.mkdirSync(path.join(root,'config'),{recursive:true});fs.mkdirSync(path.join(root,'state/voice-output'),{recursive:true});

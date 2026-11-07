@@ -4,9 +4,9 @@ import {createWorkspaceLayout} from '../public/console/workspace-layout.js';
 const key='wechat:private:123',group='wechat:group:456';
 const config=()=>({wechat:{whitelist:{private:['123'],groups:['456']},workModes:{[key]:'assistant'},search:{enabled:false,chats:{[key]:true}},stickers:{enabled:true,chats:{}},proactive:{enabled:false,chats:{[group]:true}},context:{enabled:true,maxTokens:100000,chats:{[group]:0}},assistant:{fileTransferChats:{[key]:true}},dshAccess:{chats:{[key]:{mode:'native',preset:'standard',skills:['saved'],tools:['read'],remoteApproval:true}}}},persona:{default:'默认人格',chats:{[key]:'助手人格'}}});
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function fixture({offline=false,tab='summary',historyMode,running=false,workMode='assistant'}={}){
+function fixture({offline=false,tab='summary',historyMode,running=false,workMode='assistant',contactNames}={}){
  const original=config(),state={config:original,draft:structuredClone(original),names:new Map([[key,'同名 <好友>'],[group,'同名 <好友>']]),chatKind:'all',chatDetailTab:tab,selectedChat:key},requests=[];
- const api=async(route,body)=>{requests.push({route,body});if(offline)throw Error('offline fixture');if(route==='/api/sessions')return {sessions:[{conversationKey:key,sessionId:'native-123',workMode,contextTokens:5200,running,...(historyMode?{history:{mode:historyMode},prefixRepairAvailable:historyMode==='recent-window-v1'&&workMode==='social',prefixRecovery:{status:'required'}}:{})},{conversationKey:group,sessionId:'native-456',contextTokens:8100}]};if(route==='/api/session-groups')return {available:true,groups:[],assignments:{}};if(route==='/api/assistant-task/list')return {tasks:[{id:'T0123456789abcdef',state:'waiting_approval',stage:'等待审批',createdAt:100000}]};throw Error('Unexpected request '+route);};
+ const api=async(route,body)=>{requests.push({route,body});if(route==='/api/chats'&&contactNames)return {chats:contactNames};if(offline)throw Error('offline fixture');if(route==='/api/chats')return {chats:[]};if(route==='/api/sessions')return {sessions:[{conversationKey:key,sessionId:'native-123',workMode,contextTokens:5200,running,...(historyMode?{history:{mode:historyMode},prefixRepairAvailable:historyMode==='recent-window-v1'&&workMode==='social',prefixRecovery:{status:'required'}}:{})},{conversationKey:group,sessionId:'native-456',contextTokens:8100}]};if(route==='/api/session-groups')return {available:true,groups:[],assignments:{}};if(route==='/api/assistant-task/list')return {tasks:[{id:'T0123456789abcdef',state:'waiting_approval',stage:'等待审批',createdAt:100000}]};throw Error('Unexpected request '+route);};
  const ui=createWorkspaceLayout({api,state,escapeHtml:esc,icon:()=>'',header:(title,help='')=>'<h2>'+esc(title)+'</h2><p>'+esc(help)+'</p>',field:()=>'',toggle:()=>'',empty:(title,help,actions)=>'<h2>'+esc(title)+'</h2><p>'+esc(help)+'</p>'+(actions??''),sessionGroupUI:{prepare(){},visible:()=>true,toolbar:()=>'',control:()=>''},sessionUsage:()=>'<div>Fixture usage</div>',getCards:()=>({participation:'PARTICIPATION',rhythm:'RHYTHM',proactive:'PROACTIVE',admins:'ADMINS',search:'SEARCH',reader:'READER',media:'MEDIA'}),contextSettingsCard:()=> 'CONTEXT',feedbackCard:()=> 'FEEDBACK',connectionsPage:()=> 'CONNECTIONS',logsPage:async()=> 'LOGS',toolsPage:()=> 'TOOLS',dshPage:async()=> 'DSH',stickerPage:async()=> 'STICKERS'});
  return {state,ui,requests};
 }
@@ -56,4 +56,11 @@ test('window context repair is visible only for social windows, is disabled whil
  assert.match(await busy.ui.chatsPage(),/data-context-session="native-123" disabled/);
  assert(!(await fixture({tab:'usage',historyMode:'recent-window-v1'}).ui.chatsPage()).includes('data-context-repair'));
  const bounded=fixture({tab:'usage',historyMode:'external-bounded-v1',workMode:'social'});bounded.state.draft.wechat.workModes[key]='social';assert(!(await bounded.ui.chatsPage()).includes('data-context-repair'));
+});
+
+
+test('contact metadata supplies and refreshes names without message history, even while DSH is offline',async()=>{
+ const names=[{key,name:'新好友昵称'}],f=fixture({offline:true,contactNames:names});f.state.names.clear();
+ let html=await f.ui.chatsPage();assert.match(html,/新好友昵称/);assert(!html.includes('好友 · 0123'));assert.match(html,/会话服务暂不可用/);
+ names[0].name='新的备注';html=await f.ui.chatsPage();assert.match(html,/新的备注/);assert(!html.includes('新好友昵称'));
 });

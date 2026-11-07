@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateConfig, projectRoot, configureBundledHook } from './project-config.mjs';
 import { conversationId } from './hook-onebot.mjs';
+import {chatContactNames} from './chat-contact-names.mjs';
 import { runConsoleCommand, taskFailureMessage, windowsPowerShellEnvironment, windowsPowerShellExecutable } from './console-process.mjs';
 import { personaError,personaReferences } from '../public/console/persona-files.mjs';
 import {applyChatSettings} from '../public/console/conversation-settings.mjs';
@@ -579,7 +580,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const data = await reader(`/api/v1/contacts?kind=${kind}&keyword=${encodeURIComponent(keyword)}&limit=100&refresh=1`);
         const io = optionalJson(path.join(root, 'state', 'wechat-io-config.json'));
         const rows = data.contacts ?? [];
-        const contacts = rows.filter(c => c.username && c.username !== io.self_wxid && (c.username.includes('@chatroom') ? 'groups' : 'private') === kind)
+        const contacts = rows.filter(c => c.username && c.username !== io.self_wxid && (c.username.includes('@chatroom') ? 'groups' : 'private') === kind && (kind==='groups'||c.isFriend===true))
           .map(c => ({ name: c.remark || c.displayName || c.nickname || c.username, id: String(conversationId(c.username, c.displayName, c.conversationId)), ambiguous: c.ambiguous === true,
             ...(kind==='private'&&url.searchParams.get('includeIdentity')==='1'?{wechatId:c.username,administratorEligible:administratorFriend(c.username)&&privateChatId(c.username)===String(conversationId(c.username,c.displayName,c.conversationId))}:{}),
             ...(kind==='groups'&&c.conversationId!==undefined?{groupRef:c.username}:{}) }));
@@ -588,7 +589,14 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method === 'GET' && route === '/api/chats') {
         const { buffer } = buffered();
-        return reply(200, { chats: Object.entries(buffer.chats ?? {}).map(([key, rows]) => ({ key, name: rows.at(-1)?.conversation_name ?? key, lastAt: rows.at(-1)?.timestamp ?? 0 })) });
+        const account=activeReaderAccount(root).id,cacheFile=account?path.join(root,'state/accounts',account,'contact-names.json'):null;
+        const cached=cacheFile?optionalJson(cacheFile):{};
+        let contacts=[],fresh=false;
+        try{const data=await reader('/api/v1/contacts?selected=1&refresh=1');contacts=data.contacts??[];fresh=true;}catch{}
+        if(activeReaderAccount(root).id!==account)throw fault('微信账号已变化，请刷新聊天列表。',409);
+        const chats=chatContactNames(snapshot().config.wechat,contacts,buffer,cached);
+        if(fresh&&cacheFile)try{atomic(cacheFile,Object.fromEntries(chats.filter(c=>c.name).map(c=>[c.key,c.name])));}catch{}
+        return reply(200, { chats });
       }
       if (req.method === 'GET' && route === '/api/sessions') return reply(200, await plugin('/sessions'));
       if(req.method==='POST'&&route==='/api/sessions/repair-context'){

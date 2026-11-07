@@ -1,4 +1,4 @@
-param([string]$PythonPath = '', [switch]$IncludeQqDependencies, [switch]$BuildOriginalWeFlow)
+param([string]$PythonPath = '', [switch]$BuildOriginalWeFlow)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $node = (Get-Command node -ErrorAction Stop).Source
@@ -20,7 +20,6 @@ Install-Npm (Join-Path $root 'packages\dsh-social-bridge-plugin') $false
 & $python -m pip install --only-binary=:all: -r (Join-Path $PSScriptRoot 'reader-requirements.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Independent reader dependency installation failed.' }
 if ($BuildOriginalWeFlow) { throw 'The public source does not include historical WeFlow Desktop. Use the independent desktop build dependencies.' }
-if ($IncludeQqDependencies) { Install-Npm (Join-Path $root 'components\qq-bridge') $false }
 & $python -m pip check
 if ($LASTEXITCODE -ne 0) { throw 'Python dependency conflicts detected.' }
 Write-Output ('Install the local plugin in DSH Desktop: '+(Join-Path $root 'packages\dsh-social-bridge-plugin'))

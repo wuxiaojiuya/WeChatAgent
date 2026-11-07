@@ -32,9 +32,9 @@ class FakeHook:
         self.calls = []
         self.databases = {name: sqlite3.connect(':memory:', check_same_thread=False) for name in ('contact.db', 'message_0.db', 'media_0.db')}
         db = self.databases['contact.db']
-        db.execute('CREATE TABLE contact(username TEXT,remark TEXT,nick_name TEXT,alias TEXT)')
-        db.execute("INSERT INTO contact VALUES('wxid_friend','','Friend','')")
-        db.execute("INSERT INTO contact VALUES('wxid_self','','Self','')")
+        db.execute('CREATE TABLE contact(username TEXT,remark TEXT,nick_name TEXT,alias TEXT,local_type INTEGER,flag INTEGER,delete_flag INTEGER,verify_flag INTEGER)')
+        db.execute("INSERT INTO contact VALUES('wxid_friend','','Friend','',1,8388611,0,0)")
+        db.execute("INSERT INTO contact VALUES('wxid_self','','Self','',1,3,0,0)")
         db = self.databases['message_0.db']
         self.table = 'Msg_' + hashlib.md5(b'wxid_friend').hexdigest()
         db.execute('CREATE TABLE Name2Id(user_name TEXT)')
@@ -191,6 +191,45 @@ class SupplierContract(unittest.TestCase):
         self.fake.wxid = 'another_account'
         with self.assertRaisesRegex(RuntimeError, 'HOOK_ACCOUNT_MISMATCH'):
             reader.messages('wxid_friend')
+
+    def test_friend_discovery_uses_relationships_not_every_known_person(self):
+        db = self.fake.databases['contact.db']
+        db.executemany('INSERT INTO contact VALUES(?,?,?,?,?,?,?,?)', [
+            ('wxid_group_member', '', 'Known member', '', 3, 0, 0, 0),
+            ('wxid_stranger', '', 'Stranger', '', 2, 2, 0, 0),
+            ('wxid_deleted', '', 'Deleted', '', 1, 3, 1, 0),
+            ('gh_official', '', 'Official', '', 1, 3, 0, 24),
+            ('wxid_business', '', 'Verified', '', 1, 3, 0, 56),
+            ('filehelper', '', 'File transfer', '', 1, 3, 0, 0),
+            ('room@chatroom', '', 'Room', '', 1, 3, 0, 0),
+            ('wxid_invalid', '', 'Invalid flags', '', 1, 'invalid', 0, 0),
+        ])
+        db.execute("UPDATE contact SET remark='备注',alias='account_alias' WHERE username='wxid_friend'")
+        reader = self.reader()
+        found = reader.contacts(kind='private')
+        self.assertEqual([(c['username'], c['displayName'], c['isFriend']) for c in found], [('wxid_friend', '备注', True)])
+        for keyword in ('备注', 'Friend', 'account_alias', 'wxid_friend'):
+            self.assertEqual(len(reader.contacts(keyword, 'private')), 1)
+        self.assertEqual(reader.names['wxid_group_member'], 'Known member')
+        self.assertEqual(reader.contacts(kind='groups')[0]['displayName'], 'Room')
+        # Already allowed display metadata remains resolvable after unfriending;
+        # it must not reappear in the add-friend picker or expand permissions.
+        db.execute("UPDATE contact SET delete_flag=1 WHERE username='wxid_friend'")
+        self.assertEqual(reader.contacts(kind='private', refresh=True), [])
+        selected = reader.contacts(selected=True)
+        self.assertEqual([c['username'] for c in selected], ['wxid_friend'])
+        self.assertFalse(selected[0]['isFriend'])
+        self.assertEqual(reader.selected_talkers(), ['wxid_friend'])
+
+    def test_missing_friendship_metadata_never_falls_back_to_all_contact_names(self):
+        reader = self.reader()
+        db = self.fake.databases['contact.db']
+        db.execute('ALTER TABLE contact RENAME TO contact_full')
+        db.execute('CREATE TABLE contact AS SELECT username,remark,nick_name,alias FROM contact_full')
+        with self.assertRaisesRegex(RuntimeError, '^CONTACT_FRIENDSHIP_METADATA_UNAVAILABLE$'):
+            reader.contacts(kind='private', refresh=True)
+        self.assertEqual(reader.names['wxid_friend'], 'Friend')
+        self.assertFalse(reader.contacts(selected=True)[0]['isFriend'])
 
     def test_gateway_auth_account_scope_and_no_old_upstream_routes(self):
         reader = self.reader()
