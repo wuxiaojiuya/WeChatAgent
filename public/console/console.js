@@ -42,14 +42,14 @@ const pages = {
   overview: ['概览', '微信助手的运行情况，一眼看清。'],
   chats: ['聊天', '选择好友或群聊，集中管理模式、能力、工作区与任务。'],
   roles: ['人格卡', '设置助手的性格、语气与聊天习惯。'],
-  sessions: ['会话', '每个聊天都有独立上下文，在这里查看与整理。'],
+  sessions: ['会话', '分别整理聊天记录，允许且开启历史的会话共享 DSH 记忆。'],
   behavior: ['回复设置', '决定何时回复，以及回复的频率。'],
   connections: ['连接设置', '连接本机微信、读取服务与 DSH。'],
   logs: ['运行日志', '查看最近的运行记录，定位连接与收发问题。'],
   tools: ['工具', '安装、检查与维护，通过按钮完成。'],
   extensions: ['能力', '查看内置能力与 DSH 来源，在聊天中独立分配权限。'],
   stickers: ['表情包', '查看、添加与整理当前账号的共享表情包。'],
-  memory: ['记忆', '查看当前账号的群友观察与会话压缩摘要。'],
+  memory: ['记忆', '群聊与私聊共享 DSH 的经历，按来源查看群友观察与会话摘要。'],
 };
 const actions = {
   start: ['启动服务', '正在检查账号与连接，启动通常需要几十秒。'],
@@ -61,7 +61,7 @@ const actions = {
   'wechat-open': ['打开匹配微信', '校验现有客户端和发送组件，然后打开微信。'],
   'dsh-open': ['打开 DSH', '打开模型程序，在 DSH 中登录并启用本项目插件。'],
   'reader-check': ['检查读取配置', '只读检查当前数据库与凭据是否有效。'],
-  'reader-connect': ['连接并验证微信', '正在核对匹配微信的组件与当前登录账号。请在微信中完成登录。'],
+  'reader-connect': ['连接并验证微信', '正在连接微信组件。单账号模式只读取一次自身信息，收发时不再比对登录账号。请在微信中完成登录。'],
   'hook-check': ['检查发送连接', '校验发送组件、微信版本和账号。'],
   'hook-build': ['准备发送组件', '按当前 Hook 配置准备组件。新 Hook 使用你提供的 DLL 与启动器。'],
   'hook-pin': ['开启客户端保护', '备份所选独立微信的权限和更新器，再保护程序目录。只作用于本项目 state/hook 下的客户端。'],
@@ -377,7 +377,7 @@ async function chooseAssistantAdmin(){
 }
 function readerConfigurationCard() {
   const r = state.reader;
-  if(state.config?.hook?.backend==='supplier-http')return `<section class="card reader-setup">${header('连接自己的微信','使用项目内置组件，匹配微信 4.1.8.27。','<span class="status-tag '+(r?.verified?'ok':'warn')+'">'+(r?.verified?'已绑定':'待连接')+'</span>','plug')}<div class="reader-steps"><span>1. 打开带组件的微信</span><span>2. 登录自己的账号</span><span>3. 连接并验证</span></div><p class="modal-description">文本、文件、表情和原生语音通过内置组件发送；联系人、历史记录和媒体通过同一组件读取。连接时自动识别当前账号，无需选择数据库目录或获取密钥。</p><p class="subtle">当前绑定：${escapeHtml(r?.backend==='supplier-http'?r.myWxid||'尚未绑定':'尚未绑定')}。切换账号前请停止助手服务。</p><div class="button-row"><button class="button" data-action="wechat-open">打开微信 4.1.8.27</button><button class="button primary" data-action="reader-connect">连接并验证</button></div><p class="field-error space-top" id="reader-save-error" role="alert"></p><p class="subtle" id="reader-progress" role="status"></p></section>`;
+  if(state.config?.hook?.backend==='supplier-http')return `<section class="card reader-setup">${header('连接自己的微信','使用项目内置组件，匹配微信 4.1.8.27。','<span class="status-tag '+(r?.verified?'ok':'warn')+'">'+(r?.verified?'已绑定':'待连接')+'</span>','plug')}<div class="reader-steps"><span>1. 打开带组件的微信</span><span>2. 登录自己的账号</span><span>3. 连接并验证</span></div><p class="modal-description">文本、文件、表情和原生语音通过内置组件发送；联系人和媒体使用专用 API，消息通过 Hook 推送并保存到项目缓存，不访问微信数据库。连接时自动识别当前账号，无需选择数据库目录或获取密钥。</p><p class="subtle">当前绑定：${escapeHtml(r?.backend==='supplier-http'?r.myWxid||'尚未绑定':'尚未绑定')}。切换账号前请停止助手服务。</p><div class="button-row"><button class="button" data-action="wechat-open">打开微信 4.1.8.27</button><button class="button primary" data-action="reader-connect">连接并验证</button></div><p class="field-error space-top" id="reader-save-error" role="alert"></p><p class="subtle" id="reader-progress" role="status"></p></section>`;
   state.readerDraft ??= { dbPath: r?.dbPath ?? '', myWxid: r?.myWxid ?? '', decryptKey: '' };
   const draft = state.readerDraft;
   const accounts = state.readerAccounts ?? [];

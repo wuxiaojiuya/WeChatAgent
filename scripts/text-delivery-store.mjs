@@ -15,6 +15,7 @@ export class TextDeliveryStore {
     if(item.version!==1||item.key!==key||!['dispatching','accepted','unconfirmed','rejected','confirmed'].includes(item.state)||
       typeof item.account!=='string'||typeof item.wxid!=='string'||typeof item.text!=='string'||!item.text.trim()||Buffer.byteLength(item.text)>16000||
       !Number.isFinite(item.startedAt)||!Array.isArray(item.baseline)||item.baseline.length>100||item.baseline.some(id=>!/^\d+$/.test(id))||
+      item.confirmationMode!==undefined&&item.confirmationMode!=='supplier-api'||
       !validRejection(item.rejection)||!validRejection(item.firstRejection))throw Error('TEXT_DELIVERY_STATE_INVALID');
     return item;
   }

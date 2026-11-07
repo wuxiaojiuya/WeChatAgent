@@ -7,15 +7,16 @@ import {hookProfile} from './hook-profiles.mjs';
 const failure=code=>Object.assign(new Error(code),{code});
 const transient=new Set(['HOOK_NOT_LISTENING','HOOK_HEALTH_TIMEOUT','HOOK_HEALTH_FAILED','HOOK_LOGIN_REQUIRED','HOOK_INITIALIZATION_PENDING']);
 
-// Use the same conservative account gate before committing reader credentials
-// and before native delivery. Never accept a target merely present among others.
+// Legacy database-backed Hooks compare selected accounts. The supplier Hook
+// has one login; only its component/version/readiness contract is checked.
 export function hookAccountProblem(health,expectedAccount,expectedVersion='4.1.10.27') {
-  if(typeof expectedAccount!=='string'||!expectedAccount)return 'HOOK_ACCOUNT_METADATA_INVALID';
   if(!health||typeof health!=='object')return 'HOOK_HEALTH_INVALID_RESPONSE';
   if((expectedVersion==='4.1.8.27'?health.integration!=='WeChatAgent-supplier-v1'||health.provider!=='supplier-http':health.integration!=='WeChatAgent-1')||health.backend!=='wechat-hook')return 'REVIEWED_HOOK_BUILD_REQUIRED';
   if(health.version!==expectedVersion||!hookProfile(health.version))return 'HOOK_VERSION_MISMATCH';
   if(expectedVersion==='4.1.15.13'&&(!['4.1.15.13-text-v1','4.1.15.13-media-mentions-v2'].includes(health.profile)||health.nativeTextSend!==true))return 'HOOK_INITIALIZATION_PENDING';
   if(health.startupState!==undefined&&health.startupState!=='ready')return 'HOOK_INITIALIZATION_PENDING';
+  if(expectedVersion==='4.1.8.27')return '';
+  if(typeof expectedAccount!=='string'||!expectedAccount)return 'HOOK_ACCOUNT_METADATA_INVALID';
   if(!Array.isArray(health.databaseAccounts)||health.databaseAccounts.some(account=>typeof account!=='string'||!account))return 'HOOK_ACCOUNT_METADATA_INVALID';
   if(!health.databaseAccounts.length)return 'HOOK_LOGIN_REQUIRED';
   if(health.databaseAccounts.length!==1)return 'HOOK_MULTIPLE_ACCOUNT_DATABASES';
@@ -46,7 +47,7 @@ export async function verifyWeChatAccount({root,config,settings,fetchImpl=fetch,
     if(!transient.has(code))throw failure(code);
     if(!wait){if(!requireReady&&['HOOK_LOGIN_REQUIRED','HOOK_INITIALIZATION_PENDING'].includes(code))return {ready:false,code};throw failure(code);}
     if(now()>=deadline)throw failure(code==='HOOK_INITIALIZATION_PENDING'?'HOOK_INITIALIZATION_TIMEOUT':code);
-    if(!notified){onProgress('正在核对实时微信账号。请在匹配微信中登录所选账号并等待消息同步…');notified=true;}
+    if(!notified){onProgress(config.hook.backend==='supplier-http'?'正在等待内置 Hook 组件就绪。请在匹配微信中完成登录…':'正在核对实时微信账号。请在匹配微信中登录所选账号并等待消息同步…');notified=true;}
     await sleep(Math.min(intervalMs,Math.max(1,deadline-now())));
   }
 }

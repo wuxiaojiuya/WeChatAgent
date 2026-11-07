@@ -15,19 +15,39 @@ from read_media_text_test_helpers import read_document
 
 
 class MediaInput(unittest.TestCase):
-    setUp = base.SupplierContract.setUp
     write = base.SupplierContract.write
-    reader = base.SupplierContract.reader
+    assert_no_database_api = base.SupplierContract.assert_no_database_api
+
+    def setUp(self):
+        base.SupplierContract.setUp(self)
+        self.callbacks, self.current_reader, self.quote_number = [], None, 100
+        self.addCleanup(self.assert_no_database_api)
+
+    def reader(self):
+        reader = base.SupplierContract.reader(self)
+        for body in self.callbacks:
+            reader.accept_callback(body)
+        self.current_reader = reader
+        return reader
 
     def insert(self, number, kind, text, sender=1):
         server = str(8047442179716189600+number)
-        self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(?,?,?,?,?,?)',
-            (number,int(server),kind,sender,1700000000+number,text.encode()))
-        return {'localId':number,'serverId':server,'localType':kind,'senderUsername':'wxid_friend' if sender==1 else 'wxid_self','createTime':1700000000+number,'fullText':text}
+        body = {'fromUserName': {'String': 'wxid_friend' if sender == 1 else 'wxid_self'},
+                'toUserName': {'String': 'wxid_self' if sender == 1 else 'wxid_friend'},
+                'msgType': str(kind), 'content': {'String': text}, 'msgId': str(number),
+                'newMsgId': server, 'createTime': str(1700000000+number), 'msgSource': ''}
+        self.callbacks.append(body)
+        if self.current_reader is not None:
+            self.current_reader.accept_callback(body)
+            return self.current_reader.bound_message('wxid_friend', server)
+        # Allow a callback to arrive before the local reader is constructed;
+        # reader() admits these same original callback envelopes to its inbox.
+        return base.supplier_reader.normalize_callbacks(body, 'wxid_self')[0][1]
 
     def quote(self, reader, original, source=None, kind=None):
         text = '<msg><appmsg><type>57</type><title>这个是什么意思</title><refermsg><type>'+str(kind or original['localType'])+'</type><svrid>'+original['serverId']+'</svrid><fromusr>'+(source or original['senderUsername'])+'</fromusr><displayname>引用人</displayname><content>untrusted</content></refermsg></appmsg></msg>'
-        new = {'localId':100,'serverId':'8047442179716189999','localType':base.reader_module.QUOTE_TYPE,'senderUsername':'wxid_friend','createTime':1700000200,'fullText':text}
+        self.quote_number += 1
+        new = self.insert(self.quote_number, base.reader_module.QUOTE_TYPE, text)
         payload = reader.make_payload('wxid_friend',new)
         reader.quote_media('wxid_friend',payload)
         return payload
@@ -108,8 +128,15 @@ class MediaInput(unittest.TestCase):
             self.assertEqual(wav.getframerate(),16000)
             self.assertGreater(wav.getnframes(),16000)
         with self.assertRaises(PermissionError):reader.videos.prepare(reference['id'],'wechat:private:88')
+        profiles = sum(route == '/api/get_profile_new' for route, _ in self.fake.calls)
         self.fake.wxid='wxid_other'
-        with self.assertRaises((PermissionError,RuntimeError)):reader.resolve_image(prepared['images'][0]['id'])
+        with patch.object(self.api, 'identity', side_effect=AssertionError('media must not poll the live login account')):
+            self.assertEqual(reader.resolve_image(prepared['images'][0]['id'])['conversationKey'],key)
+        self.assertEqual(sum(route == '/api/get_profile_new' for route, _ in self.fake.calls), profiles)
+        # The saved resource must still belong to this project's namespace,
+        # independently of the supplier's unused live-account response.
+        reader.videos.records[reference['id']]['account'] = str(self.root/'another-account')
+        with self.assertRaises(PermissionError):reader.resolve_image(prepared['images'][0]['id'])
 
     def test_video_metadata_limits_and_unavailable_callback_are_explicit(self):
         for value in ('<msg><videomsg length="0"/></msg>','<msg><videomsg length="104857601"/></msg>','<!DOCTYPE a><msg/>'):
@@ -117,6 +144,7 @@ class MediaInput(unittest.TestCase):
         reader=self.reader()
         original=self.insert(7,43,'<msg><videomsg length="100"/></msg>')
         ref=reader.videos.remember('wxid_friend',original)
+        reader.callback_messages.pop(original['serverId'])
         with self.assertRaisesRegex(RuntimeError,'VIDEO_CALLBACK_METADATA_REQUIRED'):
             reader.videos.prepare(ref['id'],'wechat:private:'+reader.conversation_id('wxid_friend'))
 
@@ -146,8 +174,8 @@ class MediaInput(unittest.TestCase):
             self.assertEqual(reader.resolve_image(prepared['images'][0]['id'])['conversationKey'],key)
         self.write('state/voice-output/capabilities.json',{'singing':{'provider':'feiyu-rvc','enabled':True,'chats':[key]}})
         self.assertGreater(reader.videos.singing_audio(ref,key,0,10,local_only=True)['seconds'],1)
-        self.fake.wxid='wxid_other'
-        with self.assertRaises((PermissionError,RuntimeError)):reader.videos.record(ref,key)
+        reader.videos.records[ref]['account'] = str(self.root/'another-account')
+        with self.assertRaises(PermissionError):reader.videos.record(ref,key)
 
 
 class EmotionTests(unittest.TestCase):

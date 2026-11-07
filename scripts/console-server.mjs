@@ -259,12 +259,12 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       const dshReady = matchesDsh && health.contextMode === 'native-session-v1' && health.behaviorPolicy === 'local-config-only-v1' && health.imageInput === 'native-attachment-v1';
       const readerReady = !!readerState && !!value(1) && !readerState.lastError;
       const bridgeReady = !!value(4) && adapter?.ob_connected === true;
-      const hookReady = adapter?.hook_connected === true && adapter?.hook_account_verified === true && adapter?.version === config.hook.expectedVersion;
+      const hookReady = adapter?.hook_connected === true && (adapter?.hook_ready === true || adapter?.hook_account_verified === true) && adapter?.version === config.hook.expectedVersion;
       const ready = readerReady && bridgeReady && hookReady && dshReady && adapter?.reader_connected === true;
       const { rows } = buffered();
       const services = [
-        { id: 'reader', label: '微信读取', ready: readerReady, detail: readerReady ? '数据库可读，消息同步正常' : readerFailureDetail(readerState?.lastError), port: config.ports.weflow },
-        { id: 'bridge', label: '消息桥接', ready: bridgeReady && hookReady && adapter?.reader_connected === true, detail: bridgeReady && hookReady && adapter?.reader_connected ? '收发连接正常，账号已核验' : !hookReady ? '等待匹配微信登录与发送连接' : '等待消息桥接连接', port: config.ports.adapter },
+        { id: 'reader', label: '微信读取', ready: readerReady, detail: readerReady ? config.hook.backend==='supplier-http'?'Hook 推送接收器就绪，不访问微信数据库':'数据库可读，消息同步正常' : readerFailureDetail(readerState?.lastError), port: config.ports.weflow },
+        { id: 'bridge', label: '消息桥接', ready: bridgeReady && hookReady && adapter?.reader_connected === true, detail: bridgeReady && hookReady && adapter?.reader_connected ? config.hook.backend==='supplier-http'?'收发接口已连接，单账号模式':'收发连接正常，账号已核验' : !hookReady ? '等待匹配微信登录与发送连接' : '等待消息桥接连接', port: config.ports.adapter },
         { id: 'dsh', label: '模型连接', ready: dshReady, detail: dshReady ? 'DSH 插件已连接' : '打开 DSH 并启用本项目插件', port: config.ports.dshPlugin },
       ];
       const running = !!readerState || !!adapter || !!value(4);

@@ -578,7 +578,7 @@ export class SocialEngine {
       part.state=confirmed?'confirmed':part.stickerId?'submitted':'unconfirmed';persist();
       this.buffer.recordReplyPart(key,{deliveryId:part.deliveryId},{...target,sender_id:target.self_id,text:part.stickerId?(confirmed?'[已发送微信原生表情包]':'[微信原生表情已提交，送达待确认]'):part.text,timestamp:sentAt/1000,delivery_status:confirmed?'confirmed':'unconfirmed',...(part.stickerId?{sticker_id:part.stickerId}:{})});
       if(!existing)this.noteOutgoing(key,sentAt);
-      this.log(`[Social] ${key} delivery=${confirmed?'confirmed':'unconfirmed'} part=${index+1} operation=${part.deliveryId.slice(0,12)}`);
+      this.log(`[Social] ${key} delivery=${confirmed?'confirmed':'unconfirmed'} part=${index+1} operation=${part.deliveryId.slice(0,12)}${delivery?.apiAcknowledged?' receipt=supplier-api':''}`);
       if(!confirmed){
         if(!part.stickerId)return finish(pending.parts.length===2&&index===0?'本机上一轮分条回复的第一条发送未确认，第二条没有发送（文字或表情）；不能把未发送部分当成已经说过的话。':'本机上一轮分条回复的第 '+(index+1)+' 条发送未确认，后续 '+(pending.parts.length-index-1)+' 条没有发送；不能把未发送部分当成已经说过的话。');
         if((part.receiptChecks??0)>=retry.maxReceiptChecks){part.state='unconfirmed';this.log(`[Social] ${key} delivery_part=${index+1} state=unconfirmed reason=receipt_timeout operation=${part.deliveryId.slice(0,12)}`);return finish('本机上一轮表情已提交，但多次核对仍未确认送达，不能当成对方已收到；不重复发送，继续回应新消息。');}

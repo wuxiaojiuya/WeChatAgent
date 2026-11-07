@@ -10,9 +10,10 @@ import {HISTORY_POLICY} from './history-policy.mjs';
 import {SINGING_POLICY} from './singing-tools.mjs';
 import {DRAWING_POLICY} from './drawing-tools.mjs';
 import {PERSONA_PROPOSAL_POLICY} from './persona-proposal-tools.mjs';
+import {WECHAT_MANAGEMENT_POLICY} from './wechat-management-tools.mjs';
 export const name = 'social-tool-restrict';
 export const inject = ['tools'];
-const policies = (ctx,agent) => [Symbol.for('wechatagent.extension-tools.v1'),WEB_READER_POLICY,MODEL_SEARCH_POLICY,DSH_ACCESS_POLICY,FILE_TRANSFER_POLICY,MEME_LIBRARY_POLICY,MEMBER_MEMORY_POLICY,HISTORY_POLICY,SINGING_POLICY,DRAWING_POLICY,PERSONA_PROPOSAL_POLICY]
+const policies = (ctx,agent) => [Symbol.for('wechatagent.extension-tools.v1'),WEB_READER_POLICY,MODEL_SEARCH_POLICY,DSH_ACCESS_POLICY,FILE_TRANSFER_POLICY,MEME_LIBRARY_POLICY,MEMBER_MEMORY_POLICY,HISTORY_POLICY,SINGING_POLICY,DRAWING_POLICY,PERSONA_PROPOSAL_POLICY,WECHAT_MANAGEMENT_POLICY]
   .map(symbol => agent?.ctx?.[symbol] ?? ctx[symbol]).filter(Boolean);
 const assistantAllowed=agent=>{try{return agent?.ctx?.[ASSISTANT_ACCESS]?.()!==false;}catch{return false;}};
 const namesFor=(ctx,agent)=>new Set(assistantAllowed(agent)?policies(ctx,agent).flatMap(policy=>[...policy.names()]):[]);

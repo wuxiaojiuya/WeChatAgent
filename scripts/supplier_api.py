@@ -1,8 +1,9 @@
 """Adapter for the user-supplied 4.1.8.27 HTTP Hook. No old DLL or DB key.
 
 The upstream API has no authentication. Only loopback request URLs are accepted;
-the application gateway authenticates its own callers and verifies the actual
-listening process, client version, loaded DLL and current account before use.
+the application gateway authenticates its own callers and checks the actual
+listening process, client version and loaded DLL. Login metadata is read once
+during explicit connection setup, never compared against a selected account.
 """
 import ctypes
 from ctypes import wintypes as W
@@ -22,6 +23,14 @@ VERSION = '4.1.8.27'
 BACKEND = 'supplier-http'
 VOICE_UPLOAD_TIMEOUT_SECONDS = 30
 IMAGE_UPLOAD_TIMEOUT_SECONDS = 30
+DEDICATED_ROUTES = frozenset({
+    '/api/get_profile_new', '/api/get_frien_lists', '/api/get_chatroom_list', '/api/get_room_members',
+    '/api/send_text_msg', '/api/send_at_text', '/api/send_quote', '/api/send_pat',
+    '/api/send_file_msg', '/api/send_image_msg', '/api/send_emotion_msg', '/api/send_voice', '/api/send_mp3_voice',
+    '/api/download_voice', '/api/download_img', '/api/download_video', '/api/download_file', '/api/cdn_download',
+    '/api/sns_post', '/api/sns_send_img', '/api/sns_comment_reply', '/api/sns_get_first_page', '/api/sns_get_detail',
+    '/api/mod_self_nick_name', '/api/upload_head_img', '/api/mod_self_nick_signature', '/api/mod_chatroom_topic',
+})
 # The supplied build ignores HttpServerHost and constructs http://0.0.0.0:PORT.
 # Accept that behavior only for this reviewed binary, while still verifying
 # the real owner, loaded module, client version and current account below.
@@ -153,7 +162,7 @@ class SupplierApi:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def post(self, route, body=None, *, timeout=5):
-        if not re.fullmatch(r'/api/[a-z0-9_]+', route):
+        if route not in DEDICATED_ROUTES:
             raise ValueError('HOOK_ROUTE_INVALID')
         if self.transport:
             return self.transport(route, body or {})
@@ -174,7 +183,8 @@ class SupplierApi:
         except Exception:
             raise RuntimeError('HOOK_UPSTREAM_UNAVAILABLE') from None
 
-    def identity(self, expected=None):
+    def component_identity(self):
+        """Inspect the running component without querying the login account."""
         directory = self.root / 'state/hook/supplier-4.1.8.27'
         manifest = read_json(directory / 'manifest.json')
         runtime = runtime_directory(self.root)
@@ -185,167 +195,14 @@ class SupplierApi:
         if manifest.get('version') != VERSION or any(hashlib.sha256(file.read_bytes()).hexdigest() != manifest.get('dllSha256') for file in (dll, staged)):
             raise RuntimeError('HOOK_SUPPLIED_DLL_HASH_MISMATCH')
         pid = self.inspect_process(urlsplit(self.url).port, (self.root / self.hook['wechatExecutable']).resolve(), dll)
+        return {'pid': pid, 'version': VERSION}
+
+    def identity(self):
+        """Read single-account metadata once during connection setup."""
+        component = self.component_identity()
         # This route is present in the supplied binary; get_profile_cache isn't.
         profile = self.post('/api/get_profile_new')
         wxid = profile.get('userInfo', {}).get('userName', {}).get('String', '') if isinstance(profile, dict) else ''
         if profile.get('baseResponse', {}).get('ret') != 0 or not isinstance(wxid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', wxid):
             raise RuntimeError('HOOK_LOGIN_REQUIRED')
-        if expected and wxid.lower() != expected.lower():
-            raise RuntimeError('HOOK_ACCOUNT_MISMATCH')
-        return {'wxid': wxid, 'pid': pid, 'version': VERSION}
-
-    def databases(self):
-        result = self.post('/api/get_db_handle')
-        values = result.get('data') if isinstance(result, dict) else None
-        if not isinstance(values, list):
-            raise RuntimeError('HOOK_DATABASE_LIST_INVALID')
-        names = [row.get('name') for row in values if isinstance(row, dict)]
-        if any(not isinstance(n, str) or not re.fullmatch(r'[A-Za-z0-9_]+\.db', n) for n in names) or len(names) != len(set(names)):
-            raise RuntimeError('HOOK_DATABASE_LIST_INVALID')
-        return names
-
-    def query(self, db, sql):
-        if not re.fullmatch(r'[A-Za-z0-9_]+\.db', db):
-            raise ValueError('HOOK_DATABASE_INVALID')
-        # All SQL comes from fixed application queries, never model/user input.
-        stripped = re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", '', sql)
-        if not re.match(r'^\s*(SELECT\b|PRAGMA\s+table_info\()', sql, re.I) or re.search(r';|--|/\*|\b(load_extension|writefile|readfile|attach|insert|update|delete)\b', stripped, re.I):
-            raise ValueError('HOOK_SQL_READ_ONLY_REQUIRED')
-        result = self.post('/api/sqlite3_exec', {'db_name': db, 'sql_fmt': sql})
-        # The delivered build wraps rows, whereas the published example was an array.
-        if isinstance(result, dict) and result.get('code') == 1:
-            result = result.get('data')
-        elif isinstance(result, dict) and result.get('code') == 0 and result.get('msg') == 'no data' and result.get('total') == 0:
-            result = []
-        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
-            raise RuntimeError('HOOK_SQL_RESPONSE_INVALID')
-        return result
-
-
-def bind_sql(sql, params):
-    parts, at, quote = [], 0, None
-    index = 0
-    while index < len(sql):
-        ch = sql[index]
-        if quote:
-            parts.append(ch)
-            if ch == quote:
-                if index + 1 < len(sql) and sql[index + 1] == quote:
-                    parts.append(ch)
-                    index += 1
-                else:
-                    quote = None
-        elif ch in "'\"":
-            quote = ch
-            parts.append(ch)
-        elif ch == '?':
-            if at >= len(params):
-                raise ValueError('HOOK_SQL_PARAMETERS_INVALID')
-            value, at = params[at], at + 1
-            if value is None:
-                parts.append('NULL')
-            elif isinstance(value, int):
-                parts.append(str(value))
-            elif isinstance(value, str) and '\0' not in value:
-                parts.append("'" + value.replace("'", "''") + "'")
-            else:
-                raise ValueError('HOOK_SQL_PARAMETERS_INVALID')
-        else:
-            parts.append(ch)
-        index += 1
-    if at != len(params) or quote:
-        raise ValueError('HOOK_SQL_PARAMETERS_INVALID')
-    return ''.join(parts)
-
-
-def split_projection(text):
-    result, start, depth, quote = [], 0, 0, None
-    for i, ch in enumerate(text):
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == '(':
-            depth += 1
-        elif ch == ')':
-            depth -= 1
-        elif ch == ',' and depth == 0:
-            result.append(text[start:i].strip())
-            start = i + 1
-    return result + [text[start:].strip()]
-
-
-class RemoteCursor:
-    """Small read-only DB-API surface used by the existing message parser.
-
-    Explicit aliases preserve column order even if the upstream JSON object is
-    sorted alphabetically. Hex transports BLOBs omitted by the supplier API.
-    """
-    def __init__(self, api, name):
-        self.api, self.name, self.rows = api, name, []
-
-    def execute(self, sql, params=()):
-        if sql in ('PRAGMA query_only=ON', 'PRAGMA busy_timeout=2000'):
-            self.rows = []
-            return self
-        sql = bind_sql(sql, params)
-        # This supplied build miscounts sqlite_master by name alone for Msg_*
-        # tables. Constrain the fixed parser existence query to actual tables.
-        sql = re.sub(r"\bFROM sqlite_master WHERE name=", "FROM sqlite_master WHERE type='table' AND name=", sql, flags=re.I)
-        pragma = re.fullmatch(r'PRAGMA table_info\(["\']?([A-Za-z0-9_]+)["\']?\)', sql, re.I)
-        if pragma:
-            rows = self.api.query(self.name, sql)
-            self.rows = [(int(r['cid']), r['name'], r.get('type', ''), int(r.get('notnull', 0)), r.get('dflt_value'), int(r.get('pk', 0))) for r in rows]
-            return self
-        match = re.match(r'^SELECT (.+?) FROM (.+)$', sql, re.I | re.S)
-        if not match:
-            raise ValueError('HOOK_SQL_SHAPE_UNSUPPORTED')
-        fields = split_projection(match[1])
-        numeric = {'local_id', 'server_id', 'local_type', 'real_sender_id', 'create_time', 'rowid'}
-        blobs = {'message_content', 'voice_data', 'packed_info'}
-        expressions, kinds = [], []
-        for i, field in enumerate(fields):
-            name = field.strip('"').split('.')[-1].strip('"')
-            kind = 'blob' if name in blobs else 'int' if name in numeric or re.fullmatch(r'COUNT\(\*\)', field, re.I) else 'text'
-            expressions.append(('hex(CAST(' + field + ' AS BLOB))' if kind == 'blob' else field) + ' AS "__c' + str(i) + '"')
-            kinds.append(kind)
-        rows = self.api.query(self.name, 'SELECT ' + ','.join(expressions) + ' FROM ' + match[2])
-        self.rows = []
-        for row in rows:
-            values = []
-            for i, kind in enumerate(kinds):
-                key = '__c' + str(i)
-                if key not in row:
-                    raise RuntimeError('HOOK_SQL_COLUMN_MISSING')
-                value = row[key]
-                values.append(bytes.fromhex(value or '') if kind == 'blob' else int(value or 0) if kind == 'int' else value)
-            self.rows.append(tuple(values))
-        return self
-
-    def fetchall(self):
-        rows, self.rows = self.rows, []
-        return rows
-
-    def fetchone(self):
-        return self.rows.pop(0) if self.rows else None
-
-    def __iter__(self):
-        return iter(self.fetchall())
-
-    def close(self):
-        self.rows = []
-
-
-class RemoteConnection:
-    def __init__(self, api, name):
-        self.api, self.name = api, name
-
-    def cursor(self):
-        return RemoteCursor(self.api, self.name)
-
-    def execute(self, sql, params=()):
-        return self.cursor().execute(sql, params)
-
-    def close(self):
-        pass
+        return {'wxid': wxid, **component}

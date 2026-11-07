@@ -302,7 +302,7 @@ async function fixture(t) {
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
-  for(const name of ['persona-evolution.mjs','persona-generation.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs','drawing-tools.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
+  for(const name of ['persona-evolution.mjs','persona-generation.mjs','persona-proposal-tools.mjs','console-client.mjs','singing-performance.mjs','drawing-tools.mjs','wechat-management-tools.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['public/console/persona-files.mjs','components/qq-bridge/src/role-card.js']){fs.mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});fs.copyFileSync(name,path.join(dir,name));}
   for(const name of ['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-feedback.mjs','assistant-notifications.mjs','social-tool-restrict.mjs','assistant-tasks.mjs','assistant-control.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','singing-tools.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['web-reader.mjs','web-reader-policy.mjs','web-reader-fetch.mjs','web-reader-content.mjs','web-reader-zxsj.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
@@ -1480,6 +1480,61 @@ test('member chat headers omit toolChoice entirely and stay lossless JSON while 
  assert.equal(r.calls.requests.at(-1).toolChoice,'auto');assert(r.calls.requests.at(-1).tools.some(tool=>tool.name==='pwsh'));assert.equal(r.calls.model.length,2);
 });
 
+function nativeSharedMemoryInput(inputs){
+ const lines=inputs.flatMap(message=>(message.content??[]).filter(block=>block.type==='text').flatMap(block=>block.text.split('\n')));
+ return lines.filter(line=>line.startsWith('{"source":"untrusted_allowed_account_memory"')).map(line=>JSON.parse(line));
+}
+for(const historyMode of ['window','bounded'])test('native '+historyMode+' turns share group/private memories with source identity and revoke stale sources without recursive indexing',async t=>{
+ const f=await fixture(t),group='wechat:group:456',at=Math.floor(Date.now()/1000),configFile=path.join(f.dir,'config/wechatagent.json');
+ const groupFact='SHARED_GROUP_FACT Alice wants to sing on Saturday',privateFact='SHARED_PRIVATE_FACT Bob prefers quiet evenings',reasoning='SHARED_INTERNAL_REASONING_MUST_NOT_BECOME_A_MEMORY';
+ const voiceUrl='wechatagent://voice/'+'a'.repeat(64),imageUrl='private-original-image-url',attachmentPath='private-original-attachment-path';
+ const settings={wechat:{whitelist:{private:['123'],groups:['456']},history:{enabled:true,mode:historyMode,windowStrategy:'append',recentMessages:8,recentChars:4000}}};
+ fs.mkdirSync(path.dirname(configFile),{recursive:true});const saveConfig=()=>fs.writeFileSync(configFile,JSON.stringify(settings));saveConfig();
+ const rows={
+  [group]:[{id:'shared-group-row',platform:'wechat',kind:'group',conversation_id:'456',conversation_name:'Saturday room',sender_id:'42',sender_name:'Alice',sender_key:'b'.repeat(64),message_id:'shared-group-message',timestamp:at-20,text:groupFact+' '+voiceUrl,processed:true,
+    voice:{url:'private-original-voice-url'},images:[{id:'c'.repeat(64),url:imageUrl}],files:[{path:attachmentPath}]}],
+  [key]:[{id:'shared-private-row',platform:'wechat',kind:'private',conversation_id:'123',conversation_name:'Bob private',sender_id:'123',sender_name:'Bob',message_id:'shared-private-message',timestamp:at-10,text:privateFact,processed:true}]
+ };
+ fs.writeFileSync(path.join(f.dir,'state/social-messages.json'),JSON.stringify({version:1,chats:rows,pendingReplies:{}}));
+ const r=await f.start({assistantMessages:[[{type:'reasoning',text:reasoning},{type:'text',text:'RESPOND: Offline shared-memory response'}]]});
+ const firstGroup=await r.request('/followup',{...info,conversationKey:group,conversationName:'Saturday room',message:'群里的一条普通问候'});
+ const firstPrivate=await r.request('/followup',{...info,conversationName:'Bob private',message:'私聊的一条普通问候'});
+ assert.notEqual(firstGroup.sessionId,firstPrivate.sessionId,'delivery conversations retain distinct native journals');
+ const privateMemory=nativeSharedMemoryInput(r.calls.inputs.at(-1));assert.equal(privateMemory.length,1);
+ const groupSource=privateMemory[0].recent.find(record=>record.text.includes(groupFact));assert(groupSource);
+ assert.equal(groupSource.conversationKey,group);assert.equal(groupSource.conversationName,'Saturday room');assert.equal(groupSource.kind,'group');assert.equal(groupSource.senderId,'42');assert.equal(groupSource.senderKey,'b'.repeat(64));assert.equal(groupSource.speaker,'Alice');
+ await r.request('/followup',{...info,conversationKey:group,conversationName:'Saturday room',message:'群里继续自然交流'});
+ const groupMemory=nativeSharedMemoryInput(r.calls.inputs.at(-1));assert.equal(groupMemory.length,1);
+ const privateSource=groupMemory[0].recent.find(record=>record.text.includes(privateFact));assert(privateSource);
+ assert.equal(privateSource.conversationKey,key);assert.equal(privateSource.conversationName,'Bob private');assert.equal(privateSource.kind,'private');assert.equal(privateSource.senderId,'123');assert.equal(privateSource.speaker,'Bob');
+ const crossContext=JSON.stringify([privateMemory,groupMemory]);
+ for(const excluded of [reasoning,voiceUrl,'private-original-voice-url',imageUrl,attachmentPath,'"images"','"voice"','"files"'])assert(!crossContext.includes(excluded),excluded);
+ settings.wechat.history.enabled=false;saveConfig();
+ await r.request('/followup',{...info,conversationKey:group,conversationName:'Saturday room',message:'直接关闭全部历史后的群聊'});
+ assert.deepEqual(nativeSharedMemoryInput(r.calls.inputs.at(-1)),[]);assert(!r.calls.model.at(-1).includes(privateFact),'disabling window history also retires its previous shared tail');
+ settings.wechat.history.enabled=true;saveConfig();
+ await r.request('/followup',{...info,conversationKey:group,conversationName:'Saturday room',message:'重新开启历史后的群聊'});
+ assert(JSON.stringify(nativeSharedMemoryInput(r.calls.inputs.at(-1))).includes(privateFact));
+ settings.wechat.whitelist.private=[];saveConfig();
+ await r.request('/followup',{...info,conversationKey:group,conversationName:'Saturday room',message:'移除私聊授权后的新一轮'});
+ const revoked=nativeSharedMemoryInput(r.calls.inputs.at(-1));assert.equal(revoked.length,1);assert(!JSON.stringify(revoked).includes(privateFact));assert(!r.calls.model.at(-1).includes(privateFact),'old shared context is not retained on the model surface');
+ settings.wechat.whitelist.private=['123'];settings.wechat.whitelist.groups=[];saveConfig();
+ await r.request('/followup',{...info,message:'移除群聊授权后的私聊新一轮'});
+ assert(!JSON.stringify(nativeSharedMemoryInput(r.calls.inputs.at(-1))).includes(groupFact));assert(!r.calls.model.at(-1).includes(groupFact));
+ settings.wechat.whitelist.groups=['456'];settings.wechat.history.chats={[group]:false};saveConfig();
+ await r.request('/followup',{...info,message:'群聊历史关闭后的私聊'});
+ assert(!JSON.stringify(nativeSharedMemoryInput(r.calls.inputs.at(-1))).includes(groupFact));
+ settings.wechat.history.enabled=false;saveConfig();
+ await r.request('/followup',{...info,message:'全部历史关闭后的私聊'});
+ assert.deepEqual(nativeSharedMemoryInput(r.calls.inputs.at(-1)),[]);
+ const archive=new HistoryStore(f.dir);try{
+  assert.equal(archive.db.prepare("SELECT count(*) n FROM records WHERE text LIKE '%untrusted_allowed_account_memory%' OR text LIKE '%共同记忆与身份连续性%' OR text LIKE ?").get('%'+reasoning+'%').n,0,'transient shared evidence and native reasoning never become new chat records');
+  assert.equal(archive.search(key,'SHARED_GROUP_FACT').length,0,'group facts stay in their original archive instead of being copied into private chat records');
+  assert.equal(archive.search(group,'SHARED_PRIVATE_FACT').length,0,'private facts stay in their original archive instead of being copied into group chat records');
+  assert(archive.search(group,'SHARED_GROUP_FACT').length);assert(archive.search(key,'SHARED_PRIVATE_FACT').length);
+ }finally{archive.close();}
+});
+
 test('preset discovery retries a startup registration race once before any session or model admission',async t=>{
  const f=await fixture(t),r=await f.start();let resolutions=0;
  r.ctx.agentPresets.resolve=async id=>{if(++resolutions===1)throw Object.assign(Error('Unknown agent preset: '+id),{code:'agent-preset/not-found'});return {id};};
@@ -1510,4 +1565,42 @@ test('preset preflight does not retry unrelated failures and rechecks owner revo
  const failed=await r.request('/assistant-task/submit',body,503);assert.equal(failed.detail,'FIXTURE_PERMISSION_DENIED');assert.equal(calls,1);
  calls=0;r.ctx.agentPresets.resolve=async id=>{if(++calls===1)throw Error('Unknown agent preset: '+id);settings.wechat.assistant.administrators=[];fs.writeFileSync(file,JSON.stringify(settings));return {id};};
  await r.request('/assistant-task/submit',body,403);assert.equal(calls,2);assert.equal(r.calls.create.length,0);assert.equal(r.calls.model.length,0);
+});
+
+for(const historyMode of ['window','bounded'])test('native assistant-chat '+historyMode+' members receive shared identity memory without acquiring tools and lose revoked sources',async t=>{
+ const f=await fixture(t),group='wechat:group:456',at=Math.floor(Date.now()/1000),file=path.join(f.dir,'config/wechatagent.json');
+ const privateFact='MEMBER_SHARED_PRIVATE_FACT Bob enjoys calm music',groupFact='MEMBER_SHARED_GROUP_FACT Alice chose Saturday';
+ const settings={wechat:{whitelist:{private:['123'],groups:['456']},history:{enabled:true,mode:historyMode,windowStrategy:'append',recentMessages:8,recentChars:4000},workModes:{[group]:'assistant'},assistant:{administrators:['wxid_admin'],adminOnlyGroups:{[group]:true}}}};
+ fs.mkdirSync(path.dirname(file),{recursive:true});const save=()=>fs.writeFileSync(file,JSON.stringify(settings));save();
+ fs.writeFileSync(path.join(f.dir,'state/social-messages.json'),JSON.stringify({version:1,chats:{
+  [key]:[{id:'member-private-source',platform:'wechat',kind:'private',conversation_id:'123',conversation_name:'Bob private',sender_id:'123',sender_name:'Bob',message_id:'member-private-message',timestamp:at-20,text:privateFact,processed:true}],
+  [group]:[{id:'member-group-source',platform:'wechat',kind:'group',conversation_id:'456',conversation_name:'Saturday room',sender_id:'42',sender_name:'Alice',sender_key:'b'.repeat(64),message_id:'member-group-message',timestamp:at-10,text:groupFact,processed:true}]
+ },pendingReplies:{}}));
+ const {CHAT_IDENTITY_NOTICE}=await import('../packages/dsh-social-bridge-plugin/prompt-context.mjs');
+ const r=await f.start({requestSeed:{tools:[{name:'pwsh',parameters:{type:'object'}}]}});
+ await r.request('/followup',{...info,conversationName:'Bob private',message:'先进行私聊，让原会话档案可用'});
+ const body={...info,conversationKey:group,conversationName:'Saturday room',assistantSender:'wxid_member'};
+ const result=await r.request('/assistant-chat',{...body,message:'普通群友向同一个你问好'}),member=r.agents.get(result.sessionId);
+ const assertToolFree=()=>{assert.equal(member.registeredTools.size,0);assert.deepEqual(r.calls.requests.at(-1).tools,[]);assert.equal(member.ctx[Symbol.for('wechatagent.assistant-access.v1')](),false);assert(member.toolGuards.some(guard=>typeof guard({agent:member,name:'pwsh'})==='string'));};
+ assertToolFree();
+ const shared=nativeSharedMemoryInput(r.calls.inputs.at(-1));assert.equal(shared.length,1);
+ const record=shared[0].recent.find(row=>row.text.includes(privateFact));assert(record);assert.equal(record.conversationKey,key);assert.equal(record.conversationName,'Bob private');assert.equal(record.speaker,'Bob');assert.equal(record.senderId,'123');assert.equal(record.kind,'private');
+ const modelText=()=>r.calls.inputs.at(-1).flatMap(message=>message.content??[]).map(block=>block.text??'').join('\n');
+ assert(modelText().includes(CHAT_IDENTITY_NOTICE));
+ await r.request('/followup',{...info,message:'回到私聊也记得群友的经历'});
+ const reverse=nativeSharedMemoryInput(r.calls.inputs.at(-1))[0]?.recent.find(row=>row.text.includes(groupFact));assert(reverse);assert.equal(reverse.conversationKey,group);assert.equal(reverse.speaker,'Alice');assert.equal(reverse.senderKey,'b'.repeat(64));assert.equal(reverse.workMode,'assistant-chat');
+ settings.wechat.whitelist.private=[];save();
+ assert.equal((await r.request('/assistant-chat',{...body,message:'撤销私聊来源后的成员聊天'})).sessionId,result.sessionId);assertToolFree();
+ assert(!JSON.stringify(nativeSharedMemoryInput(r.calls.inputs.at(-1))).includes(privateFact));assert(!modelText().includes(privateFact));
+ settings.wechat.whitelist.private=['123'];settings.wechat.history.chats={[key]:false};save();
+ await r.request('/assistant-chat',{...body,message:'私聊历史关闭后的成员聊天'});assertToolFree();assert(!modelText().includes(privateFact));
+ settings.wechat.history.chats={};save();
+ await r.request('/assistant-chat',{...body,message:'重新开启后能自然记起私聊经历'});assertToolFree();assert(JSON.stringify(nativeSharedMemoryInput(r.calls.inputs.at(-1))).includes(privateFact));
+ settings.wechat.history.enabled=false;save();
+ await r.request('/assistant-chat',{...body,message:'全部历史关闭后的成员聊天'});assertToolFree();assert.deepEqual(nativeSharedMemoryInput(r.calls.inputs.at(-1)),[]);assert(!modelText().includes(privateFact));assert(modelText().includes(CHAT_IDENTITY_NOTICE));
+ const archive=new HistoryStore(f.dir);try{
+  assert(archive.rows(group+':assistant-chat').some(row=>row.text===groupFact));
+  assert.equal(archive.search(group+':assistant-chat','MEMBER_SHARED_PRIVATE_FACT').length,0);
+  assert.equal(archive.db.prepare("SELECT count(*) n FROM records WHERE text LIKE '%untrusted_allowed_account_memory%'").get().n,0);
+ }finally{archive.close();}
 });

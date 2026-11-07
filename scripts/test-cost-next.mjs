@@ -9,19 +9,19 @@ function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'wca-cost-ne
 
 test('one batched lookup merges alternatives, bounds duplicate evidence and reserves the second lookup for original context',async t=>{
  const f=fixture(t);for(let i=1;i<=8;i++)f.store.append(key,{id:'r'+i,sender_id:'123',timestamp:1000+i,text:'桂花面与石桥的约定'+i});f.store.append(other,{id:'other',sender_id:'456',text:'其他聊天的桂花面秘密'});
- let searches=0;const search=f.store.search.bind(f.store);f.store.search=(...args)=>{searches++;return search(...args);};
+ let searches=0;const search=f.store.sharedSearch.bind(f.store);f.store.sharedSearch=(...args)=>{searches++;return search(...args);};
  const first=JSON.parse((await f.tool.execute({queries:[' 桂花面 ','石桥','桂花面']})).content);assert.equal(searches,2);assert(first.matches.length>0&&first.matches.length<=6);assert.equal(new Set(first.matches.map(m=>m.id)).size,first.matches.length);assert(!JSON.stringify(first).includes('其他聊天'));assert.equal(first.budget.remaining,1);
  const reused=JSON.parse((await f.tool.execute({mode:'search',queries:['石桥','桂花面']})).content);assert.equal(reused.reused,true);assert.equal(searches,2);assert.equal(reused.budget.remaining,1);assert.deepEqual(reused.matches,first.matches);
  const subset=JSON.parse((await f.tool.execute({query:'桂花面'})).content);assert(subset.reused);assert.equal(subset.budget.remaining,1);assert.equal(searches,2);
  const expanded=await f.tool.execute({mode:'message',messageId:first.matches[0].id,context:2});assert.equal(expanded.isError,false);assert.equal(JSON.parse(expanded.content).budget.remaining,0);
  const denied=await f.tool.execute({query:'另一个旧事'});assert.equal(denied.isError,true);assert.equal(JSON.parse(denied.content).error,'HISTORY_TURN_LIMIT');assert.equal(searches,2);assert.match(denied.content,/RESPOND/);
- const rendered=f.tool.output.render({},expanded);assert(rendered.some(b=>b.text.includes(SOCIAL_FINAL_OUTPUT_HINT)));assert.equal(JSON.parse(expanded.content).source,'untrusted_local_chat_archive');
+ const rendered=f.tool.output.render({},expanded);assert(rendered.some(b=>b.text.includes(SOCIAL_FINAL_OUTPUT_HINT)));assert.equal(JSON.parse(expanded.content).source,'untrusted_allowed_account_archive');
  assert.equal(JSON.parse((await f.tool.execute({queries:['桂花面','石桥']})).content).reused,true);assert.equal(searches,2);
  f.reset();await f.tool.execute({queries:['桂花面','石桥']});assert.equal(searches,4);f.deny();assert.equal((await f.tool.execute({queries:['桂花面','石桥']})).isError,true);assert.equal(searches,4);
 });
 
 test('query normalization reuses only equivalent requests and validates filters before local lookup',async t=>{
- const f=fixture(t);let queries=[];f.store.search=(_key,query)=>{queries.push(query);return [];};
+ const f=fixture(t);let queries=[];f.store.sharedSearch=(_keys,query)=>{queries.push(query);return [];};
  await f.tool.execute({query:' ＣＡＦＥ   time '});const again=JSON.parse((await f.tool.execute({queries:['cafe time']})).content);assert(again.reused);assert.deepEqual(queries,['cafe time']);
  await f.tool.execute({query:'cafe time',before:500});assert.equal(queries.length,2);
  for(const args of [{query:'cafe time',conversationKey:other},{queries:[]},{queries:['a']},{queries:['aa','bb','cc','dd']},{query:'aa',queries:['bb']},{query:'aa',after:NaN},{query:'aa',after:10,before:5},{mode:'message',messageId:0},{mode:'message',messageId:1,context:3}])assert.equal((await f.tool.execute(args)).isError,true,JSON.stringify(args));

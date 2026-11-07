@@ -81,8 +81,8 @@ export function createNativeImageDelivery({root,config,enabledFor,reader,fetchIm
   function persist(r){local(path.join(directory,r.id+'.json'));fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json'),temporary=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(temporary,JSON.stringify(r),{flag:'wx',mode:0o600});fs.renameSync(temporary,file);records.set(r.id,r);}
   function getRecord(id,key){assertScope(key);const r=records.get(id);if(!identifier(id)||!r||r.key!==key||r.accountScope!==scope())fail('IMAGE_DELIVERY_NOT_FOUND');return r;}
   const get=(id,key)=>view(getRecord(id,key));
-  async function api(route,body,signal,account){
-    const response=await fetchImpl(origin()+route,{method:body?'POST':'GET',redirect:'error',headers:{Authorization:'Bearer '+token(),...(body?{'Content-Type':'application/json','X-WeChatAgent-Account':account}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.any([signal,AbortSignal.timeout(body?35000:4000)])});
+  async function api(route,body,signal){
+    const response=await fetchImpl(origin()+route,{method:body?'POST':'GET',redirect:'error',headers:{Authorization:'Bearer '+token(),...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.any([signal,AbortSignal.timeout(body?35000:4000)])});
     if(!response.ok)fail('IMAGE_HTTP_'+response.status);let size=0;const chunks=[];for await(const chunk of response.body){size+=chunk.length;if(size>128*1024)fail('IMAGE_HOOK_RESPONSE_INVALID');chunks.push(chunk);}return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
   async function capture(key,{signal=new AbortController().signal}={}){
@@ -118,7 +118,7 @@ export function createNativeImageDelivery({root,config,enabledFor,reader,fetchIm
           const file=local(path.join(directory,r.id+r.extension)),bytes=fs.readFileSync(file);if(imageMetadata(bytes).sha256!==r.sha256)fail('IMAGE_FILE_CHANGED');
           r.baseline=(await rowsFor(r)).map(row=>String(row.localId));signal.throwIfAborted();if(assertScope(r.key)!==r.accountScope||r.binding!==binding())fail('IMAGE_ACCOUNT_CHANGED');
           r.state='dispatching';r.startedAt=now();persist(r);
-          try{const result=await api('/SendImageMsg',{wxidorgid:r.target,path:file,md5:r.md5,size:r.size},signal,r.accountDirectory);
+          try{const result=await api('/SendImageMsg',{wxidorgid:r.target,path:file,md5:r.md5,size:r.size},signal);
             if(result?.ret!==0){r.state='failed';r.error='IMAGE_NATIVE_REJECTED';persist(r);return;}r.state='submitted';persist(r);
           }catch(error){r.submissionCode=safeError(error);persist(r);}
         }

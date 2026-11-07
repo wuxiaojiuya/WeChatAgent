@@ -42,3 +42,20 @@ test('health response timeout is distinct and recoverable while invalid wait opt
  await assert.rejects(adapter.waitForNative({timeoutMs:Infinity}),/INVALID_HOOK_WAIT/);
  assert.match(taskFailureMessage('HOOK_HEALTH_TIMEOUT',1),/响应超时/);assert.match(taskFailureMessage('HOOK_HEALTH_INVALID_RESPONSE',1),/无效响应/);
 });
+
+test('supplier startup uses single-account component readiness without account lists or account headers',async t=>{
+ const adapter=fixture(t,async()=>new Response(JSON.stringify({integration:'WeChatAgent-supplier-v1',backend:'wechat-hook',provider:'supplier-http',version:'4.1.8.27',startupState:'ready',nativeVoiceSend:true})));
+ const file=path.join(adapter.directory,'config/wechatagent.json'),config=JSON.parse(fs.readFileSync(file,'utf8'));
+ Object.assign(config.hook,{backend:'supplier-http',expectedVersion:'4.1.8.27'});fs.writeFileSync(file,JSON.stringify(config));adapter.reload();
+ const original=adapter.fetch;let bodyRequest;
+ adapter.fetch=async(url,options)=>{
+   if(url.includes('/api/v1/reader/status'))return new Response(JSON.stringify({backend:'supplier-http',ownWxid:'wxid_fixture',accountDirectory:'wxid_fixture'}));
+   if(options.method==='POST'){bodyRequest=options;return new Response(JSON.stringify({ret:0}));}
+   return original(url,options);
+ };
+ await adapter.checkNative();
+ assert.equal(adapter.status.hook_ready,true);assert.equal(adapter.status.hook_account_verified,false);assert.equal(adapter.status.hook_account_verification,'not-required');assert.equal(adapter.status.native_voice_send,true);
+ await adapter.native('/SendTextMsg',{wxidorgid:'fixture_peer',msg:'fixture'},'old_saved_account');
+ assert.equal(bodyRequest.headers['X-WeChatAgent-Account'],undefined);assert.match(bodyRequest.headers.Authorization,/^Bearer /);
+ const result=await adapter.action({action:'get_status',params:{}});assert.equal(result.data.online,true);
+});

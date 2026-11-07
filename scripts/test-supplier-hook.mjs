@@ -19,11 +19,15 @@ test('supplier profile rejects mixed versions and non-loopback or overlapping up
     const bad=structuredClone(c);mutate(bad);assert.throws(()=>validateConfig(bad));
   }
 });
-test('supplier account health cannot be satisfied by the previous project DLL',()=>{
+test('supplier single-account health checks the component without comparing login accounts',()=>{
   const health={integration:'WeChatAgent-supplier-v1',backend:'wechat-hook',provider:'supplier-http',version:'4.1.8.27',startupState:'ready',databaseAccounts:['wxid_self']};
   assert.equal(hookAccountProblem(health,'wxid_self','4.1.8.27'),'');
   assert.equal(hookAccountProblem({...health,integration:'WeChatAgent-1'},'wxid_self','4.1.8.27'),'REVIEWED_HOOK_BUILD_REQUIRED');
-  assert.equal(hookAccountProblem(health,'other','4.1.8.27'),'HOOK_ACCOUNT_MISMATCH');
+  assert.equal(hookAccountProblem(health,'other','4.1.8.27'),'');
+  assert.equal(hookAccountProblem({...health,databaseAccounts:undefined},'','4.1.8.27'),'');
+  assert.equal(hookAccountProblem({...health,databaseAccounts:['old','other']},undefined,'4.1.8.27'),'');
+  assert.equal(hookAccountProblem({...health,startupState:'waiting'},'other','4.1.8.27'),'HOOK_INITIALIZATION_PENDING');
+  assert.equal(hookAccountProblem({...health,version:'4.1.10.27'},'other','4.1.8.27'),'HOOK_VERSION_MISMATCH');
 });
 test('connection page uses bundled Hook without editable component or HTTP address fields',()=>{
   const source=fs.readFileSync(new URL('../public/console/console.js',import.meta.url),'utf8');
@@ -35,6 +39,12 @@ test('connection page uses bundled Hook without editable component or HTTP addre
   assert.doesNotMatch(html,/data-key="hook\.(sourceDirectory|upstreamUrl|baseUrl|voiceBaseUrl)"/);
   assert.doesNotMatch(html,/id="reader-db-path"|id="reader-key"|id="detect-reader"|id="scan-reader"/);
   assert.match(html,/data-action="reader-connect"/);
+});
+test('supplier API, reader and connection probe contain no database-access implementation',()=>{
+  for(const script of ['supplier_api.py','supplier_reader.py','supplier-probe.py']){
+    const source=fs.readFileSync(new URL(script,import.meta.url),'utf8');
+    assert.equal(/['"]\/api\/(?:get_db_handle|sqlite3_exec)['"]|\bRemoteConnection\b/.test(source),false,script+' must not implement WeChat database access');
+  }
 });
 
 test('saved console settings restore bundled paths and endpoints even when a stale client submits custom values',async t=>{
@@ -55,11 +65,14 @@ test('saved console settings restore bundled paths and endpoints even when a sta
   for(const [key,value] of Object.entries(BUNDLED_SUPPLIER_HOOK))assert.equal(stored.hook[key],value);
   assert.equal(configureBundledHook(stored),false);assert.doesNotThrow(()=>validateConsoleConfig(stored,root));
 });
-test('Python supplier contracts cover SQL, full history, media, authentication and send mapping',async()=>{
+test('Python supplier contracts cover push reception, local cache, media, authentication and send mapping',async()=>{
   const root=fileURLToPath(new URL('..',import.meta.url));
   const file=new URL('../config/wechatagent.json',import.meta.url);
   const config=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')):{};
   const python=process.env.WECHATAGENT_TEST_PYTHON??config.runtime?.python??'python';
-  const {stdout,stderr}=await promisify(execFile)(python,['-B',path.join(root,'scripts/test_supplier_hook.py')],{windowsHide:true,timeout:30000,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'}});
-  assert.match(stdout+stderr,/OK/);
+  const scripts=['test-supplier-api-surface.py','test-supplier-contacts.py','test-supplier-actions.py','test-supplier-events.py','test_supplier_hook.py','test-supplier-social-actions.py','test-supplier-social-results.py','test-supplier-social-gateway.py'];
+  for(const script of scripts){
+    const {stdout,stderr}=await promisify(execFile)(python,['-B',path.join(root,'scripts',script)],{windowsHide:true,timeout:30000,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'}});
+    assert.match(stdout+stderr,/OK/);
+  }
 });

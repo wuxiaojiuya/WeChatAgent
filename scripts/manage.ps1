@@ -1,4 +1,4 @@
-param([ValidateSet('start','stop','restart','status','prepare')][string]$Action = 'start')
+﻿param([ValidateSet('start','stop','restart','status','prepare')][string]$Action = 'start')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $stateDir = Join-Path $root 'state'
@@ -182,10 +182,10 @@ function Show-Status($Config) {
             if ($_.ErrorDetails.Message -match '读取组件已过期|expired') { $databaseError = 'Native database component expired.' }
         }
     }
-    Write-Output ('Database ready: ' + $databaseReady)
+    Write-Output ('Message API ready: ' + $databaseReady)
     if ($databaseReady -and (-not $Config.runtime.weflowMode -or $Config.runtime.weflowMode -eq 'nt')) {
         $readerStatus = Invoke-RestMethod ($api.reader_base_url + '/api/v1/reader/status') -Headers @{Authorization='Bearer '+$api.reader_token} -TimeoutSec 3
-        Write-Output ('Reader polling healthy: ' + (-not [bool]$readerStatus.lastError))
+        Write-Output ('Message dispatcher healthy: ' + (-not [bool]$readerStatus.lastError))
     }
     if ($databaseError) { Write-Output $databaseError }
     if (Test-Port ([int]$Config.ports.adapter)) {
@@ -193,7 +193,7 @@ function Show-Status($Config) {
         Write-Output ('OneBot connected: '+$status.ob_connected); Write-Output ('Reader connected: '+$status.reader_connected)
         if ($hookSender) {
             Write-Output ('Hook connected: '+$status.hook_connected)
-            Write-Output ('Hook account verified: '+$status.hook_account_verified)
+            Write-Output ('Hook ready: '+$status.hook_ready+'; account verification: '+$status.hook_account_verification)
             Write-Output ('Hook version: '+$status.version)
             if ($status.last_error) { Write-Output ('Hook last error: '+$status.last_error) }
         }

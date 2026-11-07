@@ -180,6 +180,17 @@ function syncWindowTail(session,window,makeMessage){
   session.append('user/message',message,prior?{surfaceOp:{op:'replace',startSeq:prior.seq,endSeq:prior.seq},sourceEventSeqs:[prior.seq]}:{surfaceOp:'append'});
 }
 
+/** Retire transient evidence when a conversation leaves window mode, including
+ * a live history opt-out. The original append-only transcript stays intact. */
+export function retireWindowTail(session,makeMessage){
+  const nodes=new Set(session.surface.nodes);
+  for(const event of session.snapshotEvents()){
+    if(!nodes.has(event.seq)||!source(event).socialWindowTail)continue;
+    const message=makeMessage({content:[{type:'text',text:'上一轮窗口补充资料已退役，以本轮资料为准。'}],source:{kind:'wechat-social-bridge',form:'relay',socialWindowRetired:true}});
+    session.append('user/message',message,{surfaceOp:{op:'replace',startSeq:event.seq,endSeq:event.seq},sourceEventSeqs:[event.seq]});
+  }
+}
+
 /** Hash-only diagnostics: no chat text, persona text or credentials persisted.
  * These are native request segments, not claimed provider cache boundaries. */
 export function describeWindowRequest(messages,tools,previous){

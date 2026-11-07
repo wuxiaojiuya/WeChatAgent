@@ -21,7 +21,7 @@ function fixture(t){
     reader:async route=>route.includes('/reader/status')?state.own:route.includes('/sessions')?{sessions:[{username:target,displayName:'Friend'}]}:{messages:state.rows},
     fetchImpl:async(url,request)=>{
       assert.equal(request.headers.Authorization,'Bearer '+'a'.repeat(64));if(url.endsWith('/WeChatAgent/health'))return Response.json(state.health);
-      assert.equal(url,config.hook.baseUrl+'/SendImageMsg');assert.equal(request.headers['X-WeChatAgent-Account'],'wxid_self');
+      assert.equal(url,config.hook.baseUrl+'/SendImageMsg');assert.equal(request.headers['X-WeChatAgent-Account'],undefined);
       const body=JSON.parse(request.body),saved=JSON.parse(fs.readFileSync(path.join(root,'state/image-output/deliveries',id+'.json')));
       assert.equal(saved.state,'dispatching');assert.equal(body.wxidorgid,target);assert.equal(body.md5,crypto.createHash('md5').update(png).digest('hex'));assert.equal(body.size,png.length);assert.deepEqual(fs.readFileSync(body.path),png);state.posts++;
       if(state.confirm)state.rows=[{isSend:1,localType:3,imageMd5:body.md5,localId:5,serverId:'8047442179716189588',createTime:Math.floor(Date.now()/1000)}];
@@ -41,6 +41,13 @@ test('image metadata checks full PNG structure, CRC and decoded scanline size be
 test('image send stages immutable bytes, persists intent before submission and only confirms a matching server receipt',async t=>{
   const f=fixture(t),result=await f.send();assert.equal(result.state,'confirmed');assert.equal(result.sent,true);assert.equal(f.state.posts,1);assert.equal(result.receipt,'wechat-image-server-id');
   assert.equal((await f.send({file:'unused'})).sent,true);assert.equal(f.state.posts,1);assert.ok(!JSON.stringify(result).includes(f.root));
+});
+
+test('supplier image ignores Hook account lists and sends without an account header',async t=>{
+  for(const databaseAccounts of [undefined,null,[],['another-account'],['first','second']]){
+    const f=fixture(t);f.state.health.databaseAccounts=databaseAccounts;
+    const result=await f.send();assert.equal(result.sent,true);assert.equal(f.state.posts,1);
+  }
 });
 
 test('lost native response still uses exact SQL receipt and never sends a second image',async t=>{

@@ -30,21 +30,22 @@ const {bindPersonaProposalTools}=await import(new URL('./persona-proposal-tools.
 const {generateDefaultPersona}=await import(new URL('./persona-generation.mjs'+runtimeQuery,import.meta.url));
 const {bindSingingTools,voiceReplyOutcome,singingReplyOutcome,singingAllowed}=await import(new URL('./singing-tools.mjs'+runtimeQuery,import.meta.url));
 const {bindDrawingTools,drawingReplyOutcome}=await import(new URL('./drawing-tools.mjs'+runtimeQuery,import.meta.url));
+const {bindWechatManagementTools}=await import(new URL('./wechat-management-tools.mjs'+runtimeQuery,import.meta.url));
 const {planSongPerformance}=await import(new URL('./singing-performance.mjs'+runtimeQuery,import.meta.url));
 const {apply:applyAssistantToolGuard,bindNativeToolPresentation}=await import(new URL('./social-tool-restrict.mjs'+runtimeQuery,import.meta.url));
 const {nativeMemorySummaries}=await import(new URL('./memory-summary.mjs'+runtimeQuery,import.meta.url));
 const {AssistantThinkingFeedback,createProgressWriter}=await import(new URL('./assistant-feedback.mjs'+runtimeQuery,import.meta.url));
 const {bindModelSearch,createModelSearchTurn,modelSearchInstructions,builtinModelSearch,refreshSearchToolBaseline}=await import(new URL('./model-search.mjs'+runtimeQuery,import.meta.url));
 const {createMemeLibrary,bindMemeLibrary}=await import(new URL('./meme-library.mjs'+runtimeQuery,import.meta.url));
-const {PROMPT_POLICY,SOCIAL_FINAL_OUTPUT_HINT,CHAT_RELATIONSHIP_NOTICE,stableChatInstructions,migrateChatContext,syncInstructionSlot,retireTurnContext,dedupePreviousReply}=await import(new URL('./prompt-context.mjs'+runtimeQuery,import.meta.url));
+const {PROMPT_POLICY,SOCIAL_FINAL_OUTPUT_HINT,CHAT_IDENTITY_NOTICE,CHAT_RELATIONSHIP_NOTICE,stableChatInstructions,migrateChatContext,syncInstructionSlot,retireTurnContext,dedupePreviousReply}=await import(new URL('./prompt-context.mjs'+runtimeQuery,import.meta.url));
 const {createMemberMemory,bindMemberMemory}=await import(new URL('./member-memory.mjs'+runtimeQuery,import.meta.url));
 const {admittedSearch,consumeSearchRequest,retireSearchContext}=await import(new URL('./search-budget.mjs'+runtimeQuery,import.meta.url));
 const {SOCIAL_TOOL_ISOLATION,retireSocialToolMetadata}=await import(new URL('./social-tool-policy.mjs'+runtimeQuery,import.meta.url));
 const {contextPolicy,contextRowsIdle,contextBufferVersion}=await import(new URL('./context-policy.mjs'+runtimeQuery,import.meta.url));
 const {HistoryStore}=await import(new URL('./history-store.mjs'+runtimeQuery,import.meta.url));
 const {readHistoryPolicy:baseHistoryPolicy,sessionSize,rotationReason}=await import(new URL('./history-policy.mjs'+runtimeQuery,import.meta.url));
-const {bindHistory,summarizeHistory,recordSessionUsage}=await import(new URL('./history-runtime.mjs'+runtimeQuery,import.meta.url));
-const {REQUEST_WINDOW_MODE,NATIVE_PREFIX_POLICY,APPEND_WINDOW_POLICY,CACHE_LAYOUT,fixedWindowPrefix,inspectWindowSystemPrefix,bindWindowSystemPrefix,recentWindow,windowRecord,appendWindow,dedupeWindowReply,resetWindow,updateWindow,windowTailMessage,describeWindowRequest,displayHistoryPages,selectWakeWindow,omitWakeReplyEcho}=await import(new URL('./request-window.mjs'+runtimeQuery,import.meta.url));
+const {bindHistory,summarizeHistory,recordSessionUsage,sharedIdentityMemoryNotice}=await import(new URL('./history-runtime.mjs'+runtimeQuery,import.meta.url));
+const {REQUEST_WINDOW_MODE,NATIVE_PREFIX_POLICY,APPEND_WINDOW_POLICY,CACHE_LAYOUT,fixedWindowPrefix,inspectWindowSystemPrefix,bindWindowSystemPrefix,recentWindow,windowRecord,appendWindow,dedupeWindowReply,resetWindow,updateWindow,windowTailMessage,retireWindowTail,describeWindowRequest,displayHistoryPages,selectWakeWindow,omitWakeReplyEcho}=await import(new URL('./request-window.mjs'+runtimeQuery,import.meta.url));
 
 const readHistoryPolicy=(root,key,chatOnly=false)=>{const value=baseHistoryPolicy(root,key);return !chatOnly&&readWorkMode(root,key)==='assistant'?{...value,enabled:false}:value;};
 export const name = 'dsh-social-bridge-plugin';
@@ -175,7 +176,7 @@ function createNativeRuntime(ctx, config={}) {
   const extensionBindings = new Map();
   const webReaderBindings = new Map();
   const modelSearchBindings = new Map();
-  const dshBindings=new Map();const fileBindings=new Map();const singingBindings=new Map();const drawingBindings=new Map();const personaBindings=new Map();
+  const dshBindings=new Map();const fileBindings=new Map();const singingBindings=new Map();const drawingBindings=new Map();const personaBindings=new Map();const managementBindings=new Map();
   const memeBindings=new Map();
   const memberMemoryBindings=new Map();
   const historyBindings=new Map();
@@ -497,6 +498,7 @@ function createNativeRuntime(ctx, config={}) {
     if(!fileBindings.has(sid))fileBindings.set(sid,bindFileTools(agent.ctx,root,key,agent,()=>pending.get(sid)?.fileTurn,{isAllowed:()=>accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!singingBindings.has(sid))singingBindings.set(sid,bindSingingTools(agent.ctx,root,key,()=>pending.get(sid)?.singingTurn,{isAllowed:()=>accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!drawingBindings.has(sid))drawingBindings.set(sid,bindDrawingTools(agent.ctx,root,key,()=>pending.get(sid)?.drawingTurn,{isAllowed:()=>accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
+    if(!managementBindings.has(sid))managementBindings.set(sid,bindWechatManagementTools(agent.ctx,root,key,()=>pending.get(sid)?.managementTurn,{scope:loadedAccount.id||loadedAccount.legacyId,isAllowed:()=>!internalGroupChat&&accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!personaBindings.has(sid))personaBindings.set(sid,bindPersonaProposalTools(agent.ctx,root,key,()=>pending.get(sid)?.singingTurn,{isAllowed:()=>!internalGroupChat&&accountReady()&&agent.ctx[ASSISTANT_ACCESS]?.()!==false}));
     if(!dshBindings.has(sid))dshBindings.set(sid,bindDshAccess(agent.ctx,ctx,agent,root,key,()=>pending.get(sid)?.dshAccessTurn,{isAllowed:accountReady}));
     if(!memeBindings.has(sid))memeBindings.set(sid,bindMemeLibrary(agent.ctx,memeLibrary,root,key,()=>pending.get(sid)?.memeTurn,{isAllowed:accountReady}));
@@ -518,7 +520,7 @@ function createNativeRuntime(ctx, config={}) {
     retireSocialToolMetadata(session,createUserMessage);
     migrateChatContext(session,createUserMessage);retireTurnContext(session,createUserMessage);
     const previous=profiles[key] ?? {};
-    const instructions=internalGroupChat?[assistantChatInstructionsFor(root,body.replyMaxMessages),CHAT_RELATIONSHIP_NOTICE].join('\n'):stableChatInstructions(root,key,{maxMessages:body.replyMaxMessages}),instructionsDigest=hash(instructions);
+    const instructions=internalGroupChat?[assistantChatInstructionsFor(root,body.replyMaxMessages),CHAT_IDENTITY_NOTICE,CHAT_RELATIONSHIP_NOTICE].join('\n'):stableChatInstructions(root,key,{maxMessages:body.replyMaxMessages}),instructionsDigest=hash(instructions);
     profiles[key]={...previous,...(workMode==='assistant'?{nativePreset:presetFor(key)}:{}),persona,digest,instructions,instructionsDigest,personaName:clean(locked.personaName,24),conversationName:clean(body.conversationName ?? previous.conversationName),cache:previous.digest===digest && previous.instructionsDigest===instructionsDigest && previous.behaviorPolicy===BEHAVIOR_POLICY && previous.coherencePolicy===COHERENCE_POLICY ? previous.cache ?? {} : {},behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY};
     const fault=profiles[key].nativePrefixRecovery;
     const repairing=repairPrefix||fault?.status==='required'&&(fault.attempts??0)<1;
@@ -610,6 +612,7 @@ function createNativeRuntime(ctx, config={}) {
     dshBindings.get(sid)?.dispose();dshBindings.delete(sid);fileBindings.get(sid)?.dispose();fileBindings.delete(sid);
     singingBindings.get(sid)?.dispose();singingBindings.delete(sid);
     drawingBindings.get(sid)?.dispose();drawingBindings.delete(sid);
+    managementBindings.get(sid)?.dispose();managementBindings.delete(sid);
     personaBindings.get(sid)?.dispose();personaBindings.delete(sid);
     const handle=handles.get(sid);handles.delete(sid);if(handle)await handle.dispose();
   }
@@ -652,9 +655,23 @@ function createNativeRuntime(ctx, config={}) {
   }
 
   async function syncExtensions(agent,key,admissionMessages) {
-    if(internalGroupChat)return;
     const sid=String(agent.session.id),item=pending.get(sid);
     if(!item)return;
+    const sharedMemory=sharedIdentityMemoryNotice(root,history,{key,workMode:internalGroupChat?'assistant-chat':profiles[key]?.workMode});
+    if(internalGroupChat){
+      // The member channel remains read-only, but participates in the same
+      // identity and memories as other allowed WeChat conversations.
+      if(windowPolicy(key)){
+        const state=windowStates.get(sid);if(!state?.prepared)return;
+        state.window.context=sharedMemory;
+        updateWindow(agent.session,profiles[key],state.window,createUserMessage);
+      }else{
+        retireWindowTail(agent.session,createUserMessage);
+        windowStates.delete(sid);
+        syncInstructionSlot(agent.session,createUserMessage,'turn',sharedMemory,admissionMessages);
+      }
+      return;
+    }
     const sections=[
       webReaderInstructions(root,key,item.webReaderTurn ?? {urls:new Set()}),
       modelSearchInstructions(root,key,item.modelSearchTurn,{stable:true}),
@@ -665,9 +682,11 @@ function createNativeRuntime(ctx, config={}) {
       readHistoryPolicy(root,key,internalGroupChat).enabled?'[聊天档案] 近期内容足够就直接接话。需要具体旧事时，每轮最多两次不同查询；多个关键词用 queries 一次合并检索，保留一次展开原文的机会。已返回的查询不重复调用，预算用完直接按发送协议回复；未找到不编造。':'',
     ];
     await drawingBindings.get(sid)?.refresh();
-    const singingInstructions=[singingBindings.get(sid)?.instructions(),drawingBindings.get(sid)?.instructions(),personaBindings.get(sid)?.instructions()].filter(Boolean).join('\n');
+    const singingInstructions=[singingBindings.get(sid)?.instructions(),drawingBindings.get(sid)?.instructions(),personaBindings.get(sid)?.instructions(),managementBindings.get(sid)?.instructions()].filter(Boolean).join('\n');
     const instructions=[...sections,singingInstructions].filter(Boolean).join('\n');
-    const context=[memberMemoryBindings.get(sid)?.context(),item.extensionContext].filter(Boolean).join('\n');
+    // Keep shared memories in the replaceable turn context. They must never
+    // become chat records or be recursively indexed as a new conversation.
+    const context=[sharedMemory,memberMemoryBindings.get(sid)?.context(),item.extensionContext].filter(Boolean).join('\n');
     if(windowPolicy(key)){
       const state=windowStates.get(sid);if(!state?.prepared)return;
       state.window.stableInstructions=[sections[1],memeBindings.get(sid)?.instructions({stable:true}),memberMemoryBindings.get(sid)?.instructions({includeEvidence:false,stable:true}),sections[6]].filter(Boolean).join('\n');
@@ -675,6 +694,8 @@ function createNativeRuntime(ctx, config={}) {
       if(!item.repairContinuation)state.window.context=context;
       updateWindow(agent.session,profiles[key],state.window,createUserMessage);return;
     }
+    retireWindowTail(agent.session,createUserMessage);
+    windowStates.delete(sid);
     syncInstructionSlot(agent.session,createUserMessage,'extensions',instructions,admissionMessages);
     syncInstructionSlot(agent.session,createUserMessage,'turn',context,admissionMessages);
   }
@@ -942,6 +963,7 @@ function createNativeRuntime(ctx, config={}) {
           item.timer=setTimeout(()=>cancel(new Error('agent_timeout')),Number(profiles[key]?.workMode==='assistant'&&!internalGroupChat?config.assistantTimeoutMs??(readDshAccess(root,key).timeoutMinutes??30)*60000:config.turnTimeoutMs??120000));
           audioTurn=item.singingTurn={controller:webReaderTurn.controller,networkOptOut,calls:0,videos:Array.isArray(body.videos)?body.videos.filter(video=>/^[a-f0-9]{64}$/.test(video?.id??'')).slice(-3):[]};item.dshAccessTurn={controller:webReaderTurn.controller,networkOptOut,skillCalls:0,toolCalls:0};item.memberMemoryTurn=memberMemoryTurn;item.memeTurn=memeTurn;item.webReaderTurn=webReaderTurn;item.modelSearchTurn=modelSearchTurn;item.search=search;item.extensionTurn=extensionTurn;item.extensionContext=extensionNotice;pending.set(sid,item);if(item.taskId)assistantTasks.progress(item.taskId,'模型正在处理',{sessionId:sid});
           drawingTurn=item.drawingTurn={controller:webReaderTurn.controller,networkOptOut};
+          item.managementTurn={controller:webReaderTurn.controller,batchId,images:Array.isArray(body.images)?body.images.filter(image=>/^[a-f0-9]{64}$/.test(image?.id??'')).slice(0,4):[]};
           // Local speech needs time for CPU synthesis, conversion and receipt.
           // Extend only an actual voice call, within the bridge's 190s RPC
           // budget; keep ordinary turns and explicit owner limits unchanged.
@@ -1001,6 +1023,7 @@ function createNativeRuntime(ctx, config={}) {
     Object.assign(item,{resolve:finish,reject:error=>finish({error:String(error.message??error)}),cancel});
     native.controller.signal.addEventListener('abort',()=>cancel(native.controller.signal.reason),{once:true});
     item.timer=setTimeout(()=>cancel(Error('agent_timeout')),(readDshAccess(root,key).timeoutMinutes??30)*60000);
+    item.managementTurn={controller:webReaderTurn.controller,batchId,images:[]};
     pending.set(sid,item);turns.set(sid,{id:agent.session.snapshotEvents().findLast(event=>event.type==='turn/start')?.data.turn,text:''});
     return {...decision,messages:decision.messages.map(message=>({...message,content:[...message.content,{type:'text',text:SOCIAL_FINAL_OUTPUT_HINT+' 本次是到期通知，直接给出应发送的提醒或任务结果；本轮没有候选表情，不使用历史 [STICKER:编号]，不输出后台任务编号或 completed 系统播报。'}]}))};
   }
@@ -1192,6 +1215,7 @@ function createNativeRuntime(ctx, config={}) {
     for(const sid of fixedPrefixBindings.keys())disposeFixedPrefix(sid);
     for(const binding of singingBindings.values())binding.dispose();
     for(const binding of drawingBindings.values())binding.dispose();
+    for(const binding of managementBindings.values())binding.dispose();
     for(const binding of personaBindings.values())binding.dispose();
     for(const dispose of memberMemoryBindings.values())dispose();
     for(const dispose of historyBindings.values())dispose();

@@ -10,18 +10,23 @@ import os
 import tempfile
 import threading
 import time
+import queue
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from supplier_api import SupplierApi, RemoteConnection, BACKEND, VERSION, VOICE_UPLOAD_TIMEOUT_SECONDS, IMAGE_UPLOAD_TIMEOUT_SECONDS, read_json, origin, runtime_directory
+from supplier_api import SupplierApi, BACKEND, VERSION, VOICE_UPLOAD_TIMEOUT_SECONDS, IMAGE_UPLOAD_TIMEOUT_SECONDS, read_json, origin, runtime_directory
+from supplier_contacts import load_contacts, load_groups, load_members
+from supplier_events import SupplierEventStore, normalize_callbacks
+from supplier_actions import map_supplier_action
+from supplier_social_gateway import SupplierSocialGateway, SOCIAL_ROUTES
 from wechat_files import FileCatalog, file_policy, media_file_policy, hashes, MAX_FILE_BYTES, safe_file_name
 from wechat_voice_input import MAX_SILK_BYTES
 from wechat_image_normalize import normalize_image
 from wechat_sticker import resolve_sticker
 from supplier_images import download_image
 from supplier_videos import download_video
-from wechat_contacts import read_contact_catalog
+from wechat_sticker import sticker_image_xml
 
 
 _voice_diagnostic_lock = threading.Lock()
@@ -114,9 +119,10 @@ class SupplierFiles(FileCatalog):
         attach = app.findtext('appattach/attachid', '')
         if not attach or not 0 < record['size'] <= MAX_FILE_BYTES:
             raise RuntimeError('FILE_DOWNLOAD_METADATA_MISSING')
-        folder = reader.account/'msg/file'/file_id
+        folder = runtime_directory(reader.root)/'incoming-files'
         folder.mkdir(parents=True, exist_ok=True)
-        file = folder/record['name']
+        suffix = pathlib.Path(record['name']).suffix.lower()
+        file = folder/(file_id+(suffix if re.fullmatch(r'\.[a-z0-9]{1,10}', suffix) else '.bin'))
         if not file.exists():
             reader.api.post('/api/download_file', {'from_user': talker, 'total_len': str(record['size']), 'MsgId': int(record['serverId']), 'path': str(file), 'attachid': attach, 'type': '6'})
         # A 200 response is not proof the async download has completed.
@@ -147,11 +153,20 @@ def create_reader(Base):
                 raise RuntimeError('HOOK_ACCOUNT_METADATA_INVALID')
             self.account.mkdir(parents=True, exist_ok=True)
             self.passphrase = ''  # No captured database credentials in this backend.
-            self.api.identity(self.own_wxid)
+            # Connection setup already captured metadata for every downstream
+            # cache. Do not silently switch only the reader's namespace here.
+            self.startup_identity = {'wxid': self.own_wxid, **self.api.component_identity()}
             callback_file = self.account/'callbacks.json'
             self.callback_messages = read_json(callback_file) if callback_file.is_file() and callback_file.stat().st_size < 1024*1024 else {}
             self.callback_lock = threading.Lock()
-            self.api_names, self.api_names_time = [], 0
+            self.events = SupplierEventStore(self.account/'events.json')
+            with self.events.lock:
+                for entry in self.events.entries.values():
+                    row = entry['row']
+                    if row['serverId'] != '0' and isinstance(row.get('callback'), dict):
+                        self.callback_messages[row['serverId']] = row['callback']
+            self.callback_wake = threading.Event()
+            self.member_cache, self.member_lock = {}, threading.Lock()
 
         def __init__(self, root):
             super().__init__(root)
@@ -162,13 +177,12 @@ def create_reader(Base):
             self.gateway = start_gateway(self)
 
         def active_identity(self):
-            current = read_json(self.settings_file)
-            if current.get('backend') != BACKEND or current.get('myWxid') != self.own_wxid:
-                raise RuntimeError('HOOK_ACCOUNT_MISMATCH')
+            # The supplier Hook has one login. Its connection metadata is used for
+            # message direction/cache keys, not a repeated login-account gate.
             hook = read_json(self.root/'config/wechatagent.json')['hook']
             if any(hook.get(key) != self.api.hook.get(key) for key in ('backend', 'baseUrl', 'upstreamUrl', 'expectedVersion', 'wechatExecutable', 'sourceDirectory')):
                 raise RuntimeError('HOOK_SETTINGS_CHANGED')
-            return self.api.identity(self.own_wxid)
+            return dict(self.startup_identity)
 
         def sticker_account_active(self):
             try:
@@ -177,21 +191,12 @@ def create_reader(Base):
             except (RuntimeError, OSError, ValueError, KeyError):
                 return False
 
-        def database_names(self):
-            if time.monotonic() - self.api_names_time > 5:
-                self.api_names = self.api.databases()
-                self.api_names_time = time.monotonic()
-            return self.api_names
-
         def refresh_names(self, max_age=0):
             with self.names_lock:
                 if max_age and time.monotonic() - self.names_refreshed_at < max_age:
                     return
                 self.active_identity()
-                connection = RemoteConnection(self.api, 'contact.db')
-                names, friends, catalog_error = read_contact_catalog(connection, self.own_wxid)
-                if not names:
-                    raise RuntimeError('HOOK_CONTACTS_UNAVAILABLE')
+                names, friends, catalog_error = load_contacts(self.api, self.own_wxid)
                 session_names = self.group_session_names()
                 names = {**session_names, **names}
                 for u, n in session_names.items():
@@ -202,63 +207,214 @@ def create_reader(Base):
                 self.friend_contacts, self.contact_catalog_error = friends, catalog_error
 
         def group_session_names(self):
-            result = {}
-            if 'session.db' not in self.database_names():
-                return result
-            conn = RemoteConnection(self.api, 'session.db')
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if 'SessionTable' in tables:
-                result.update({u: u for (u,) in conn.execute("SELECT username FROM SessionTable WHERE username LIKE '%@chatroom' LIMIT 10000")})
-            if 'SessionNoContactInfoTable' in tables:
-                result.update({u: n for u, n in conn.execute("SELECT username,session_title FROM SessionNoContactInfoTable WHERE username LIKE '%@chatroom' LIMIT 10000") if isinstance(n, str) and n})
-            return result
+            return load_groups(self.api)
+
+        def group_members(self, talker):
+            if not talker.endswith('@chatroom') or not self.image_talker_allowed(talker):
+                raise PermissionError('CONVERSATION_NOT_ALLOWED')
+            with self.member_lock:
+                cached = self.member_cache.get(talker)
+                if cached and time.monotonic()-cached[0] < 30:
+                    return [dict(item) for item in cached[1]]
+                members = load_members(self.api, talker)
+                self.member_cache[talker] = (time.monotonic(), members)
+                return [dict(item) for item in members]
 
         def open_messages(self):
-            self.active_identity()
-            names = sorted(n for n in self.database_names() if re.fullmatch(r'message_\d+\.db', n))
-            if not names or len(names) > 64:
-                raise RuntimeError('HOOK_MESSAGE_DATABASES_UNAVAILABLE')
-            connections = [RemoteConnection(self.api, n) for n in names]
-            # A listed handle can become unusable while login/contact APIs
-            # still work. This Hook reports SQL failures as "no data", too.
-            # A readable shard always has a schema count row; never let an
-            # unreadable handle masquerade as an empty conversation.
-            for connection in connections:
-                schema = connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()
-                if not schema or schema[0] < 1:
-                    raise RuntimeError('HOOK_MESSAGE_DATABASE_UNREADABLE')
-            return connections
+            # Compatibility with the shared HTTP server. Supplier reception is
+            # callback-only and never opens a WeChat database or asks for handles.
+            return []
+
+        def messages(self, talker, limit=100, from_time=None):
+            if talker not in self.selected_talkers():
+                raise PermissionError('CONVERSATION_NOT_ALLOWED')
+            return self.events.messages(talker, limit=limit, from_time=from_time)
 
         def exact_message(self, talker, identity):
             if not talker or not self.image_talker_allowed(talker):
                 raise PermissionError('CONVERSATION_NOT_ALLOWED')
-            # Reuse scoped history parsing and exact row identity; no fuzzy media lookup.
-            matches = [row for row in self.messages(talker, limit=0, from_time=int(identity['createTime'])) if str(row['localId']) == str(identity['localId']) and str(row['serverId']) == str(identity['serverId']) and row['createTime'] == identity['createTime']]
-            if len(matches) != 1:
+            row = self.events.exact(talker, identity)
+            if not row:
                 raise RuntimeError('HOOK_MESSAGE_IDENTITY_NOT_FOUND')
-            return matches[0]
+            return row
+
+        def bound_message(self, talker, server_id):
+            if not self.image_talker_allowed(talker):
+                return None
+            return self.events.bound(talker, server_id)
+
+        def quote_reference(self, talker, reply_id):
+            if not isinstance(reply_id, str) or not self.image_talker_allowed(talker):
+                raise PermissionError('HOOK_QUOTE_REFERENCE_NOT_ALLOWED')
+            rows = self.events.messages(talker, limit=0)
+            matches = [row for row in rows if (row['rawid'] == reply_id or row['serverId'] == reply_id) and row['serverId'] != '0']
+            if len(matches) != 1:
+                raise RuntimeError('HOOK_QUOTE_ORIGINAL_NOT_CACHED')
+            row = matches[0]
+            return {'conversationWxid': talker, 'referContent': row['fullText'],
+                    'fromUsr': row['senderUsername'], 'newmsgid': row['serverId'],
+                    'createTime': row['createTime'], 'msgSource': row.get('msgSource', '')}
+
+        def image_row(self, talker, descriptor):
+            row = self.exact_message(talker, descriptor)
+            kind = row['localType']
+            if kind == 3:
+                text = row['fullText']
+            else:
+                text = sticker_image_xml(kind, row['fullText'])
+            if not text or row['senderUsername'] != descriptor.get('sender'):
+                raise RuntimeError('IMAGE_MESSAGE_IDENTITY_NOT_FOUND')
+            return {**row, 'localType': 47 if kind != 3 else 3, 'imageXml': text}
 
         def make_payload(self, talker, message):
             payload = super().make_payload(talker, message)
+            if payload:
+                payload['rawid'] = message['rawid']
+                payload['mentions'] = message.get('mentions', [])
+                payload['atUserList'] = message.get('mentions', [])
+                payload['mentionedSelf'] = self.own_wxid in message.get('mentions', [])
+                if message.get('senderName'):
+                    payload['senderName'] = message['senderName']
             if payload and payload.get('file'):
                 payload['file'].update(talker=talker, localId=message['localId'], serverId=message['serverId'], createTime=message['createTime'])
             return payload
 
         def voice_blob(self, record):
-            self.active_identity()
-            # Remote SQL is also the supplied Hook API. Hex preserves the SILK BLOB.
-            blobs = {}
-            for name in self.database_names():
-                if not re.fullmatch(r'media_\d+\.db', name):
+            row = self.exact_message(record['talker'], record)
+            callback = row.get('callback', {})
+            length = callback.get('length')
+            if (row['localType'] != 34 or row['senderUsername'] != record['sender']
+                    or row['localId'] <= 0 or row['serverId'] == '0'
+                    or not isinstance(length, str) or not re.fullmatch(r'[1-9]\d{0,7}', length)
+                    or int(length) > MAX_SILK_BYTES):
+                raise RuntimeError('VOICE_CALLBACK_METADATA_REQUIRED')
+            directory = runtime_directory(self.root)/'incoming-voice'
+            directory.mkdir(parents=True, exist_ok=True)
+            file = directory/(row['rawid']+'.silk')
+            def verified():
+                source_file(file, MAX_SILK_BYTES)
+                raw = file.read_bytes()
+                if len(raw) != int(length):
+                    raise OSError('Voice is still downloading')
+                if not raw.startswith((b'#!SILK_V3', b'\x02#!SILK_V3')):
+                    raise RuntimeError('VOICE_FORMAT_UNSUPPORTED')
+                return raw
+            if file.exists():
+                try:
+                    return verified()
+                except OSError:
+                    pass
+            handle, temporary = tempfile.mkstemp(dir=directory, suffix='.silk.part')
+            os.close(handle)
+            temporary = pathlib.Path(temporary)
+            try:
+                deadline = time.monotonic()+10
+                # Async native download: a transport timeout does not mean it
+                # failed, so wait for this one file rather than submit it twice.
+                try:
+                    self.api.post('/api/download_voice', {'newMsgId': row['serverId'], 'length': length,
+                        'MsgId': str(row['localId']), 'path': str(temporary)}, timeout=3)
+                except RuntimeError:
+                    pass
+                while time.monotonic() < deadline:
+                    try:
+                        source_file(temporary, MAX_SILK_BYTES)
+                        raw = temporary.read_bytes()
+                        if len(raw) == int(length) and raw.startswith((b'#!SILK_V3', b'\x02#!SILK_V3')):
+                            self.verify_voice_message(record)
+                            os.replace(temporary, file)
+                            return raw
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(.1)
+                raise RuntimeError('VOICE_DOWNLOAD_PENDING')
+            finally:
+                temporary.unlink(missing_ok=True)
+
+        def verify_voice_message(self, record):
+            row = self.exact_message(record['talker'], record)
+            if row['localType'] != 34 or row['senderUsername'] != record['sender']:
+                raise RuntimeError('VOICE_MESSAGE_IDENTITY_NOT_FOUND')
+
+        def accept_callback(self, body):
+            allowed = set(self.selected_talkers())
+            count = 0
+            for talker, row in normalize_callbacks(body, self.own_wxid):
+                if talker not in allowed:
                     continue
-                rows = RemoteConnection(self.api, name).execute('SELECT v.voice_data FROM VoiceInfo v JOIN Name2Id n ON n.rowid=v.chat_name_id WHERE n.user_name=? AND v.local_id=? AND length(v.voice_data) BETWEEN 1 AND ? LIMIT 2', (record['talker'], record['localId'], MAX_SILK_BYTES))
-                for (blob,) in rows:
-                    if not blob.startswith((b'#!SILK_V3', b'\x02#!SILK_V3')):
-                        raise RuntimeError('VOICE_FORMAT_UNSUPPORTED')
-                    blobs[hashlib.sha256(blob).hexdigest()] = blob
-            if len(blobs) != 1:
-                raise RuntimeError('VOICE_AUDIO_NOT_AVAILABLE' if not blobs else 'VOICE_AUDIO_AMBIGUOUS')
-            return next(iter(blobs.values()))
+                if self.events.add(talker, row):
+                    count += 1
+                if row['serverId'] != '0':
+                    original = self.events.bound(talker, row['serverId'])
+                    with self.callback_lock:
+                        self.callback_messages[row['serverId']] = original['callback']
+                        while len(self.callback_messages) > 5000:
+                            self.callback_messages.pop(next(iter(self.callback_messages)))
+            if count:
+                self.callback_wake.set()
+            return count
+
+        def dispatch_pending(self):
+            for talker, row in self.events.pending():
+                if talker not in self.selected_talkers():
+                    self.events.mark_dispatched(row['rawid'])
+                    continue
+                with self.lock:
+                    if not self.clients or any(client.full() for client in self.clients):
+                        return
+                payload = self.make_payload(talker, row)
+                if not payload:
+                    self.events.mark_dispatched(row['rawid'])
+                    continue
+                key = 'wechat:'+('group:' if '@chatroom' in talker else 'private:')+self.conversation_id(talker)
+                if payload.get('file'):
+                    reference = self.files.remember(payload, key)
+                    if not reference:
+                        self.events.mark_dispatched(row['rawid'])
+                        continue
+                    payload['file'] = reference
+                if payload['type'] == 34:
+                    reference = self.voices.remember(talker, payload, key)
+                    if not reference:
+                        self.events.mark_dispatched(row['rawid'])
+                        continue
+                    payload['voice'] = reference
+                if payload['type'] in (3, 47):
+                    image_id = self.register_image(talker, payload)
+                    if not image_id:
+                        self.events.mark_dispatched(row['rawid'])
+                        continue
+                    payload['image'] = {'id': image_id}
+                if payload['type'] == 43:
+                    video = self.videos.remember(talker, row)
+                    if video:
+                        payload['video'] = video
+                try:
+                    self.quote_media(talker, payload)
+                except (RuntimeError, ValueError, OSError, PermissionError):
+                    pass
+                with self.lock:
+                    if not self.clients or any(client.full() for client in self.clients):
+                        return
+                    for client in self.clients:
+                        client.put_nowait(payload)
+                self.events.mark_dispatched(row['rawid'])
+                self.pushed += 1
+
+        def poll(self):
+            # Local durable inbox dispatcher. No upstream history/profile/SQL
+            # requests run on this idle loop.
+            while not self.stop.is_set():
+                self.callback_wake.clear()
+                try:
+                    self.dispatch_pending()
+                    self.pump_sticker_collection()
+                    self.pump_sticker_pool_review()
+                    self.last_poll, self.last_error = time.time(), ''
+                except Exception as error:
+                    code = str(error)
+                    self.last_error = code if re.fullmatch(r'[A-Z][A-Z0-9_]{2,79}', code) else type(error).__name__
+                self.callback_wake.wait(.5)
 
         def resolve_image(self, image_id):
             descriptor = self.image_index.get(image_id)
@@ -291,9 +447,9 @@ def create_reader(Base):
             return download_video(self, video_id, item, xml_root(row['fullText']).find('videomsg'))
 
         def pump_sticker_collection(self):
-            # Shared pool still learns message-bound stickers through register_image.
-            # No legacy local database scanner runs for this provider.
-            pass
+            # Shared collector resolves registered descriptors via overridden
+            # cache-backed image_row; it has no database scanner.
+            return super().pump_sticker_collection()
 
     return SupplierReader
 
@@ -304,6 +460,7 @@ def start_gateway(reader):
     token = (reader.root/'state/hook/native-token.txt').read_text(encoding='utf-8-sig').strip()
     if not re.fullmatch(r'[a-f0-9]{64}', token):
         raise RuntimeError('HOOK_TOKEN_MISSING')
+    management = SupplierSocialGateway(reader, stage_media)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -339,22 +496,30 @@ def start_gateway(reader):
                     return self.reply({'error': 'HOOK_AUTH_FAILED'}, 401)
                 identity = reader.active_identity()
                 if self.command == 'GET' and self.path in ('/WeChatAgent/health', '/health'):
-                    health = {'integration': 'WeChatAgent-supplier-v1', 'backend': 'wechat-voice' if self.path == '/health' else 'wechat-hook', 'provider': BACKEND, 'version': VERSION, 'pid': identity['pid'], 'databaseAccounts': [identity['wxid']], 'startupState': 'ready', 'ready': True, 'nativeTextSend': True, 'nativeStickerSend': True, 'nativeFileSend': True, 'nativeVoiceSend': True, 'nativeImageSend': True}
+                    component = reader.api.component_identity()
+                    health = {'integration': 'WeChatAgent-supplier-v1', 'backend': 'wechat-voice' if self.path == '/health' else 'wechat-hook', 'provider': BACKEND, 'version': VERSION, 'pid': component['pid'], 'singleAccount': True, 'accountVerification': 'not-required', 'startupState': 'ready', 'ready': True, 'nativeTextSend': True, 'nativeStickerSend': True, 'nativeFileSend': True, 'nativeVoiceSend': True, 'nativeImageSend': True,
+                        'nativeMp3VoiceSend': True, 'nativeAtSend': True, 'nativeQuoteSend': True, 'nativePatSend': True,
+                        'messageSource': 'supplier-callback', 'wechatDatabaseAccess': False}
                     return self.reply(health)
                 if self.command != 'POST':
                     return self.reply({'error': 'HOOK_ROUTE_NOT_FOUND'}, 404)
-                if self.headers.get('X-WeChatAgent-Account', '').lower() != identity['wxid'].lower():
-                    return self.reply({'error': 'HOOK_ACCOUNT_MISMATCH'}, 409)
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 128*1024:
                     raise ValueError('HOOK_REQUEST_INVALID')
                 body = json.loads(self.rfile.read(length))
+                if self.path in SOCIAL_ROUTES:
+                    return self.reply(management.execute(self.path, body))
                 target = body.get('wxidorgid')
                 if not isinstance(target, str) or target == reader.own_wxid or target not in reader.selected_talkers():
                     return self.reply({'error': 'HOOK_TARGET_NOT_ALLOWED'}, 403)
-                route, mapped = map_send(self.path, body)
-                if self.path != '/SendTextMsg':
-                    field = 'silkPath' if self.path == '/SendVoiceMsg' else 'filepath'
+                if self.path in ('/SendAtText', '/SendQuoteMsg', '/SendPatMsg', '/SendMp3VoiceMsg'):
+                    members = {item['username'] for item in reader.group_members(target)} if target.endswith('@chatroom') and self.path in ('/SendAtText', '/SendPatMsg') else None
+                    quote = reader.quote_reference(target, body.get('replyId')) if self.path == '/SendQuoteMsg' else None
+                    route, mapped = map_supplier_action(self.path, body, quote=quote, members=members)
+                else:
+                    route, mapped = map_send(self.path, body)
+                if self.path in ('/SendFileMsg', '/SendImageMsg', '/SendStickerMsg', '/SendVoiceMsg', '/SendMp3VoiceMsg'):
+                    field = 'silkPath' if self.path == '/SendVoiceMsg' else 'mp3Path' if self.path == '/SendMp3VoiceMsg' else 'filepath'
                     mapped[field] = str(stage_media(reader.root, pathlib.Path(mapped[field])))
                 # Do not retry upstream sends, even on network timeout.
                 if self.path == '/SendVoiceMsg':
@@ -362,7 +527,7 @@ def start_gateway(reader):
                 if self.path == '/SendImageMsg':
                     result = reader.api.post(route, mapped, timeout=IMAGE_UPLOAD_TIMEOUT_SECONDS)
                     return self.reply(normalize_send_response(self.path, result, identity['wxid'], target))
-                result = reader.api.post(route, mapped)
+                result = reader.api.post(route, mapped, timeout=VOICE_UPLOAD_TIMEOUT_SECONDS) if self.path == '/SendMp3VoiceMsg' else reader.api.post(route, mapped)
                 # Keep the last acknowledgement locally for diagnosis, never
                 # expose it in public status or log the submitted message body.
                 diagnostic = reader.root/'state/hook/last-submit-response.json'
@@ -377,26 +542,7 @@ def start_gateway(reader):
                 self.reply({'error': code}, 503)
 
         def accept_callback(self, body):
-            if not isinstance(body, dict):
-                raise ValueError('HOOK_CALLBACK_INVALID')
-            identity = reader.active_identity()
-            own = identity['wxid']
-            sender, recipient = body.get('fromUserName', {}), body.get('toUserName', {})
-            sender = sender.get('String') if isinstance(sender, dict) else sender
-            recipient = recipient.get('String') if isinstance(recipient, dict) else recipient
-            server_id = body.get('newMsgId')
-            if body.get('msgType') not in (3,43) or recipient != own or not isinstance(sender, str) or sender not in reader.selected_talkers() or not isinstance(server_id, str) or not re.fullmatch(r'[1-9]\d{0,19}', server_id):
-                return
-            # Only supplemental download metadata; never pushes callback contents
-            # or marks outgoing messages confirmed without exact database rows.
-            with reader.callback_lock:
-                reader.callback_messages[server_id] = {'msgId': body.get('msgId'), 'from': sender, 'to': recipient, 'type':body.get('msgType')}
-                while len(reader.callback_messages) > 5000:
-                    reader.callback_messages.pop(next(iter(reader.callback_messages)))
-                file = reader.account/'callbacks.json'
-                temporary = file.with_suffix('.tmp')
-                temporary.write_text(json.dumps(reader.callback_messages),encoding='utf-8')
-                temporary.replace(file)
+            reader.accept_callback(body)
 
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -465,16 +611,49 @@ def map_send(route, body):
 def normalize_send_response(route, result, account=None, target=None, duration=None, size=None):
     if not isinstance(result, dict):
         raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
-    if 'account_wxid' in result and (not isinstance(result['account_wxid'], str) or not account or result['account_wxid'] != account):
-        raise RuntimeError('HOOK_ACCOUNT_MISMATCH')
-    # Supplied builds use either code or errCode. Both generic envelopes only
-    # acknowledge submission; the existing exact database receipt is still needed.
+    # A supplier account field is informational, not another login gate.
+    # Supplied builds use either code or errCode. A text API acknowledgement
+    # is distinct from a delivery receipt; other media still require their receipt.
+    action_routes = ('/SendAtText', '/SendQuoteMsg', '/SendPatMsg', '/SendMp3VoiceMsg')
     codes = [result[key] for key in ('code', 'errCode') if key in result]
     if codes:
         if any(type(code) is not int for code in codes):
             raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
         accepted = all(code == 1 for code in codes)
-        return {'ret': 0 if accepted else -1, 'submitted': accepted, 'confirmed': False}
+        if route == '/SendTextMsg' or route in action_routes:
+            envelopes = [result]
+            if 'data' in result and result['data'] is not None:
+                if not isinstance(result['data'], dict):
+                    raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
+                envelopes.append(result['data'])
+            native_rets = []
+            for envelope in envelopes:
+                if 'baseResponse' in envelope:
+                    base_response = envelope['baseResponse']
+                    if not isinstance(base_response, dict) or type(base_response.get('ret')) is not int:
+                        raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
+                    native_rets.append(base_response['ret'])
+            accepted = accepted and all(ret == 0 for ret in native_rets)
+        normalized = {'ret': 0 if accepted else -1, 'submitted': accepted, 'confirmed': False}
+        if accepted and (route == '/SendTextMsg' or route in action_routes):
+            normalized['apiAcknowledged'] = True
+        if accepted and route in action_routes:
+            native = result.get('data') if isinstance(result.get('data'), dict) else result
+            if (native.get('baseResponse', {}).get('ret') == 0 and native.get('toUserName') == target
+                    and isinstance(native.get('newMsgId'), str) and re.fullmatch(r'[1-9]\d{0,19}', native['newMsgId'])):
+                normalized.update(confirmed=True, serverId=native['newMsgId'], target=target, receipt='wechat-message-response')
+        return normalized
+    if route in action_routes and isinstance(result.get('baseResponse'), dict):
+        ret = result['baseResponse'].get('ret')
+        if type(ret) is not int:
+            raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
+        normalized = {'ret': 0 if ret == 0 else -1, 'submitted': ret == 0, 'confirmed': False}
+        if ret == 0:
+            normalized['apiAcknowledged'] = True
+            if (result.get('toUserName') == target and isinstance(result.get('newMsgId'), str)
+                    and re.fullmatch(r'[1-9]\d{0,19}', result['newMsgId'])):
+                normalized.update(confirmed=True, serverId=result['newMsgId'], target=target, receipt='wechat-message-response')
+        return normalized
     if (route == '/SendVoiceMsg' and account and target and result.get('baseResponse', {}).get('ret') == 0
             and result.get('endFlag') == 2 and result.get('cancelFlag') == 0
             and result.get('fromUserName') == account and result.get('toUserName') == target
@@ -483,7 +662,7 @@ def normalize_send_response(route, result, account=None, target=None, duration=N
             and result.get('voiceLength') == int(size / (1.8 * 1024)) * 1000
             and isinstance(size, int) and isinstance(result.get('offset'), int) and isinstance(result.get('length'), int)
             and result['offset'] >= 0 and result['length'] > 0 and result['offset'] + result['length'] == size):
-        # This build uploads successfully without inserting a local SQL/UI row.
+        # This build uploads successfully without a matching local UI row.
         # Only a final, account/target/duration/byte-count-bound server ACK counts.
         # Its duration is hardcoded floor(fileBytes / (1.8*1024))*1000 (RVA
         # 209461..209480), not SILK frame duration. Retain both, do not stretch
@@ -492,7 +671,7 @@ def normalize_send_response(route, result, account=None, target=None, duration=N
                 'serverId': result['newMsgId'], 'account': account, 'target': target, 'durationMs': duration,
                 'reportedDurationMs': result['voiceLength']}
     if route == '/SendVoiceMsg' and (result.get('baseResponse', {}).get('ret') == 0 or result.get('baseResponse', {}).get('ret') == -2 and result.get('endFlag') == 1):
-        # ret=-2/endFlag=1 is an intermediate packet; wait for the SQL receipt.
+        # ret=-2/endFlag=1 is an intermediate packet, not final delivery proof.
         return {'ret': 0, 'submitted': True, 'confirmed': False}
     if route == '/SendVoiceMsg' and result.get('baseResponse', {}).get('ret') == -2:
         raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')

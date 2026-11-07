@@ -25,7 +25,7 @@ function fixture(t){
       assert.equal(o.headers.Authorization,'Bearer '+'a'.repeat(64));
       if(url.endsWith('/WeChatAgent/health'))return Response.json(main);
       if(url.endsWith('/health'))return Response.json(health);
-      assert.equal(url,(config.hook.backend==='supplier-http'?config.hook.baseUrl:config.hook.voiceBaseUrl)+'/SendVoiceMsg');assert.equal(o.headers['X-WeChatAgent-Account'],state.own.accountDirectory);
+      assert.equal(url,(config.hook.backend==='supplier-http'?config.hook.baseUrl:config.hook.voiceBaseUrl)+'/SendVoiceMsg');assert.equal(o.headers['X-WeChatAgent-Account'],config.hook.backend==='supplier-http'?undefined:state.own.accountDirectory);
       const body=JSON.parse(o.body);assert.equal(body.wxidorgid,target);assert.equal(body.duration,1000);assert.match(body.path,/\.silk$/);
       state.posts++;
       const saved=JSON.parse(fs.readFileSync(body.path.replace(/\.silk$/,'.json'),'utf8'));assert.equal(saved.state,'dispatching');assert.ok(Array.isArray(saved.baseline));
@@ -49,11 +49,23 @@ test('supplied 4.1.8.27 gateway supports voice and singing with real integer rea
   Object.assign(f.state.main,{integration:'WeChatAgent-supplier-v1',provider:'supplier-http',version:'4.1.8.27',databaseAccounts:['wxid_self']});
   Object.assign(f.state.health,{version:'4.1.8.27',databaseAccounts:['wxid_self']});
   Object.assign(f.state.own,{backend:'supplier-http',accountDirectory:'wxid_self'});f.state.integerIsSend=true;
-  assert.equal((await f.service.check()).ready,true);
+  const check=await f.service.check();assert.equal(check.ready,true);assert.equal(check.accountVerified,false);assert.equal(check.accountVerification,'not-required');assert.equal(check.singleAccount,true);assert.match(check.message,/单账号模式/);assert.doesNotMatch(check.message,/账号与微信进程一致/);
   const result=await f.send();assert.equal(result.sent,true);assert.equal(f.state.posts,1);
   assert.equal((await f.send()).sent,true);assert.equal(f.state.posts,1);
   const sing=await f.service.enqueue({key:f.key,kind:'singing',file:'cover.mp3',sourceId:'cover'});
   f.state.rows=[];assert.equal((await f.service.settled(sing.id,f.key)).sent,true);assert.equal(f.state.posts,2);
+});
+
+test('supplier voice ignores Hook account lists and omits the account header while retaining delivery context',async t=>{
+  for(const databaseAccounts of [undefined,null,[],['another-account'],['first','second']]){
+    const f=fixture(t);
+    Object.assign(f.config.hook,{backend:'supplier-http',expectedVersion:'4.1.8.27',voiceBaseUrl:f.config.hook.baseUrl});
+    Object.assign(f.state.main,{integration:'WeChatAgent-supplier-v1',provider:'supplier-http',version:'4.1.8.27',databaseAccounts});
+    Object.assign(f.state.health,{version:'4.1.8.27',databaseAccounts});Object.assign(f.state.own,{backend:'supplier-http'});
+    const check=await f.service.check();assert.equal(check.ready,true,JSON.stringify(check));assert.equal(check.accountVerified,false);assert.equal(check.singleAccount,true);
+    const context=await f.service.capture(f.key,'voice');assert.equal(context.account,f.state.own.accountDirectory);
+    const result=await f.send('single-account',{context});assert.equal(result.sent,true);assert.equal(f.state.posts,1);
+  }
 });
 test('timeout and restart never resubmit; late receipt can be reconciled',async t=>{
   const f=fixture(t);f.state.confirm=false;f.state.failReply=true;

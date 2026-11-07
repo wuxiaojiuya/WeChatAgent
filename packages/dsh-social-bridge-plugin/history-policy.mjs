@@ -34,6 +34,33 @@ export function readHistoryPolicy(root,key){
   const file=path.join(root,'config/wechatagent.json');
   return historyPolicy(fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')).wechat:{},key);
 }
+/** Project/account stores contain several chat journals. The model never
+ * chooses their scope: only currently allowed chats with history enabled join
+ * the shared memory, including their existing assistant mode journals. */
+export function sharedHistoryKeys(wechat={},key){
+  const current=String(key??'').replace(/:(?:assistant|assistant-chat)$/,'');
+  const value=wechat.history??{};validateHistorySettings(value);
+  const enabled=chat=>value.enabled===true&&value.chats?.[chat]!==false;
+  if(!enabled(current))return [];
+  const allowed={private:new Set(),group:new Set()};
+  for(const [kind,list]of [['private','private'],['group','groups']])for(const item of wechat.whitelist?.[list]??[]){
+    const id=String(item);if(/^[1-9]\d*$/.test(id)&&Number.isSafeInteger(Number(id)))allowed[kind].add(id);
+  }
+  const match=/^wechat:(private|group):([1-9]\d*)$/.exec(current);
+  if(!match||!allowed[match[1]].has(match[2]))return [];
+  const keys=[];
+  for(const kind of ['private','group'])for(const id of allowed[kind]){
+    const chat='wechat:'+kind+':'+id;
+    if(!enabled(chat))continue;
+    keys.push(chat,chat+':assistant',chat+':assistant-chat');
+  }
+  return [...new Set(keys)];
+}
+export function readSharedHistoryKeys(root,key){
+  const file=path.join(root,'config/wechatagent.json');
+  const wechat=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')).wechat:{};
+  return sharedHistoryKeys(wechat,key);
+}
 export function sessionSize(session){
   const events=session.snapshotEvents(),nodes=new Set(session.surface.nodes);
   const chars=events.filter(e=>nodes.has(e.seq)).reduce((n,e)=>{

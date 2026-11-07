@@ -6,6 +6,33 @@ const {usageMetrics,summarizeUsage}=await import(new URL('./usage-summary.mjs'+n
 
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const validKey=key=>/^(wechat|qq):(private|group):[^\0\r\n]{1,256}$/.test(key);
+function sharedKeys(keys){
+  if(!Array.isArray(keys)||keys.some(key=>typeof key!=='string'||!/^wechat:(?:private|group):[1-9]\d*(?::(?:assistant|assistant-chat))?$/.test(key)))throw Error('HISTORY_SCOPE_INVALID');
+  return [...new Set(keys)];
+}
+// Reserve four additional bindings below a conservative 900-variable budget.
+function* sharedChunks(keys){for(let start=0;start<keys.length;start+=896)yield keys.slice(start,start+896);}
+// Every authorized source participates. Retain only the globally best bounded
+// candidates between chunks instead of constructing one unbounded SQL IN list.
+function sharedTop(keys,query,compare,limit){
+  let selected=[];
+  for(const chunk of sharedChunks(keys))selected=[...selected,...query(chunk)].sort(compare).slice(0,limit);
+  return selected;
+}
+function memoryOrigin(chat,body){
+  const match=/^(wechat:(private|group):[1-9]\d*)(?::(assistant|assistant-chat))?$/.exec(chat);
+  return {conversationKey:match[1],conversationName:String(body.conversation_name||match[1]).slice(0,200),kind:match[2],workMode:match[3]||'social',
+    senderId:String(body.sender_id??'').slice(0,256),...(body.sender_key?{senderKey:String(body.sender_key).slice(0,256)}:{}),speaker:body.outgoing?'AI':String(body.sender_name||body.sender_id||'unknown').slice(0,200),...(body.outgoing?{delivery_status:body.delivery_status??'unconfirmed'}:{})};
+}
+function memoryText(text){return String(text??'').replace(/wechatagent:\/\/(?:voice|image)\/[a-f0-9]{64}/g,'[历史附件引用]');}
+function boundedMemory(value,maxChars){
+  if(JSON.stringify(value).length<=maxChars)return value;
+  const clipped={...value,text:'',truncated:true};
+  if(JSON.stringify(clipped).length>maxChars)return null;
+  const text=value.text??'';let low=0,high=text.length;
+  while(low<high){const middle=Math.ceil((low+high)/2);clipped.text=text.slice(0,middle);if(JSON.stringify(clipped).length<=maxChars)low=middle;else high=middle-1;}
+  clipped.text=text.slice(0,low);return clipped;
+}
 const decode=text=>text.replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
 function searchableText(body){
   const quote=body.quoteReply,forward=body.forwardedRecord;
@@ -166,6 +193,67 @@ export class HistoryStore{
     return matches.map(r=>{const b=JSON.parse(r.body),normalized=r.text.normalize('NFKC').toLowerCase(),words=query.normalize('NFKC').toLowerCase().match(/[a-z0-9_]{2,}|[\p{Script=Han}]+/gu)??[];
       const needles=[query.toLowerCase(),...words,...words.flatMap(w=>Array.from(w).slice(0,-1).map((c,i)=>c+Array.from(w)[i+1]))],hit=needles.map(w=>normalized.indexOf(w)).find(i=>i>=0)??0,start=Math.max(0,hit-100);
       return {id:r.seq,at:r.at,speaker:b.outgoing?'AI':b.sender_name||b.sender_id,text:r.text.slice(start,start+480),offset:start,delivery_status:b.delivery_status,source:r.source,truncated:r.text.length>480};});
+  }
+  sharedSearch(keys,query,{before,after}={}){
+    const chats=sharedKeys(keys);if(!chats.length)return [];
+    if(typeof query!=='string'||query.trim().length<2||query.length>100)throw Error('HISTORY_QUERY_INVALID');
+    for(const time of [before,after])if(time!==undefined&&(!Number.isFinite(time)||time<0))throw Error('HISTORY_TIME_INVALID');
+    const tokens=terms(query).split(' ').filter(Boolean).slice(0,24);if(!tokens.length)return [];
+    const rows=sharedTop(chats,chunk=>this.db.prepare('SELECT r.seq,r.chat,r.at,r.body,r.text,r.source,bm25(search) rank FROM search JOIN records r ON r.seq=search.rowid WHERE search MATCH ? AND r.chat IN ('+chunk.map(()=>'?').join(',')+') AND r.at>=? AND r.at<=? ORDER BY rank,r.at DESC,r.seq DESC LIMIT 4').all(tokens.join(' OR '),...chunk,after??0,before??Number.MAX_SAFE_INTEGER),
+      (a,b)=>a.rank-b.rank||b.at-a.at||b.seq-a.seq,4);
+    return rows.map(record=>{
+      const body=JSON.parse(record.body),normalized=record.text.normalize('NFKC').toLowerCase(),words=query.normalize('NFKC').toLowerCase().match(/[a-z0-9_]{2,}|[\p{Script=Han}]+/gu)??[];
+      const needles=[query.toLowerCase(),...words,...words.flatMap(word=>Array.from(word).slice(0,-1).map((char,index)=>char+Array.from(word)[index+1]))];
+      const hit=needles.map(word=>normalized.indexOf(word)).find(index=>index>=0)??0,start=Math.max(0,hit-100);
+      return {id:record.seq,at:record.at,...memoryOrigin(record.chat,body),text:memoryText(record.text.slice(start,start+480)),offset:start,
+        source:record.source,truncated:record.text.length>480};
+    });
+  }
+  sharedMessage(keys,id,{offset=0,context=0}={}){
+    const chats=sharedKeys(keys);if(!chats.length)return [];
+    if(!Number.isSafeInteger(id)||id<1||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(context)||context<0||context>2)throw Error('HISTORY_MESSAGE_INVALID');
+    const record=this.db.prepare('SELECT seq,chat,at,body,text,source FROM records WHERE seq=?').get(id);if(!record||!new Set(chats).has(record.chat))return [];
+    // Context is the original conversation, never neighboring rows from a
+    // different chat that happened to arrive at the same time.
+    const prior=context?this.db.prepare('SELECT seq,chat,at,body,text,source FROM records WHERE chat=? AND (at<? OR at=? AND seq<?) ORDER BY at DESC,seq DESC LIMIT ?').all(record.chat,record.at,record.at,id,context).reverse():[];
+    const next=context?this.db.prepare('SELECT seq,chat,at,body,text,source FROM records WHERE chat=? AND (at>? OR at=? AND seq>?) ORDER BY at,seq LIMIT ?').all(record.chat,record.at,record.at,id,context):[];
+    return [...prior,record,...next].map(row=>{const body=JSON.parse(row.body),start=row.seq===id?offset:0,limit=row.seq===id?1600:300;
+      return {id:row.seq,at:row.at,...memoryOrigin(row.chat,body),text:memoryText(row.text.slice(start,start+limit)),offset:start,
+        nextOffset:start+limit<row.text.length?start+limit:null,source:row.source};});
+  }
+  sharedRecent(keys,{recentMessages=6,recentChars=2400,maxPerConversation=2}={}){
+    const chats=sharedKeys(keys);if(!chats.length)return [];
+    if(!Number.isSafeInteger(recentMessages)||recentMessages<1||recentMessages>40||!Number.isSafeInteger(recentChars)||recentChars<400||recentChars>12000||!Number.isSafeInteger(maxPerConversation)||maxPerConversation<1||maxPerConversation>10)throw Error('HISTORY_SHARED_BUDGET_INVALID');
+    const candidates=Math.min(400,recentMessages*32);
+    const rows=sharedTop(chats,chunk=>this.db.prepare("SELECT seq,chat,at,body,text,source FROM records WHERE chat IN ("+chunk.map(()=>'?').join(',')+") AND source!='legacy-context' ORDER BY at DESC,seq DESC LIMIT ?").all(...chunk,candidates),
+      (a,b)=>b.at-a.at||b.seq-a.seq,candidates);
+    const result=[],counts=new Map();let budget=recentChars-2;
+    for(const row of rows){
+      const body=JSON.parse(row.body),origin=memoryOrigin(row.chat,body),count=counts.get(origin.conversationKey)??0;if(count>=maxPerConversation)continue;
+      // Keep previous AI speech as its own speech, including whether delivery
+      // was verified. Historical attachment objects are never projected.
+      const text=memoryText(row.text),value=boundedMemory({id:row.seq,at:row.at,...origin,text:text.slice(0,600),source:row.source,...(text.length>600?{truncated:true}:{})},budget);
+      if(!value)continue;
+      result.unshift(value);budget-=JSON.stringify(value).length+1;counts.set(origin.conversationKey,count+1);
+      if(result.length>=recentMessages||budget<400)break;
+    }
+    return result;
+  }
+  sharedCheckpoints(keys,{limit=4,maxChars=2200}={}){
+    const chats=sharedKeys(keys);if(!chats.length)return [];
+    if(!Number.isSafeInteger(limit)||limit<1||limit>12||!Number.isSafeInteger(maxChars)||maxChars<400||maxChars>12000)throw Error('HISTORY_SHARED_BUDGET_INVALID');
+    const rows=sharedTop(chats,chunk=>this.db.prepare('SELECT c.*,(SELECT body FROM records r WHERE r.chat=c.chat ORDER BY r.at DESC,r.seq DESC LIMIT 1) body FROM checkpoints c WHERE c.chat IN ('+chunk.map(()=>'?').join(',')+') AND c.id=(SELECT max(x.id) FROM checkpoints x WHERE x.chat=c.chat) ORDER BY c.at DESC,c.id DESC LIMIT ?').all(...chunk,limit),
+      (a,b)=>b.at-a.at||b.id-a.id,limit);
+    const result=[];let budget=maxChars-2;
+    for(const row of rows){
+      const body=row.body?JSON.parse(row.body):{},origin=memoryOrigin(row.chat,body);
+      const ids=[...new Set([...row.text.matchAll(/\[#(\d+)\]/g)].map(match=>Number(match[1])).filter(id=>Number.isSafeInteger(id)&&id>0))].slice(0,6);
+      const cited=ids.length?this.db.prepare('SELECT seq,chat,body FROM records WHERE chat=? AND seq IN ('+ids.map(()=>'?').join(',')+')').all(row.chat,...ids):[];
+      const value=boundedMemory({id:row.id,at:row.at,conversationKey:origin.conversationKey,conversationName:origin.conversationName,kind:origin.kind,workMode:origin.workMode,
+        text:memoryText(row.text),citations:cited.map(record=>({id:record.seq,...memoryOrigin(record.chat,JSON.parse(record.body))})),source:'chat-summary'},budget);
+      if(!value)continue;result.push(value);budget-=JSON.stringify(value).length+1;if(budget<400)break;
+    }
+    return result;
   }
   putUsage(row){
     const usage=row.usage??{},buckets=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'].map(k=>usage[k]??(k==='cacheReadTokens'||k==='cacheWriteTokens'?0:null));

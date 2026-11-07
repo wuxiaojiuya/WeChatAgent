@@ -4,8 +4,8 @@ import io
 import importlib.util
 import json
 import pathlib
+import queue
 import socket
-import sqlite3
 import sys
 import tempfile
 import threading
@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import supplier_reader
-from supplier_api import SupplierApi, RemoteConnection, bind_sql, process_identity, runtime_directory, listener_address_allowed, SUPPLIER_WILDCARD_SHA256
+from supplier_api import SupplierApi, process_identity, runtime_directory, listener_address_allowed, SUPPLIER_WILDCARD_SHA256
 from supplier_reader import map_send, normalize_send_response, stage_media
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
@@ -30,35 +30,30 @@ class FakeHook:
     def __init__(self):
         self.wxid = 'wxid_self'
         self.calls = []
-        self.databases = {name: sqlite3.connect(':memory:', check_same_thread=False) for name in ('contact.db', 'message_0.db', 'media_0.db')}
-        db = self.databases['contact.db']
-        db.execute('CREATE TABLE contact(username TEXT,remark TEXT,nick_name TEXT,alias TEXT,local_type INTEGER,flag INTEGER,delete_flag INTEGER,verify_flag INTEGER)')
-        db.execute("INSERT INTO contact VALUES('wxid_friend','','Friend','',1,8388611,0,0)")
-        db.execute("INSERT INTO contact VALUES('wxid_self','','Self','',1,3,0,0)")
-        db = self.databases['message_0.db']
-        self.table = 'Msg_' + hashlib.md5(b'wxid_friend').hexdigest()
-        db.execute('CREATE TABLE Name2Id(user_name TEXT)')
-        db.executemany('INSERT INTO Name2Id VALUES(?)', [('wxid_friend',), ('wxid_self',)])
-        db.execute(f'CREATE TABLE "{self.table}"(local_id INTEGER,server_id INTEGER,local_type INTEGER,real_sender_id INTEGER,create_time INTEGER,message_content BLOB)')
+        self.friends = [self.contact('wxid_friend', 'Friend'), self.contact('wxid_self', 'Self')]
+        self.groups = []
+        self.members = {}
         self.full_text = '你好，测试完整文本。' + '内容' * 220
-        db.execute(f'INSERT INTO "{self.table}" VALUES(1,8047442179716189588,1,1,1700000000,?)', (self.full_text.encode(),))
-        db.execute(f'INSERT INTO "{self.table}" VALUES(2,8047442179716189589,34,2,1700000001,?)', (b'<msg><voicemsg voicelength="1000"/></msg>',))
-        db = self.databases['media_0.db']
-        db.execute('CREATE TABLE Name2Id(user_name TEXT)')
-        db.execute("INSERT INTO Name2Id VALUES('wxid_friend')")
-        db.execute('CREATE TABLE VoiceInfo(chat_name_id INTEGER,local_id INTEGER,voice_data BLOB)')
-        db.execute('INSERT INTO VoiceInfo VALUES(1,2,?)', (b'\x02#!SILK_V3fixture',))
+        self.voice_bytes = b'\x02#!SILK_V3fixture'
+
+    @staticmethod
+    def contact(username, nickname, **fields):
+        return {'userName': {'String': username}, 'nickName': {'String': nickname},
+                'bitVal': 3, 'verifyFlag': 0, **fields}
 
     def post(self, route, body):
         self.calls.append((route, body))
         if route == '/api/get_profile_new':
             return {'baseResponse': {'ret': 0}, 'userInfo': {'userName': {'String': self.wxid}}}
-        if route == '/api/get_db_handle':
-            return {'data': [{'name': name, 'handle': i} for i, name in enumerate(self.databases)]}
-        if route == '/api/sqlite3_exec':
-            cursor = self.databases[body['db_name']].execute(body['sql_fmt'])
-            # Match upstream: sorted keys, numbers as text, omitted raw BLOBs.
-            return [dict(sorted((col[0], str(v) if isinstance(v, int) else v) for col, v in zip(cursor.description, row) if not isinstance(v, bytes))) for row in cursor]
+        if route in ('/api/get_db_handle', '/api/sqlite3_exec'):
+            raise AssertionError('Supplier message reception must not use database APIs')
+        if route == '/api/get_frien_lists':
+            return {'code': 1, 'data': self.friends}
+        if route == '/api/get_chatroom_list':
+            return {'code': 1, 'data': self.groups}
+        if route == '/api/get_room_members':
+            return {'baseResponse': {'ret': 0}, 'chatroomUserName': {'String': body['room_id']},
+                    'newChatroomData': self.members.get(body['room_id'], [])}
         if route == '/api/download_img':
             pathlib.Path(body['path']).write_bytes(self.image_bytes)
             return {'status': 'success', 'path': body['path'], 'downloaded_bytes': len(self.image_bytes)}
@@ -68,6 +63,9 @@ class FakeHook:
         if route == '/api/download_file':
             pathlib.Path(body['path']).write_bytes(b'file-data')
             return {'status': 'success'}
+        if route == '/api/download_voice':
+            pathlib.Path(body['path']).write_bytes(self.voice_bytes)
+            return {'code': 1}
         return {'code': 1, 'data': None, 'msg': 'success'}
 
 
@@ -80,7 +78,6 @@ class SupplierContract(unittest.TestCase):
         self.env_patch.start()
         self.addCleanup(self.env_patch.stop)
         self.fake = FakeHook()
-        self.addCleanup(lambda: [db.close() for db in self.fake.databases.values()])
         config = json.loads((SCRIPT_ROOT.parent/'config/wechatagent.example.json').read_text(encoding='utf-8-sig'))
         config['hook'].update(backend='supplier-http', expectedVersion='4.1.8.27', upstreamUrl='http://127.0.0.1:19088', wechatExecutable='Weixin.exe')
         with socket.socket() as sock:
@@ -110,13 +107,38 @@ class SupplierContract(unittest.TestCase):
             reader = supplier_reader.create_reader(reader_module.Reader)(self.root)
         for pool in ('image_executor', 'sticker_executor', 'sticker_review_executor'):
             self.addCleanup(getattr(reader, pool).shutdown, wait=False, cancel_futures=True)
+        self.addCleanup(reader.events.close)
         return reader
 
-    def test_sql_column_order_blobs_and_64_bit_ids(self):
-        conn = RemoteConnection(self.api, 'message_0.db')
-        row = conn.execute(f'SELECT message_content,server_id,local_id FROM "{self.fake.table}" WHERE local_id=?', (1,)).fetchone()
-        self.assertEqual(row, (self.fake.full_text.encode(), 8047442179716189588, 1))
-        self.assertEqual(conn.execute(f'PRAGMA table_info("{self.fake.table}")').fetchone()[1], 'local_id')
+    def incoming(self, reader, *, kind=1, content=None, local_id=1, server_id='8047442179716189588',
+                 timestamp=1700000000, sender='wxid_friend', recipient='wxid_self', **extra):
+        body = {'fromUserName': {'String': sender}, 'toUserName': {'String': recipient},
+                'msgType': str(kind), 'content': {'String': self.fake.full_text if content is None else content},
+                'msgId': str(local_id), 'newMsgId': str(server_id), 'createTime': str(timestamp),
+                'msgSource': '', **extra}
+        reader.accept_callback(body)
+        return body
+
+    def assert_no_database_api(self):
+        self.assertFalse(any(route in ('/api/get_db_handle', '/api/sqlite3_exec') for route, _ in self.fake.calls))
+
+    def allow_group(self):
+        self.fake.groups = [self.fake.contact('room@chatroom', 'Room')]
+        self.fake.members['room@chatroom'] = [self.fake.contact('wxid_friend', 'Friend')]
+        config = json.loads((self.root/'config/wechatagent.json').read_text())
+        config['wechat']['whitelist']['groups'] = [reader_module.onebot_id('Room')]
+        self.write('config/wechatagent.json', config)
+
+    def test_push_messages_preserve_full_text_and_64_bit_ids_without_history_fetch(self):
+        reader = self.reader()
+        self.assertEqual(reader.open_messages(), [])
+        self.assertEqual(reader.messages('wxid_friend'), [])
+        self.incoming(reader)
+        row = reader.messages('wxid_friend')[0]
+        self.assertEqual(row['fullText'], self.fake.full_text)
+        self.assertEqual(row['serverId'], '8047442179716189588')
+        self.assertEqual(row['localId'], 1)
+        self.assert_no_database_api()
 
     def test_runtime_path_and_copy_integrity_before_network(self):
         calls = []
@@ -147,153 +169,171 @@ class SupplierContract(unittest.TestCase):
                 supplier_reader.create_reader(reader_module.Reader)(self.root)
             api_constructor.assert_not_called()
 
-    def test_sql_read_only_and_parameter_escaping(self):
-        for sql in ('DELETE FROM contact', "SELECT 1 FROM contact; DELETE FROM contact", 'PRAGMA writable_schema=ON', "SELECT load_extension('x') FROM contact"):
-            with self.assertRaises(ValueError):
-                self.api.query('contact.db', sql)
-        self.assertEqual(bind_sql("SELECT '?' FROM contact WHERE username=?", ("x'; DROP TABLE contact; --",)), "SELECT '?' FROM contact WHERE username='x''; DROP TABLE contact; --'")
-        rows = self.api.query('contact.db', bind_sql('SELECT username FROM contact WHERE username=?', ("x'; DROP TABLE contact; --",)))
-        self.assertEqual(rows, [])
-
-    def test_sql_delivered_build_envelope_and_error_rejection(self):
-        original = self.api.transport
-        self.api.transport = lambda route, body: {'code': 1, 'data': original(route, body), 'total': 1}
-        self.assertEqual(RemoteConnection(self.api, 'contact.db').execute('SELECT COUNT(*) FROM contact').fetchone(), (2,))
-        self.api.transport = lambda *_: {'code': 0, 'msg': 'no data', 'total': 0}
-        self.assertEqual(self.api.query('contact.db', 'SELECT username FROM contact WHERE 0'), [])
-        self.api.transport = lambda *_: {'code': 0, 'data': [], 'msg': 'failed'}
-        with self.assertRaisesRegex(RuntimeError, '^HOOK_SQL_RESPONSE_INVALID$'):
-            self.api.query('contact.db', 'SELECT 1')
-
-    def test_message_table_existence_avoids_supplier_name_only_miscount(self):
-        original = self.api.transport
-        def delivered(route, body):
-            sql = body.get('sql_fmt', '')
-            if 'FROM sqlite_master WHERE name=' in sql:
-                return [{'__c0': '0'}]
-            return original(route, body)
-        self.api.transport = delivered
-        row = RemoteConnection(self.api, 'message_0.db').execute('SELECT COUNT(*) FROM sqlite_master WHERE name=?', (self.fake.table,)).fetchone()
-        self.assertEqual(row, (1,))
-
-    def test_empty_scalar_counts_are_rows_and_other_empty_queries_are_not(self):
-        conn = RemoteConnection(self.api, 'contact.db')
-        for sql in (
-            'SELECT COUNT(*) FROM contact WHERE 0',
-            "SELECT COUNT(*) FROM sqlite_master WHERE name='missing_table'",
-            "SELECT COUNT(*) FROM contact WHERE username='LIMIT 0 GROUP BY HAVING'",
-        ):
-            with self.subTest(sql=sql):
-                self.assertEqual(conn.execute(sql).fetchone(), (0,))
-        for sql in (
-            'SELECT username FROM contact WHERE 0',
-            'SELECT COUNT(*) FROM contact WHERE 0 GROUP BY username',
-            'SELECT COUNT(*) FROM contact HAVING COUNT(*) < 0',
-            'SELECT COUNT(*) FROM contact LIMIT 0',
-            'SELECT COUNT(*) FROM contact LIMIT 1 OFFSET 1',
-            'SELECT COUNT(*) FROM contact EXCEPT SELECT COUNT(*) FROM contact',
-        ):
-            with self.subTest(sql=sql):
-                self.assertIsNone(conn.execute(sql).fetchone())
-
-    def test_empty_shards_do_not_break_message_reads_or_polling(self):
-        empty = sqlite3.connect(':memory:', check_same_thread=False)
-        self.fake.databases['message_1.db'] = empty
-        empty.execute('CREATE TABLE Name2Id(user_name TEXT)')
+    def test_unselected_callbacks_are_not_stored_or_sent_to_ai(self):
         reader = self.reader()
-        messages = reader.messages('wxid_friend')
-        self.assertEqual(len(messages), 2)
-        self.assertEqual(messages[-1]['fullText'], self.fake.full_text)
-        # Also cover an existing message table that has no rows.
-        self.fake.databases['message_0.db'].execute(f'DELETE FROM "{self.fake.table}"')
-        self.assertEqual(reader.messages('wxid_friend'), [])
-        reader.last_error = 'RuntimeError'
-        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
-            reader.poll()
-        self.assertEqual(reader.last_error, '')
-        self.assertGreater(reader.last_poll, 0)
+        self.incoming(reader, sender='wxid_unselected')
+        self.assertEqual(reader.events.pending(), [])
+        self.assertEqual(reader.events.messages('wxid_unselected'), [])
+        with self.assertRaises(PermissionError):
+            reader.messages('wxid_unselected')
+        self.assert_no_database_api()
 
-    def test_reader_rejects_a_listed_but_unreadable_message_database(self):
-        original = self.api.transport
-        for name in ('message_0.db', 'message_1.db'):
-            with self.subTest(database=name):
-                if name not in self.fake.databases:
-                    self.fake.databases[name] = sqlite3.connect(':memory:', check_same_thread=False)
-                    self.fake.databases[name].execute('CREATE TABLE Name2Id(user_name TEXT)')
-                self.api.transport = lambda route, body: ({'code': 0, 'msg': 'no data', 'total': 0}
-                    if route == '/api/sqlite3_exec' and body['db_name'] == name else original(route, body))
-                with self.assertRaisesRegex(RuntimeError, '^HOOK_MESSAGE_DATABASE_UNREADABLE$'):
-                    self.reader()
-        self.api.transport = original
-
-    def test_poll_reports_unreadable_database_and_recovers_without_replaying_history(self):
+    def test_duplicate_callbacks_are_durable_and_dispatched_once(self):
         reader = self.reader()
-        original = self.api.transport
-        self.api.transport = lambda route, body: ({'code': 0, 'msg': 'no data', 'total': 0}
-            if route == '/api/sqlite3_exec' and body['db_name'] == 'message_0.db' else original(route, body))
-        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
-            reader.poll()
-        self.assertEqual(reader.last_error, 'HOOK_MESSAGE_DATABASE_UNREADABLE')
-        self.assertEqual(reader.last_poll, 0)
+        client = queue.Queue(maxsize=10)
+        reader.clients.add(client)
+        body = self.incoming(reader)
+        self.assertEqual(reader.accept_callback(body), 0)
+        reader.dispatch_pending()
+        payload = client.get_nowait()
+        self.assertEqual(payload['content'], self.fake.full_text)
+        self.assertEqual(reader.pushed, 1)
+        self.assertEqual(reader.events.pending(), [])
+        reader.events.close()
+        restarted = self.reader()
+        restarted_client = queue.Queue(maxsize=10)
+        restarted.clients.add(restarted_client)
+        self.assertEqual(restarted.accept_callback(body), 0)
+        restarted.dispatch_pending()
+        self.assertTrue(restarted_client.empty())
+        self.assert_no_database_api()
+
+    def test_pending_callback_survives_restart_without_fetching_wechat_history(self):
+        reader = self.reader()
+        body = self.incoming(reader)
+        reader.events.close()
+        restarted = self.reader()
+        self.assertEqual(len(restarted.events.pending()), 1)
+        client = queue.Queue(maxsize=10)
+        restarted.clients.add(client)
+        restarted.dispatch_pending()
+        self.assertEqual(client.get_nowait()['content'], self.fake.full_text)
+        self.assertEqual(restarted.events.pending(), [])
+        self.assertEqual(restarted.accept_callback(body), 0)
+        self.assert_no_database_api()
+
+    def test_dispatch_waits_for_live_clients_without_losing_callbacks(self):
+        reader = self.reader()
+        self.incoming(reader)
+        reader.dispatch_pending()
+        self.assertEqual(len(reader.events.pending()), 1)
         self.assertEqual(reader.pushed, 0)
-        self.api.transport = original
-        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
+        client = queue.Queue(maxsize=1)
+        reader.clients.add(client)
+        client.put({'occupied': True})
+        reader.dispatch_pending()
+        self.assertEqual(len(reader.events.pending()), 1)
+        client.get_nowait()
+        reader.dispatch_pending()
+        self.assertEqual(client.get_nowait()['content'], self.fake.full_text)
+        self.assertEqual(reader.events.pending(), [])
+
+    def test_own_callbacks_are_observed_but_never_replied_to(self):
+        reader = self.reader()
+        reader.accept_callback({'account_wxid': 'ignored-metadata', 'list': [
+            {'clientMsgId': 123456, 'createTime': 1700000000, 'type': 1,
+             'content': 'own text', 'toUserName': {'String': 'wxid_friend'}}]})
+        self.assertEqual(reader.events.pending(), [])
+        row = reader.messages('wxid_friend')[0]
+        self.assertEqual(row['serverId'], '0')
+        self.assertTrue(row['observedOnly'])
+        self.assertEqual(row['clientId'], '123456')
+        self.assertIsNone(reader.make_payload('wxid_friend', row))
+
+    def test_idle_poll_runs_local_dispatcher_without_upstream_reads(self):
+        reader = self.reader()
+        calls_before = len(self.fake.calls)
+        reader.last_error = 'old failure'
+        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.callback_wake, 'wait'):
             reader.poll()
         self.assertEqual(reader.last_error, '')
         self.assertGreater(reader.last_poll, 0)
+        self.assertEqual(len(self.fake.calls), calls_before)
+        self.assert_no_database_api()
+
+    def test_malformed_callbacks_do_not_become_acknowledged_or_ai_input(self):
+        reader = self.reader()
+        with self.assertRaises(ValueError):
+            self.incoming(reader, local_id=True)
+        self.assertEqual(reader.events.pending(), [])
         self.assertEqual(reader.pushed, 0)
 
-    def test_scalar_count_does_not_hide_hook_errors(self):
-        conn = RemoteConnection(self.api, 'contact.db')
-        self.api.transport = lambda *_: {'code': 0, 'data': [], 'msg': 'failed'}
-        with self.assertRaisesRegex(RuntimeError, '^HOOK_SQL_RESPONSE_INVALID$'):
-            conn.execute('SELECT COUNT(*) FROM contact')
-        with patch.object(self.api, 'transport', side_effect=TimeoutError):
-            with self.assertRaises(TimeoutError):
-                conn.execute('SELECT COUNT(*) FROM contact')
-
-    def test_old_sticker_migration_does_not_block_receiving_on_startup(self):
+    def test_group_callback_mentions_sender_and_member_catalog_use_dedicated_apis(self):
+        self.allow_group()
         reader = self.reader()
-        reader.image_index = {str(i): {'localType': 47, 'talker': 'wxid_friend'} for i in range(827)}
-        events = []
-        with patch.object(reader, 'messages', side_effect=lambda *_args, **_kwargs: events.append('messages') or []), \
-                patch.object(reader.sticker_collection, 'remember', side_effect=lambda *_: events.append('sticker')), \
-                patch.object(reader, 'pump_sticker_collection'), patch.object(reader, 'pump_sticker_pool_review'), \
-                patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
-            reader.poll()
-        self.assertEqual(events, ['messages', 'sticker'])
-        self.assertGreater(reader.last_poll, 0)
-        self.assertEqual(reader.last_error, '')
+        self.incoming(reader, sender='room@chatroom', content='wxid_friend:\n@机器人 你好',
+                      member_info={'userName': 'wxid_friend', 'nickName': '群成员'},
+                      msgSource='<msgsource><atuserlist>wxid_self</atuserlist></msgsource>')
+        row = reader.messages('room@chatroom')[0]
+        payload = reader.make_payload('room@chatroom', row)
+        self.assertEqual(payload['senderName'], '群成员')
+        self.assertEqual(payload['sessionType'], 'group')
+        self.assertEqual(payload['talkerId'], 'wxid_friend')
+        self.assertEqual(payload['content'], '@机器人 你好')
+        self.assertTrue(payload['mentionedSelf'])
+        self.assertEqual(reader.group_members('room@chatroom')[0]['username'], 'wxid_friend')
+        self.assertIn(('/api/get_room_members', {'room_id': 'room@chatroom'}), self.fake.calls)
+        self.assert_no_database_api()
 
-    def test_reader_uses_remote_history_contacts_and_voice_blobs_without_key(self):
+    def test_voice_download_partial_length_stays_pending_without_retry_or_final_cache(self):
+        reader = self.reader()
+        self.incoming(reader, kind=34, content='<msg><voicemsg voicelength="1000" length="99"/></msg>')
+        row = reader.messages('wxid_friend')[0]
+        record = {**row, 'talker': 'wxid_friend', 'sender': 'wxid_friend'}
+        with patch.object(supplier_reader.time, 'monotonic', side_effect=(0, 0, 11)), patch.object(supplier_reader.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, '^VOICE_DOWNLOAD_PENDING$'):
+                reader.voice_blob(record)
+        self.assertEqual(sum(route == '/api/download_voice' for route, _ in self.fake.calls), 1)
+        directory = runtime_directory(self.root)/'incoming-voice'
+        self.assertFalse(list(directory.glob('*.silk')))
+        self.assertFalse(list(directory.glob('*.part')))
+
+    def test_reader_uses_dedicated_contacts_and_bound_voice_download_without_key(self):
         reader = self.reader()
         self.assertFalse(hasattr(reader, 'message_db'))
         self.assertEqual(reader.backend, 'supplier-http')
         self.assertEqual(reader.contacts()[0]['displayName'], 'Friend')
-        rows = reader.messages('wxid_friend')
-        self.assertEqual(rows[-1]['fullText'], self.fake.full_text)
-        self.assertEqual(rows[-1]['serverId'], '8047442179716189588')
-        self.assertEqual(rows[0]['isSend'], 1)
-        self.assertEqual(reader.voice_blob({'talker': 'wxid_friend', 'localId': 2}), b'\x02#!SILK_V3fixture')
-        with self.assertRaises(PermissionError):
-            reader.messages('unselected')
+        self.incoming(reader)
+        length = len(self.fake.voice_bytes)
+        self.incoming(reader, kind=34, content='<msg><voicemsg voicelength="1000" length="' + str(length) + '"/></msg>',
+                      local_id=2, server_id='8047442179716189589', timestamp=1700000001)
+        row = reader.messages('wxid_friend')[0]
+        record = {**row, 'talker': 'wxid_friend', 'sender': 'wxid_friend'}
+        self.assertEqual(reader.voice_blob(record), self.fake.voice_bytes)
+        call = next(body for route, body in self.fake.calls if route == '/api/download_voice')
+        self.assertEqual(call['MsgId'], '2')
+        self.assertEqual(call['newMsgId'], '8047442179716189589')
+        self.assertEqual(call['length'], str(length))
+        self.assertTrue(call['path'].isascii())
+        profiles = sum(route == '/api/get_profile_new' for route, _ in self.fake.calls)
         self.fake.wxid = 'another_account'
-        with self.assertRaisesRegex(RuntimeError, 'HOOK_ACCOUNT_MISMATCH'):
-            reader.messages('wxid_friend')
+        with patch.object(self.api, 'identity', side_effect=AssertionError('runtime must not query login accounts')):
+            self.assertEqual(reader.active_identity()['wxid'], 'wxid_self')
+            self.assertEqual(reader.messages('wxid_friend')[-1]['fullText'], self.fake.full_text)
+            self.assertEqual(reader.voice_blob(record), self.fake.voice_bytes)
+        self.assertEqual(sum(route == '/api/get_profile_new' for route, _ in self.fake.calls), profiles)
+        self.assert_no_database_api()
+
+    def test_startup_reuses_connection_metadata_without_querying_or_comparing_login_accounts(self):
+        self.fake.wxid = 'other_live_metadata'
+        with patch.object(self.api, 'identity', side_effect=AssertionError('startup must reuse connection metadata')):
+            reader = self.reader()
+        self.assertEqual(reader.own_wxid, 'wxid_self')
+        self.assertEqual(reader.account.name, 'wxid_self')
+        self.assertEqual(sum(route == '/api/get_profile_new' for route, _ in self.fake.calls), 0)
 
     def test_friend_discovery_uses_relationships_not_every_known_person(self):
-        db = self.fake.databases['contact.db']
-        db.executemany('INSERT INTO contact VALUES(?,?,?,?,?,?,?,?)', [
-            ('wxid_group_member', '', 'Known member', '', 3, 0, 0, 0),
-            ('wxid_stranger', '', 'Stranger', '', 2, 2, 0, 0),
-            ('wxid_deleted', '', 'Deleted', '', 1, 3, 1, 0),
-            ('gh_official', '', 'Official', '', 1, 3, 0, 24),
-            ('wxid_business', '', 'Verified', '', 1, 3, 0, 56),
-            ('filehelper', '', 'File transfer', '', 1, 3, 0, 0),
-            ('room@chatroom', '', 'Room', '', 1, 3, 0, 0),
-            ('wxid_invalid', '', 'Invalid flags', '', 1, 'invalid', 0, 0),
+        self.fake.friends.extend([
+            self.fake.contact('wxid_group_member', 'Known member', local_type=3, bitVal=0),
+            self.fake.contact('wxid_stranger', 'Stranger', local_type=2, bitVal=2),
+            self.fake.contact('wxid_deleted', 'Deleted', delete_flag=1),
+            self.fake.contact('gh_official', 'Official', verifyFlag=24),
+            self.fake.contact('wxid_business', 'Verified', verifyFlag=56),
+            self.fake.contact('filehelper', 'File transfer'),
+            self.fake.contact('room@chatroom', 'Room'),
         ])
-        db.execute("UPDATE contact SET remark='备注',alias='account_alias' WHERE username='wxid_friend'")
+        self.fake.groups = [self.fake.contact('room@chatroom', 'Room')]
+        self.fake.friends[0].update(remark='备注', alias='account_alias')
         reader = self.reader()
         found = reader.contacts(kind='private')
         self.assertEqual([(c['username'], c['displayName'], c['isFriend']) for c in found], [('wxid_friend', '备注', True)])
@@ -303,7 +343,7 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual(reader.contacts(kind='groups')[0]['displayName'], 'Room')
         # Already allowed display metadata remains resolvable after unfriending;
         # it must not reappear in the add-friend picker or expand permissions.
-        db.execute("UPDATE contact SET delete_flag=1 WHERE username='wxid_friend'")
+        self.fake.friends[0]['delete_flag'] = 1
         self.assertEqual(reader.contacts(kind='private', refresh=True), [])
         selected = reader.contacts(selected=True)
         self.assertEqual([c['username'] for c in selected], ['wxid_friend'])
@@ -312,73 +352,143 @@ class SupplierContract(unittest.TestCase):
 
     def test_missing_friendship_metadata_never_falls_back_to_all_contact_names(self):
         reader = self.reader()
-        db = self.fake.databases['contact.db']
-        db.execute('ALTER TABLE contact RENAME TO contact_full')
-        db.execute('CREATE TABLE contact AS SELECT username,remark,nick_name,alias FROM contact_full')
+        for contact in self.fake.friends:
+            contact.pop('bitVal')
+            contact.pop('verifyFlag')
         with self.assertRaisesRegex(RuntimeError, '^CONTACT_FRIENDSHIP_METADATA_UNAVAILABLE$'):
             reader.contacts(kind='private', refresh=True)
         self.assertEqual(reader.names['wxid_friend'], 'Friend')
         self.assertFalse(reader.contacts(selected=True)[0]['isFriend'])
 
-    def test_gateway_auth_account_scope_and_no_old_upstream_routes(self):
+    def test_gateway_auth_without_account_headers_and_no_old_upstream_routes(self):
         reader = self.reader()
         reader.start_native_gateway()
         self.addCleanup(reader.gateway.server_close)
         self.addCleanup(reader.gateway.shutdown)
         base = self.api.hook['baseUrl']
-        def call(route, body=None, token='a'*64, account='wxid_self', method=None):
-            headers = {'Authorization': 'Bearer '+token, 'X-WeChatAgent-Account': account, 'Content-Type': 'application/json'}
+        def call(route, body=None, token='a'*64, account=None, method=None):
+            headers = {'Authorization': 'Bearer '+token, 'Content-Type': 'application/json'}
+            if account is not None:
+                headers['X-WeChatAgent-Account'] = account
             req = urllib.request.Request(base+route, json.dumps(body).encode() if body else None, headers, method=method)
             return json.load(urllib.request.urlopen(req, timeout=5))
         health = call('/WeChatAgent/health')
         self.assertEqual(health['provider'], 'supplier-http')
+        self.assertTrue(health['singleAccount'])
+        self.assertEqual(health['accountVerification'], 'not-required')
+        self.assertNotIn('databaseAccounts', health)
         with self.assertRaises(urllib.error.HTTPError) as denied:
             call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': 'hello'}, token='wrong')
         self.assertEqual(denied.exception.code, 401)
-        with self.assertRaises(urllib.error.HTTPError) as mismatch:
-            call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': 'hello'}, account='other')
-        self.assertEqual(mismatch.exception.code, 409)
+        profiles = sum(route == '/api/get_profile_new' for route, _ in self.fake.calls)
+        self.assertEqual(call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': 'hello'}, account='other')['ret'], 0)
         result = call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': 'hello'})
-        self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False})
+        self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
         sends = [(route, body) for route, body in self.fake.calls if route.startswith('/api/send')]
-        self.assertEqual(sends, [('/api/send_text_msg', {'wxid': 'wxid_friend', 'msg': 'hello'})])
+        self.assertEqual(sends, [('/api/send_text_msg', {'wxid': 'wxid_friend', 'msg': 'hello'})]*2)
         self.assertTrue(all(route.startswith('/api/') for route, _ in self.fake.calls))
-        callback={'msgType': 3, 'fromUserName': {'String': 'wxid_friend'}, 'toUserName': {'String': 'wxid_self'}, 'newMsgId': '8047442179716189590', 'msgId': 1234}
+        callback={'msgType': 1, 'fromUserName': {'String': 'wxid_friend'}, 'toUserName': {'String': 'wxid_self'},
+                  'newMsgId': '8047442179716189590', 'msgId': 1234, 'createTime': 1700000002, 'content': {'String': '来自回调的消息'}}
         call('/api/recvMsg/'+'a'*64, callback, method='PUT')
         self.assertEqual(reader.callback_messages['8047442179716189590']['msgId'], 1234)
-        self.assertFalse(reader.seen)  # Callback bodies never become AI input.
+        self.assertEqual(reader.messages('wxid_friend')[0]['fullText'], '来自回调的消息')
+        self.assertEqual(len(reader.events.pending()), 1)
         callback['newMsgId']='8047442179716189591';callback['toUserName']['String']='other_account'
         call('/api/recvMsg/'+'a'*64, callback)
-        self.assertNotIn('8047442179716189591', reader.callback_messages)
+        self.assertEqual(reader.callback_messages['8047442179716189591']['to'], 'other_account')
+        self.assertEqual(len(reader.events.pending()), 2)
+        self.assert_no_database_api()
+        self.assertEqual(sum(route == '/api/get_profile_new' for route, _ in self.fake.calls), profiles)
+        # Component liveness is still checked without fetching login profiles.
+        with patch.object(self.api, 'component_identity', side_effect=RuntimeError('HOOK_NOT_LISTENING')):
+            with self.assertRaises(urllib.error.HTTPError) as stopped:
+                call('/WeChatAgent/health')
+            self.assertEqual(stopped.exception.code, 503)
+            self.assertEqual(json.load(stopped.exception), {'error': 'HOOK_NOT_LISTENING'})
 
     def test_voice_intermediate_and_unknown_responses_never_confirm_delivery(self):
         result = normalize_send_response('/SendVoiceMsg', {'baseResponse': {'ret': -2}, 'endFlag': 1, 'msgId': 0, 'newMsgId': '8047442179716189588'})
         self.assertFalse(result['confirmed'])
         self.assertTrue(result['submitted'])
         final = normalize_send_response('/SendVoiceMsg', {'baseResponse': {'ret': 0}, 'endFlag': 2, 'newMsgId': '8047442179716189588'})
-        self.assertFalse(final['confirmed'])  # Database remains the authority.
+        self.assertFalse(final['confirmed'])  # Incomplete upload metadata is not a final receipt.
         with self.assertRaisesRegex(RuntimeError, 'HOOK_SEND_RESPONSE_UNKNOWN'):
             normalize_send_response('/SendTextMsg', {'status': 'maybe'})
+
+    def test_gateway_new_actions_use_cached_quote_members_and_single_staged_mp3_upload(self):
+        self.allow_group()
+        reader = self.reader()
+        self.incoming(reader)
+        original = reader.messages('wxid_friend')[0]
+        reader.start_native_gateway()
+        self.addCleanup(reader.gateway.server_close)
+        self.addCleanup(reader.gateway.shutdown)
+        headers = {'Authorization': 'Bearer '+'a'*64, 'Content-Type': 'application/json'}
+        def call(route, body, supplied_headers=None):
+            request = urllib.request.Request(self.api.hook['baseUrl']+route, json.dumps(body).encode(), supplied_headers or headers)
+            return json.load(urllib.request.urlopen(request, timeout=5))
+        requests = [
+            ('/SendAtText', {'wxidorgid': 'room@chatroom', 'msg': '@Friend 你好', 'wxids': ['wxid_friend']}),
+            ('/SendPatMsg', {'wxidorgid': 'room@chatroom', 'memberWxid': 'wxid_friend'}),
+            ('/SendQuoteMsg', {'wxidorgid': 'wxid_friend', 'replyId': original['rawid'], 'msg': '引用回复',
+                              'referContent': '伪造内容', 'fromUsr': 'wxid_forged', 'newmsgid': '1', 'createTime': 0}),
+        ]
+        mp3 = self.root/'测试语音.mp3'
+        mp3.write_bytes(b'\xff\xfb\x90\x00' + bytes(413))
+        requests.append(('/SendMp3VoiceMsg', {'wxidorgid': 'wxid_friend', 'path': str(mp3), 'duration': 1000}))
+        with patch.object(self.api, 'post', wraps=self.api.post) as posted:
+            for route, body in requests:
+                self.assertEqual(call(route, body), {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
+            mp3_calls = [entry for entry in posted.call_args_list if entry.args[0] == '/api/send_mp3_voice']
+        self.assertEqual(len(mp3_calls), 1)
+        self.assertEqual(mp3_calls[0].kwargs, {'timeout': 30})
+        mapped = [(route, body) for route, body in self.fake.calls if route.startswith('/api/send_')]
+        self.assertEqual([route for route, _ in mapped], ['/api/send_at_text', '/api/send_pat', '/api/send_quote', '/api/send_mp3_voice'])
+        self.assertEqual(mapped[0][1], {'roomId': 'room@chatroom', 'msg': '@Friend 你好', 'wxids': 'wxid_friend'})
+        self.assertEqual(mapped[1][1], {'roomId': 'room@chatroom', 'wxid': 'wxid_friend'})
+        self.assertEqual(mapped[2][1]['referContent'], self.fake.full_text)
+        self.assertEqual(mapped[2][1]['fromUsr'], 'wxid_friend')
+        self.assertEqual(mapped[2][1]['newmsgid'], original['serverId'])
+        self.assertEqual(mapped[2][1]['createTime'], original['createTime'])
+        self.assertTrue(mapped[3][1]['mp3Path'].isascii())
+        self.assertEqual(pathlib.Path(mapped[3][1]['mp3Path']).read_bytes(), mp3.read_bytes())
+        for route, body in requests:
+            with self.subTest(auth=route), self.assertRaises(urllib.error.HTTPError) as denied:
+                call(route, body, {'Authorization': 'Bearer wrong', 'Content-Type': 'application/json'})
+            self.assertEqual(denied.exception.code, 401)
+        with self.assertRaises(urllib.error.HTTPError) as denied_member:
+            call('/SendAtText', {'wxidorgid': 'room@chatroom', 'msg': 'hello', 'wxids': ['wxid_unknown']})
+        self.assertEqual(denied_member.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as unknown_quote:
+            call('/SendQuoteMsg', {'wxidorgid': 'wxid_friend', 'replyId': 'uncached-reference', 'msg': 'hello'})
+        self.assertEqual(unknown_quote.exception.code, 503)
+        self.assertEqual(json.load(unknown_quote.exception), {'error': 'HOOK_QUOTE_ORIGINAL_NOT_CACHED'})
+        self.assertEqual(len([route for route, _ in self.fake.calls if route.startswith('/api/send_')]), 4)
+        self.assert_no_database_api()
 
     def test_delivered_errcode_send_envelope_only_acknowledges_submission(self):
         ack = {'account_wxid': 'wxid_self', 'data': {}, 'errCode': 1, 'errMsg': '请求处理成功'}
         for route in ('/SendTextMsg', '/SendImageMsg', '/SendFileMsg', '/SendStickerMsg', '/SendVoiceMsg'):
             with self.subTest(route=route):
+                expected = {'ret': 0, 'submitted': True, 'confirmed': False}
+                if route == '/SendTextMsg':
+                    expected['apiAcknowledged'] = True
                 self.assertEqual(normalize_send_response(route, ack, 'wxid_self', 'wxid_friend'),
-                                 {'ret': 0, 'submitted': True, 'confirmed': False})
+                                 expected)
         # Older envelopes remain valid and never become delivery receipts either.
-        self.assertEqual(normalize_send_response('/SendTextMsg', {'code': 1}),
-                         {'ret': 0, 'submitted': True, 'confirmed': False})
+        for ack in ({'code': 1}, {'code': 1, 'data': None}, {'code': 1, 'errCode': 1},
+                    {'code': 1, 'baseResponse': {'ret': 0}, 'data': {'baseResponse': {'ret': 0}}}):
+            with self.subTest(ack=ack):
+                self.assertEqual(normalize_send_response('/SendTextMsg', ack),
+                                 {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
         self.assertFalse(normalize_send_response('/SendTextMsg', {'errCode': 1})['confirmed'])
 
-    def test_send_envelope_account_must_match_the_bound_request(self):
+    def test_send_envelope_account_is_informational_in_single_account_mode(self):
         for account in ('wxid_other', '', None, 1, {}, ['wxid_self']):
             for code in ('code', 'errCode'):
                 with self.subTest(account=account, code=code):
-                    with self.assertRaisesRegex(RuntimeError, '^HOOK_ACCOUNT_MISMATCH$'):
-                        normalize_send_response('/SendTextMsg', {code: 1, 'account_wxid': account}, 'wxid_self')
-        with self.assertRaisesRegex(RuntimeError, '^HOOK_ACCOUNT_MISMATCH$'):
-            normalize_send_response('/SendTextMsg', {'errCode': 1, 'account_wxid': 'wxid_self'})
+                    self.assertTrue(normalize_send_response('/SendTextMsg', {code: 1, 'account_wxid': account}, 'wxid_self')['apiAcknowledged'])
+        self.assertTrue(normalize_send_response('/SendTextMsg', {'errCode': 1, 'account_wxid': 'wxid_self'})['apiAcknowledged'])
 
     def test_failed_unknown_and_conflicting_send_envelopes_are_not_accepted(self):
         for result in ({'errCode': 0}, {'errCode': -1}, {'errCode': 2}, {'code': 1, 'errCode': 0}, {'code': 0, 'errCode': 1}):
@@ -386,6 +496,46 @@ class SupplierContract(unittest.TestCase):
                 self.assertEqual(normalize_send_response('/SendTextMsg', {**result, 'errMsg': '请求处理成功'}),
                                  {'ret': -1, 'submitted': False, 'confirmed': False})
         for result in ({'errCode': '1'}, {'errCode': True}, {'errCode': 1.0}, {'errCode': None}, {'code': True}, {'data': {}, 'errMsg': '请求处理成功'}):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(RuntimeError, '^HOOK_SEND_RESPONSE_UNKNOWN$'):
+                    normalize_send_response('/SendTextMsg', result)
+
+    def test_outer_text_success_never_overrides_explicit_native_failure(self):
+        for result in ({'code': 1, 'baseResponse': {'ret': -1}},
+                       {'errCode': 1, 'data': {'baseResponse': {'ret': -2}}},
+                       {'code': 1, 'errCode': 1, 'baseResponse': {'ret': 0}, 'data': {'baseResponse': {'ret': -3}}},
+                       {'code': 1, 'baseResponse': {'ret': -4}, 'data': {'baseResponse': {'ret': 0}}}):
+            with self.subTest(result=result):
+                self.assertEqual(normalize_send_response('/SendTextMsg', result),
+                                 {'ret': -1, 'submitted': False, 'confirmed': False})
+
+    def test_nontext_generic_ack_preserves_existing_media_submission_behavior(self):
+        for route in ('/SendImageMsg', '/SendFileMsg', '/SendStickerMsg', '/SendVoiceMsg'):
+            for result in ({'code': 1, 'data': []},
+                           {'errCode': 1, 'baseResponse': {'ret': -2}, 'endFlag': 1},
+                           {'code': 1, 'data': {'baseResponse': {'ret': -1}}}):
+                with self.subTest(route=route, result=result):
+                    self.assertEqual(normalize_send_response(route, result),
+                                     {'ret': 0, 'submitted': True, 'confirmed': False})
+            for result in ({'code': 1, 'errCode': 0}, {'errCode': True}):
+                with self.subTest(route=route, result=result):
+                    if type(result.get('errCode')) is not int:
+                        with self.assertRaisesRegex(RuntimeError, '^HOOK_SEND_RESPONSE_UNKNOWN$'):
+                            normalize_send_response(route, result)
+                    else:
+                        self.assertEqual(normalize_send_response(route, result),
+                                         {'ret': -1, 'submitted': False, 'confirmed': False})
+
+    def test_malformed_send_envelope_types_remain_unknown(self):
+        for result in ({'code': 1, 'errCode': True}, {'code': '1', 'errCode': 1},
+                       {'code': 1, 'data': []}, {'errCode': 1, 'data': 'ok'},
+                       {'code': 1, 'baseResponse': None}, {'code': 1, 'baseResponse': []},
+                       {'code': 1, 'baseResponse': {}}, {'code': 1, 'baseResponse': {'ret': True}},
+                       {'code': 1, 'baseResponse': {'ret': '0'}}, {'code': 1, 'baseResponse': {'ret': 0.0}},
+                       {'errCode': 1, 'data': {'baseResponse': None}},
+                       {'errCode': 1, 'data': {'baseResponse': {'ret': None}}},
+                       {'errCode': 1, 'data': {'baseResponse': {'ret': False}}},
+                       {'code': 0, 'data': {'baseResponse': {'ret': '0'}}}):
             with self.subTest(result=result):
                 with self.assertRaisesRegex(RuntimeError, '^HOOK_SEND_RESPONSE_UNKNOWN$'):
                     normalize_send_response('/SendTextMsg', result)
@@ -406,18 +556,15 @@ class SupplierContract(unittest.TestCase):
             return json.load(urllib.request.urlopen(request, timeout=5))
         for text in ('第一句', '第二句'):
             self.assertEqual(call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': text}),
-                             {'ret': 0, 'submitted': True, 'confirmed': False})
+                             {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
         file = self.image_file()
         self.assertEqual(call('/SendImageMsg', {'wxidorgid': 'wxid_friend', 'path': str(file), 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()}),
                          {'ret': 0, 'submitted': True, 'confirmed': False})
         self.assertEqual(len([route for route, _ in self.fake.calls if route.startswith('/api/send_')]), 3)
-        # The fake Hook did not add SQL rows: acknowledgements cannot invent them.
-        self.assertEqual(len(reader.messages('wxid_friend')), 2)
+        # An API acknowledgement cannot invent an observed outgoing callback.
+        self.assertEqual(reader.messages('wxid_friend'), [])
         response_account[0] = 'wxid_other'
-        with self.assertRaises(urllib.error.HTTPError) as mismatch:
-            call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': '第三句'})
-        self.assertEqual(mismatch.exception.code, 503)
-        self.assertEqual(json.load(mismatch.exception), {'error': 'HOOK_ACCOUNT_MISMATCH'})
+        self.assertTrue(call('/SendTextMsg', {'wxidorgid': 'wxid_friend', 'msg': '第三句'})['apiAcknowledged'])
         self.assertEqual(len([route for route, _ in self.fake.calls if route == '/api/send_text_msg']), 3)
 
     def test_voice_upload_has_a_separate_budget_and_other_requests_keep_five_seconds(self):
@@ -581,12 +728,17 @@ class SupplierContract(unittest.TestCase):
 
     def test_image_receipts_extract_only_valid_message_bound_md5_and_reject_xml_entities(self):
         md5 = 'ABCDEF0123456789ABCDEF0123456789'
-        for index, xml in enumerate((f'<msg><img md5="{md5}"/></msg>', '<msg><img md5="not-a-hash"/></msg>', '<!DOCTYPE msg [<!ENTITY leak "private">]><msg><img md5="&leak;"/></msg>'), start=3):
-            self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(?, ?,3,2,?,?)', (index, 8047442179716189590+index, 1700000000+index, xml.encode()))
-        rows = {row['localId']: row for row in self.reader().messages('wxid_friend')}
+        reader = self.reader()
+        for index, xml in enumerate((f'<msg><img md5="{md5}"/></msg>', '<msg><img md5="not-a-hash"/></msg>'), start=3):
+            self.incoming(reader, kind=3, content=xml, local_id=index,
+                          server_id=str(8047442179716189590+index), timestamp=1700000000+index)
+        with self.assertRaisesRegex(ValueError, 'XML_UNSAFE'):
+            self.incoming(reader, kind=3, local_id=5, server_id='8047442179716189595',
+                          content='<!DOCTYPE msg [<!ENTITY leak "private">]><msg><img md5="&leak;"/></msg>')
+        rows = {row['localId']: row for row in reader.messages('wxid_friend')}
         self.assertEqual(rows[3]['imageMd5'], md5.lower())
         self.assertNotIn('imageMd5', rows[4])
-        self.assertNotIn('imageMd5', rows[5])
+        self.assertNotIn(5, rows)
 
     def test_native_media_copy_is_ascii_and_detects_changed_cached_bytes(self):
         source = self.root/'unicode-\u6d4b\u8bd5.silk'
@@ -605,14 +757,15 @@ class SupplierContract(unittest.TestCase):
         Image.new('RGB', (4, 4), 'red').save(stream, 'PNG')
         self.fake.image_bytes = stream.getvalue()
         xml = f'<msg><img cdnmidimgurl_size="{len(self.fake.image_bytes)}"/></msg>'
-        self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(3,8047442179716189590,3,1,1700000002,?)', (xml.encode(),))
         reader = self.reader()
+        self.incoming(reader, kind=3, content=xml, local_id=1234, server_id='8047442179716189590', timestamp=1700000002)
         message = reader.messages('wxid_friend')[0]
         payload = reader.make_payload('wxid_friend', message)
         image_id = reader.register_image('wxid_friend', payload)
+        bound_callback = reader.callback_messages.pop('8047442179716189590')
         with self.assertRaisesRegex(RuntimeError, 'IMAGE_CALLBACK_METADATA_REQUIRED'):
             reader.resolve_image(image_id)
-        reader.callback_messages['8047442179716189590'] = {'msgId': 1234, 'from': 'wxid_friend', 'to': 'wxid_self'}
+        reader.callback_messages['8047442179716189590'] = bound_callback
         preview = reader.resolve_image(image_id)
         self.assertEqual(preview['imageId'], image_id)
         self.assertTrue(preview['b64'])
@@ -627,12 +780,11 @@ class SupplierContract(unittest.TestCase):
         Image.new('RGB', (32, 24), 'blue').save(stream, 'PNG')
         self.fake.image_bytes = stream.getvalue()
         xml = '<msg><img '+attrs.format(size=len(self.fake.image_bytes))+'/></msg>'
-        self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(3,8047442179716189590,3,1,1700000002,?)', (xml.encode(),))
         reader = self.reader()
+        self.incoming(reader, kind=3, content=xml, local_id=1234 if callback else 0,
+                      server_id='8047442179716189590', timestamp=1700000002)
         message = reader.messages('wxid_friend')[0]
         image_id = reader.register_image('wxid_friend',reader.make_payload('wxid_friend',message))
-        if callback:
-            reader.callback_messages['8047442179716189590'] = {'msgId':'1234','from':'wxid_friend','to':'wxid_self','type':3}
         return reader,image_id
 
     def test_real_image_length_field_and_string_callback_id(self):
@@ -644,6 +796,25 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual(body['MsgId'],1234)
         self.assertTrue(body['path'].isascii())
         self.assertTrue(body['path'].endswith('.jpg.part'))
+
+    def test_cached_image_download_restores_callback_metadata_after_reader_restart(self):
+        reader, image_id = self.image_fixture('length="{size}"')
+        reader.events.close()
+        restarted = self.reader()
+        result = restarted.resolve_image(image_id)
+        self.assertEqual(result['imageId'], image_id)
+        self.assertTrue(result['b64'])
+        body = next(body for route, body in self.fake.calls if route == '/api/download_img')
+        self.assertEqual(body['MsgId'], 1234)
+        self.assert_no_database_api()
+
+    def test_duplicate_callback_cannot_rebind_cached_image_short_id(self):
+        reader, image_id = self.image_fixture('length="{size}"')
+        self.incoming(reader, kind=3, local_id=9999, server_id='8047442179716189590', timestamp=1700000002,
+                      content='<msg><img length="'+str(len(self.fake.image_bytes))+'"/></msg>')
+        self.assertTrue(reader.resolve_image(image_id)['b64'])
+        body = next(body for route, body in self.fake.calls if route == '/api/download_img')
+        self.assertEqual(body['MsgId'], 1234)
 
     def test_cdn_image_does_not_require_short_callback_id_or_length(self):
         reader,image_id = self.image_fixture('cdnmidimgurl="message-bound-file" aeskey="'+'ab'*16+'"',callback=False)
@@ -694,7 +865,7 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual((directory/(image_id+'.image')).read_bytes(),self.fake.image_bytes)
         self.assertFalse(list(directory.glob('*.part')))
 
-    def test_downloaded_image_is_not_published_after_account_switch(self):
+    def test_image_download_does_not_repeat_login_account_checks(self):
         reader,image_id = self.image_fixture('cdnmidimgurl="message-bound-file" aeskey="'+'ab'*16+'"',callback=False)
         transport=self.api.transport
         def download(route,body):
@@ -702,9 +873,11 @@ class SupplierContract(unittest.TestCase):
             if route=='/api/cdn_download':self.fake.wxid='other_account'
             return response
         self.api.transport=download
-        with self.assertRaisesRegex(RuntimeError,'HOOK_ACCOUNT_MISMATCH'):
-            reader.resolve_image(image_id)
-        self.assertFalse((runtime_directory(self.root)/'incoming-images'/(image_id+'.image')).exists())
+        profiles = sum(route == '/api/get_profile_new' for route, _ in self.fake.calls)
+        with patch.object(self.api, 'identity', side_effect=AssertionError('media must not query login accounts')):
+            self.assertTrue(reader.resolve_image(image_id)['b64'])
+        self.assertEqual(sum(route == '/api/get_profile_new' for route, _ in self.fake.calls), profiles)
+        self.assertTrue((runtime_directory(self.root)/'incoming-images'/(image_id+'.image')).exists())
 
     def test_file_download_is_scoped_to_exact_message_and_verified_by_hash(self):
         config = json.loads((self.root/'config/wechatagent.json').read_text())
@@ -714,8 +887,8 @@ class SupplierContract(unittest.TestCase):
         self.write('config/wechatagent.json', config)
         md5 = hashlib.md5(b'file-data').hexdigest()
         xml = '<msg><appmsg><type>6</type><title>fixture.txt</title><appattach><totallen>9</totallen><attachid>fixture-cdn</attachid><md5>'+md5+'</md5></appattach></appmsg></msg>'
-        self.fake.databases['message_0.db'].execute(f'INSERT INTO "{self.fake.table}" VALUES(3,8047442179716189590,25769803825,1,1700000002,?)', (xml.encode(),))
         reader = self.reader()
+        self.incoming(reader, kind=49, content=xml, local_id=3, server_id='8047442179716189590', timestamp=1700000002)
         message = reader.messages('wxid_friend')[0]
         payload = reader.make_payload('wxid_friend', message)
         ref = reader.files.remember(payload, key)
@@ -727,10 +900,10 @@ class SupplierContract(unittest.TestCase):
         with self.assertRaises(PermissionError):
             reader.files.resolve(ref['id'], key, 'other_sender')
 
-    def test_manifest_and_account_mismatch_fail_closed(self):
-        self.assertEqual(self.api.identity('wxid_self')['pid'], 42)
-        with self.assertRaisesRegex(RuntimeError, 'HOOK_ACCOUNT_MISMATCH'):
-            self.api.identity('wxid_other')
+    def test_component_integrity_remains_required_without_account_comparison(self):
+        self.assertEqual(self.api.identity()['pid'], 42)
+        self.fake.wxid = 'wxid_other'
+        self.assertEqual(self.api.identity()['wxid'], 'wxid_other')
         (self.root/'state/hook/supplier-4.1.8.27/libGLESv1.dll').write_bytes(b'changed')
         with self.assertRaisesRegex(RuntimeError, 'HOOK_SUPPLIED_DLL_HASH_MISMATCH'):
             self.api.identity()

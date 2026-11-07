@@ -590,6 +590,26 @@ class Reader:
         kind = 'groups' if '@chatroom' in talker else 'private'
         return self.conversation_id(talker) in map(str, config['wechat']['whitelist'][kind])
 
+    def verify_voice_message(self, record):
+        # Verify the complete message identity and real sender before opening media DBs.
+        connections = self.open_messages()
+        matched = False
+        try:
+            table = 'Msg_' + hashlib.md5(record['talker'].encode()).hexdigest()
+            for connection in connections:
+                if table not in nt.msg_tables(connection):
+                    continue
+                row = connection.execute('SELECT local_type,real_sender_id FROM "'+table+'" WHERE local_id=? AND create_time=? AND server_id=? LIMIT 1', (record['localId'], record['createTime'], int(record['serverId']))).fetchone()
+                if row and row[0] == 34:
+                    sender = connection.execute('SELECT user_name FROM Name2Id WHERE rowid=?', (row[1],)).fetchone()
+                    if sender and sender[0] == record['sender']:
+                        matched = True
+        finally:
+            for connection in connections:
+                connection.close()
+        if not matched:
+            raise RuntimeError('VOICE_MESSAGE_IDENTITY_NOT_FOUND')
+
     def resolve_voice(self, voice_id, key, plugin_id, format='wav'):
         if format not in ('wav', 'silk'):
             raise ValueError('VOICE_FORMAT_UNSUPPORTED')
@@ -603,24 +623,7 @@ class Reader:
         if not self.voice_slots.acquire(blocking=False):
             raise RuntimeError('VOICE_READER_BUSY')
         try:
-            # Verify the complete message identity and real sender before opening media DBs.
-            connections = self.open_messages()
-            matched = False
-            try:
-                table = 'Msg_' + hashlib.md5(record['talker'].encode()).hexdigest()
-                for connection in connections:
-                    if table not in nt.msg_tables(connection):
-                        continue
-                    row = connection.execute('SELECT local_type,real_sender_id FROM "'+table+'" WHERE local_id=? AND create_time=? AND server_id=? LIMIT 1', (record['localId'], record['createTime'], int(record['serverId']))).fetchone()
-                    if row and row[0] == 34:
-                        sender = connection.execute('SELECT user_name FROM Name2Id WHERE rowid=?', (row[1],)).fetchone()
-                        if sender and sender[0] == record['sender']:
-                            matched = True
-            finally:
-                for connection in connections:
-                    connection.close()
-            if not matched:
-                raise RuntimeError('VOICE_MESSAGE_IDENTITY_NOT_FOUND')
+            self.verify_voice_message(record)
             raw = self.voice_blob(record)
             duration, sample_rate = record['durationSeconds'], 0
             if format == 'wav':
@@ -1187,6 +1190,10 @@ def serve(reader, port, token):
                     if target_id:
                         contacts = [c for c in contacts if str(reader.conversation_id(c['username'])) == target_id]
                     self.respond({'success': True, 'contacts': contacts})
+                elif url.path == '/api/v1/group-members':
+                    if not hasattr(reader, 'group_members'):
+                        raise RuntimeError('HOOK_GROUP_MEMBERS_UNSUPPORTED')
+                    self.respond({'success': True, 'members': reader.group_members(query.get('talker', [''])[0])})
                 elif url.path == '/api/v1/messages':
                     talker = query.get('talker', [''])[0]
                     self.respond({'success': True, 'messages': reader.messages(talker, limit) if talker else []})
@@ -1195,6 +1202,7 @@ def serve(reader, port, token):
                         'startedAt': reader.started_at, 'lastContactCatalogError': reader.contact_catalog_error,
                         'lastError': reader.last_error, 'subscribers': len(reader.clients), 'pushed': reader.pushed,
                         'ownWxid': reader.own_wxid, 'accountDirectory': reader.account.name,
+                        **({'messageSource': 'supplier-callback', 'historySource': 'project-cache', 'wechatDatabaseAccess': False} if getattr(reader, 'backend', '') == 'supplier-http' else {}),
                         'imagesRegistered': len(reader.image_index), 'lastImageError': reader.image_error,
                         'groupIdentity': 'account-chatroom-v1', 'lastGroupMetadataError': getattr(reader, 'group_metadata_error', '')})
                 elif re.fullmatch(r'/api/v1/files/[a-f0-9]{64}', url.path):
@@ -1326,7 +1334,7 @@ def serve(reader, port, token):
         server.server_close()
         raise
     threading.Thread(target=reader.poll, daemon=True).start()
-    print('Independent reader ready; database and contacts verified.', flush=True)
+    print('Hook push receiver ready; project cache and contacts initialized, no WeChat database access.' if hasattr(reader, 'start_native_gateway') else 'Independent reader ready; database and contacts verified.', flush=True)
     try:
         server.serve_forever()
     finally:
@@ -1348,7 +1356,7 @@ if __name__ == '__main__':
         else:
             reader = Reader()
         if '--check' in sys.argv:
-            print(json.dumps({'databaseReady': True, 'contactNamesLoaded': bool(reader.names),
+            print(json.dumps({**({'messageSource': 'supplier-callback', 'wechatDatabaseAccess': False} if getattr(reader, 'backend', '') == 'supplier-http' else {'databaseReady': True}), 'contactNamesLoaded': bool(reader.names),
                 'selectedConversations': len(reader.selected_talkers())}))
         else:
             config = read_json(ROOT / 'config' / 'wechatagent.json')

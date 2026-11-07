@@ -143,7 +143,7 @@ if (sendPrivateTest) adapter.once('open', () => {
   const target = [...allowedPrivate][0];
   void adapter.sendText({ kind: 'private', target,
     text: '这是 WeChatAgent 的 AI 接入测试。收到后请回复“测试”，我会尝试自动回应。' })
-    .then(() => log('[WeChat] private test confirmed by server receipt'))
+    .then(result => log(result.apiAcknowledged?'[WeChat] private test acknowledged by supplier API':'[WeChat] private test confirmed by server receipt'))
     .catch((error) => log(`[WeChat] private test failed=${error?.message ?? error}`));
 });
 await Promise.all([connection.check({force:true}),memberConnection.check({force:true})]);connection.start();memberConnection.start();

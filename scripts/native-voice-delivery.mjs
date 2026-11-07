@@ -59,7 +59,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     ...(r.error?{code:/^[A-Z][A-Z0-9_]{0,79}$/.test(r.error)?r.error:'VOICE_DELIVERY_FAILED'}:{}),...(r.submission?.code?{submissionCode:r.submission.code}:{}),...(r.state==='confirmed'?{serverId:r.serverId,receipt:r.receipt??'wechat-server-id'}:{}),message:notice(r)});
   function persist(r){fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json');fs.writeFileSync(file+'.tmp',JSON.stringify(r),{mode:0o600});fs.renameSync(file+'.tmp',file);records.set(r.id,r);}
   async function api(base,route,body,signal,account){
-    const response=await fetchImpl(base+route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token(),...(body===undefined?{}:{'Content-Type':'application/json'}),...(account?{'X-WeChatAgent-Account':account}:{})},
+    const response=await fetchImpl(base+route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token(),...(body===undefined?{}:{'Content-Type':'application/json'}),...(account&&config().hook.backend!=='supplier-http'?{'X-WeChatAgent-Account':account}:{})},
       ...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(body===undefined?4000:route==='/SendVoiceMsg'?35000:8000)])});
     if(!response.ok)throw Error('VOICE_HTTP_'+response.status);
     const chunks=[];let size=0;for await(const chunk of response.body){size+=chunk.length;if(size>128*1024)fail('VOICE_HOOK_UNAVAILABLE');chunks.push(chunk);}
@@ -72,13 +72,14 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     const problem=hookAccountProblem(main,own.accountDirectory,config().hook.expectedVersion);if(problem)fail(problem);
     const health=await api(origin(),'/health',undefined,signal);
     if(health?.backend!=='wechat-voice'||health.ready!==true||health.version!==config().hook.expectedVersion||!Number.isInteger(main.pid)||main.pid<=0||health.pid!==main.pid)fail('VOICE_HOOK_IDENTITY_INVALID');
-    if(!Array.isArray(health.databaseAccounts)||health.databaseAccounts.length!==1||String(health.databaseAccounts[0]).toLowerCase()!==String(own.accountDirectory).toLowerCase())fail('VOICE_HOOK_ACCOUNT_MISMATCH');
+    if(config().hook.backend!=='supplier-http'&&(!Array.isArray(health.databaseAccounts)||health.databaseAccounts.length!==1||String(health.databaseAccounts[0]).toLowerCase()!==String(own.accountDirectory).toLowerCase()))fail('VOICE_HOOK_ACCOUNT_MISMATCH');
     return {account:String(own.accountDirectory).toLowerCase(),wxid:own.ownWxid,pid:health.pid};
   }
   async function check({signal}={}){
     const c=new AbortController();controllers.add(c);
-    try{origin();await identity(AbortSignal.any([c.signal,...(signal?[signal]:[])]));return {ready:true,accountVerified:true,version:config().hook.expectedVersion,sent:false,message:'原生语音接口已连接，账号与微信进程一致；实际发送以消息回执确认。'};}
-    catch(e){return {ready:false,accountVerified:false,sent:false,code:e.message,message:'原生语音尚未就绪，请启动并登录匹配的微信 '+config().hook.expectedVersion+'。'};}
+    const singleAccount=config().hook.backend==='supplier-http',mode=singleAccount?{accountVerification:'not-required',singleAccount:true}:{};
+    try{origin();await identity(AbortSignal.any([c.signal,...(signal?[signal]:[])]));return {ready:true,accountVerified:!singleAccount,...mode,version:config().hook.expectedVersion,sent:false,message:singleAccount?'原生语音接口已连接（单账号模式）；实际发送以消息回执确认。':'原生语音接口已连接，账号与微信进程一致；实际发送以消息回执确认。'};}
+    catch(e){return {ready:false,accountVerified:false,...mode,sent:false,code:e.message,message:'原生语音尚未就绪，请启动并登录匹配的微信 '+config().hook.expectedVersion+'。'};}
     finally{controllers.delete(c);}
   }
   async function targetFor(key){
