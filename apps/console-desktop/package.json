@@ -1,12 +1,12 @@
 {
   "name": "wechatagent-desktop",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "private": true,
   "description": "Windows 微信 AI 助手：人格对话、原生语音、RVC 翻唱与多模态理解",
   "productName": "WeChatAgent",
   "main": "main.cjs",
   "license": "SEE LICENSES.md",
-  "releaseVersion": "0.2.16",
+  "releaseVersion": "0.2.17",
   "author": "wuxiaojiuya",
   "repository": {
     "type": "git",

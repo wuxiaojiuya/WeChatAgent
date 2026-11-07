@@ -58,7 +58,7 @@ function fixture(t,{backend='supplier-http',reply=acknowledged,rows,forbidMessag
   return {root,config,sent,requests,adapter,rebuild,get messageReads(){return messageReads;}};
 }
 
-test('supplier text success envelopes explicitly identify an API acknowledgement without relaxing other media',async()=>{
+test('supplier text and image success envelopes explicitly identify an API acknowledgement without relaxing file, sticker or voice receipts',async()=>{
   const configFile=path.join(projectRoot,'config/wechatagent.json');
   const config=fs.existsSync(configFile)?JSON.parse(fs.readFileSync(configFile,'utf8').replace(/^\uFEFF/,'')):{};
   const python=process.env.WECHATAGENT_TEST_PYTHON??config.runtime?.python??'python';
@@ -68,13 +68,15 @@ test('supplier text success envelopes explicitly identify an API acknowledgement
     'from supplier_reader import normalize_send_response',
     'envelopes=[{"code":1,"data":None,"msg":"success"},{"account_wxid":"fixture_self","errCode":1,"data":{},"errMsg":"success"}]',
     'text=[normalize_send_response("/SendTextMsg",value,"fixture_self","fixture_peer") for value in envelopes]',
-    'media=[normalize_send_response(route,envelopes[0],"fixture_self","fixture_peer") for route in ("/SendImageMsg","/SendFileMsg","/SendStickerMsg","/SendVoiceMsg")]',
-    'print(json.dumps({"text":text,"media":media}))',
+    'image=[normalize_send_response("/SendImageMsg",value,"fixture_self","fixture_peer") for value in envelopes]',
+    'media=[normalize_send_response(route,envelopes[0],"fixture_self","fixture_peer") for route in ("/SendFileMsg","/SendStickerMsg","/SendVoiceMsg")]',
+    'print(json.dumps({"text":text,"image":image,"media":media}))',
   ].join('\n');
   const {stdout}=await promisify(execFile)(python,['-B','-c',program],{cwd:projectRoot,windowsHide:true,timeout:15000,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'}});
   const result=JSON.parse(stdout);
   assert.deepEqual(result.text,[acknowledged,acknowledged]);
-  assert.deepEqual(result.media,Array.from({length:4},()=>({ret:0,submitted:true,confirmed:false})));
+  assert.deepEqual(result.image,[acknowledged,acknowledged]);
+  assert.deepEqual(result.media,Array.from({length:3},()=>({ret:0,submitted:true,confirmed:false})));
 });
 
 test('ordinary supplier text finishes from its API receipt and never reads message rows',async t=>{

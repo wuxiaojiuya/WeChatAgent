@@ -107,6 +107,27 @@ test('status discovers the latest chat task after rebinding and uses only the sc
   f.setTurn();f.setJob(null);assert.equal((await result(status)).job.state,'none');assert.match(drawingReplyOutcome('RESPOND: 还在画。',f.turn()),/没有已启动/);
 });
 
+test('drawing status accepts a complete API success receipt without replacing truthful sent wording',async t=>{
+  const f=fixture(t),delivery={state:'api-acknowledged',sent:true,confirmed:false,apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'};
+  f.setJob({id,state:'success',conversationKey:key,delivery});
+  const response=await result(f.tools.get('wechat_drawing_status'));
+  assert.equal(response.job.sent,true);assert.equal(response.job.delivery.sent,true);assert.equal(response.job.delivery.confirmed,false);
+  assert.equal(response.job.delivery.apiAcknowledged,true);assert.equal(response.job.delivery.receipt,'supplier-api');assert.equal(response.job.delivery.delivered,'api-acknowledged');
+  assert.equal(Object.hasOwn(response.job.delivery,'serverId'),false);
+  assert.equal(drawingReplyOutcome('RESPOND: 画好了，图片发你啦。',f.turn()),'RESPOND: 画好了，图片发你啦。');
+  assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);
+});
+
+test('drawing status never treats an incomplete or contradictory API acknowledgement as a successful send',async t=>{
+  const ack={state:'api-acknowledged',sent:true,confirmed:false,apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'};
+  for(const mutate of [r=>delete r.sent,r=>r.sent=false,r=>delete r.confirmed,r=>r.confirmed=true,r=>delete r.apiAcknowledged,
+    r=>r.apiAcknowledged=false,r=>delete r.receipt,r=>r.receipt='wechat-image-server-id',r=>delete r.delivered,r=>r.delivered='server-confirmed']){
+    const f=fixture(t),delivery={...ack};mutate(delivery);f.setJob({id,state:'success',conversationKey:key,delivery,sent:true});
+    const response=await result(f.tools.get('wechat_drawing_status'));assert.equal(response.job.sent,false);assert.equal(response.job.delivery.sent,false);
+    assert.match(drawingReplyOutcome('RESPOND: 图片发你啦。',f.turn()),/发送结果还没确认/);assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);
+  }
+});
+
 test('revocation, network opt-out, mismatched jobs and foreign consoles cannot start or confirm a drawing',async t=>{
   const f=fixture(t),tool=f.tools.get('wechat_draw_image');await f.binding.refresh();f.setCapability({enabled:false,chats:[key],apiKeyConfigured:true});await assert.rejects(tool.execute({prompt:'画一只猫。'}),/未开启/);assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);
   f.setCapability({enabled:true,chats:[key],apiKeyConfigured:true});f.setTurn({networkOptOut:true});assert.equal((await result(tool,{prompt:'画一只猫。'})).job.state,'failed');assert.equal(f.calls.filter(row=>row.url.endsWith('/generate')).length,0);

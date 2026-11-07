@@ -7,11 +7,12 @@ const {consoleClient}=await import(new URL('./console-client.mjs'+new URL(import
 export const DRAWING_POLICY=Symbol.for('wechatagent.drawing.v1');
 const jobId=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
 const safeMessage=value=>typeof value==='string'&&value.length<=400&&!/[\r\n\0]|https?:\/\/|[A-Z]:[\\/]|[A-Za-z0-9_-]{48,}/i.test(value)?value:undefined;
-const delivered=job=>job?.delivery?.state==='confirmed';
+const apiAcknowledged=d=>d?.state==='api-acknowledged'&&d.sent===true&&d.confirmed===false&&d.apiAcknowledged===true&&d.receipt==='supplier-api'&&d.delivered==='api-acknowledged';
+const delivered=job=>job?.delivery?.state==='confirmed'||apiAcknowledged(job?.delivery);
 function publicJob(value,key){
   if(!value||!jobId(value.id)||!['queued','running','success','failed','interrupted','cancelled'].includes(value.state)||value.conversationKey!==undefined&&value.conversationKey!==key)throw Error('DRAWING_JOB_INVALID');
   return {id:value.id,state:value.state,stage:safeMessage(value.stage),error:safeMessage(value.error),sent:delivered(value),
-    ...(value.delivery?{delivery:{state:safeMessage(value.delivery.state),sent:delivered(value)}}:{})};
+    ...(value.delivery?{delivery:{state:safeMessage(value.delivery.state),sent:delivered(value),confirmed:value.delivery.state==='confirmed',...(apiAcknowledged(value.delivery)?{apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'}:{}),...(value.delivery.state==='confirmed'&&['wechat-image-server-id','wechat-message-response'].includes(value.delivery.receipt)?{receipt:value.delivery.receipt}:{})}}:{})};
 }
 export function drawingReplyOutcome(text,turn){
   const outcome=turn?.drawingOutcome;if(!outcome||outcome.sent===true)return text;
@@ -87,7 +88,7 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
         if(!active()||turnFor()!==turn)throw Error('DRAWING_SCOPE_CHANGED');
         const job=response.job===null?{state:'none',sent:false}:publicJob(response.job,key);
         if(job.id)latest=job.id;turn.drawingOutcome=job;
-        return {content:JSON.stringify({job,notice:job.sent?'图片发送已取得确认回执。':'仅 sent:true 才能声称接口已确认发送。queued/running 表示处理中；success 只表示图片已生成。若查询的是旧任务，本轮正常接话即可，不必复述状态；用户表示已经收到时可自然回应，不将用户反馈伪造成接口确认，也不重复生成或发送。失败按当前人格自然解释，不编造进度、图片内容或送达。用户只让看图时不要生成新图。'}),isError:['failed','interrupted','cancelled'].includes(job.state)};
+        return {content:JSON.stringify({job,notice:job.sent?(job.delivery.apiAcknowledged?'图片发送接口已返回成功，无需再等待微信消息号或重复发送；这不是对方已读回执。':'图片发送已取得微信服务器回执。'):'仅 sent:true 才能声称接口已确认发送。queued/running 表示处理中；success 只表示图片已生成。若查询的是旧任务，本轮正常接话即可，不必复述状态；用户表示已经收到时可自然回应，不将用户反馈伪造成接口确认，也不重复生成或发送。失败按当前人格自然解释，不编造进度、图片内容或送达。用户只让看图时不要生成新图。'}),isError:['failed','interrupted','cancelled'].includes(job.state)};
       }catch(error){
         const state=(submitting&&!error.status&&!error.public)||def.name==='wechat_drawing_status'?'unconfirmed':'failed';
         const message=(error.public||error.status)&&safeMessage(error.message);

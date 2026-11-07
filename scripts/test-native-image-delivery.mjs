@@ -18,14 +18,14 @@ function fixture(t){
   const config={hook:{backend:'supplier-http',baseUrl:'http://127.0.0.1:30001',expectedVersion:'4.1.8.27'},wechat:{whitelist:{private:[key.split(':')[2]],groups:[]}}};
   const state={rows:[],enabled:true,posts:0,confirm:true,drop:false,own:{backend:'supplier-http',ownWxid:'wxid_self',accountDirectory:'wxid_self'},health:{integration:'WeChatAgent-supplier-v1',backend:'wechat-hook',provider:'supplier-http',version:'4.1.8.27',startupState:'ready',ready:true,nativeImageSend:true,databaseAccounts:['wxid_self'],pid:44}};
   const options={root,config:()=>config,enabledFor:()=>state.enabled,receiptTimeoutMs:15,pollMs:1,
-    receiver:async route=>route.includes('/receiver/status')?state.own:route.includes('/sessions')?{sessions:[{username:target,displayName:'Friend'}]}:{messages:state.rows},
+    receiver:async route=>{assert(!route.includes('/messages'),'image delivery must use the send API response rather than message or database polling');return route.includes('/receiver/status')?state.own:route.includes('/sessions')?{sessions:[{username:target,displayName:'Friend'}]}:{messages:state.rows};},
     fetchImpl:async(url,request)=>{
       assert.equal(request.headers.Authorization,'Bearer '+'a'.repeat(64));if(url.endsWith('/WeChatAgent/health'))return Response.json(state.health);
       assert.equal(url,config.hook.baseUrl+'/SendImageMsg');assert.equal(request.headers['X-WeChatAgent-Account'],undefined);
       const body=JSON.parse(request.body),saved=JSON.parse(fs.readFileSync(path.join(root,'state/image-output/deliveries',id+'.json')));
       assert.equal(saved.state,'dispatching');assert.equal(body.wxidorgid,target);assert.equal(body.md5,crypto.createHash('md5').update(png).digest('hex'));assert.equal(body.size,png.length);assert.deepEqual(fs.readFileSync(body.path),png);state.posts++;
       if(state.confirm)state.rows=[{isSend:1,localType:3,imageMd5:body.md5,localId:5,serverId:'8047442179716189588',createTime:Math.floor(Date.now()/1000)}];
-      if(state.drop)throw Error('socket lost');return Response.json({ret:state.reject?-1:0,confirmed:state.confirm,serverId:'8047442179716189588',target,receipt:'wechat-message-response'});
+      if(state.drop)throw Error('socket lost');return Response.json(state.response??{ret:state.reject?-1:0,confirmed:state.confirm,serverId:'8047442179716189588',target,receipt:'wechat-message-response'});
     }};
   const service=createNativeImageDelivery(options);t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
   const send=async(extra={})=>{const ticket=await service.capture(key);await service.send({id,conversationKey:key,file,accountScope,ticket,...extra});return service.settled(id,key);};
@@ -54,6 +54,46 @@ test('generic submission acknowledgment without an exact image receipt stays unc
   const f=fixture(t);f.state.confirm=false;const result=await f.send();assert.equal(result.state,'unconfirmed');assert.equal(result.sent,false);assert.equal(f.state.posts,1);
   f.state.rows=[{isSend:1,localType:3,imageMd5:'a'.repeat(32),localId:6,serverId:'9999',createTime:Math.floor(Date.now()/1000)}];
   assert.equal((await f.service.refresh(id,f.key,{wait:true})).sent,false);assert.equal(f.state.posts,1);
+});
+
+test('explicit image API success finishes once without inventing a WeChat server receipt and survives restart',async t=>{
+  const f=fixture(t);f.state.response={ret:0,submitted:true,confirmed:false,apiAcknowledged:true};
+  const result=await f.send();
+  assert.equal(result.state,'api-acknowledged');assert.equal(result.sent,true);assert.equal(result.confirmed,false);assert.equal(result.apiAcknowledged,true);
+  assert.equal(result.receipt,'supplier-api');assert.equal(result.delivered,'api-acknowledged');assert.equal(Object.hasOwn(result,'serverId'),false);assert.equal(f.state.posts,1);
+  assert.equal((await f.send({file:'unused'})).state,'api-acknowledged');assert.equal(f.state.posts,1);f.service.close();
+  const restored=createNativeImageDelivery(f.options);t.after(()=>restored.close());
+  const recovered=restored.get(id,f.key);assert.deepEqual(recovered,result);assert.equal((await restored.refresh(id,f.key,{wait:true})).sent,true);
+  const ticket=await restored.capture(f.key);assert.equal((await restored.send({id,conversationKey:f.key,file:'unused',accountScope,ticket})).sent,true);
+  assert.equal(f.state.posts,1);assert(!JSON.stringify(result).includes(f.root));
+});
+
+test('bare or malformed image API acknowledgements do not become successful sends',async t=>{
+  for(const response of [{ret:0},{ret:0,submitted:true,confirmed:false},{ret:0,submitted:false,confirmed:false,apiAcknowledged:true},
+    {ret:0,submitted:true,confirmed:true,apiAcknowledged:true},{ret:0,submitted:true,confirmed:false,apiAcknowledged:'true'},
+    {ret:0,submitted:true,apiAcknowledged:true}]){
+    const f=fixture(t);f.state.response=response;const result=await f.send();assert.equal(result.state,'unconfirmed');assert.equal(result.sent,false);assert.equal(f.state.posts,1);
+    assert.equal((await f.send({file:'unused'})).sent,false);assert.equal(f.state.posts,1);
+  }
+  const rejected=fixture(t);rejected.state.response={ret:-1,submitted:false,confirmed:false,apiAcknowledged:true};
+  assert.equal((await rejected.send()).state,'failed');assert.equal((await rejected.send()).sent,false);assert.equal(rejected.state.posts,1);
+});
+
+test('older unconfirmed image operations never gain success from a newer API response or resend after restart',async t=>{
+  const f=fixture(t);f.state.confirm=false;assert.equal((await f.send()).state,'unconfirmed');f.service.close();
+  f.state.response={ret:0,submitted:true,confirmed:false,apiAcknowledged:true};
+  const restored=createNativeImageDelivery(f.options);t.after(()=>restored.close());
+  const ticket=await restored.capture(f.key),result=await restored.send({id,conversationKey:f.key,file:'unused',accountScope,ticket});
+  assert.equal(result.state,'unconfirmed');assert.equal(result.sent,false);assert.equal((await restored.refresh(id,f.key,{wait:true})).sent,false);assert.equal(f.state.posts,1);
+});
+
+test('recovered image API success requires its complete persisted acknowledgement',async t=>{
+  for(const mutate of [r=>delete r.apiAcknowledged,r=>r.apiAcknowledged=false,r=>r.receipt='wechat-image-server-id',r=>delete r.acknowledgedAt,r=>r.serverId='8047442179716189588']){
+    const f=fixture(t);f.state.response={ret:0,submitted:true,confirmed:false,apiAcknowledged:true};await f.send();f.service.close();
+    const file=path.join(f.root,'state/image-output/deliveries',id+'.json'),record=JSON.parse(fs.readFileSync(file,'utf8'));mutate(record);fs.writeFileSync(file,JSON.stringify(record));
+    const restored=createNativeImageDelivery(f.options);t.after(()=>restored.close());assert.throws(()=>restored.get(id,f.key),/IMAGE_DELIVERY_NOT_FOUND/);
+    const ticket=await restored.capture(f.key);await assert.rejects(restored.send({id:'d'.repeat(64),conversationKey:f.key,file:f.file,accountScope,ticket}),/IMAGE_DELIVERY_STATE_INVALID/);assert.equal(f.state.posts,1);
+  }
 });
 
 test('lost image HTTP replies stay unknown across restart without message polling or resubmission',async t=>{

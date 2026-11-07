@@ -16,7 +16,10 @@ if(checked.status!==0)throw Error('HOOK_ARCHIVE_VERIFICATION_FAILED');
 const assets=['WeChatAgent-Setup-'+version+'-x64.exe',prefix+'-source.zip',hookName,'VERIFICATION.json'];
 const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const capabilityFiles=['scripts/dsh-capability-client.mjs',...CAPABILITY_PLUGIN_FILES.map(file=>'packages/dsh-capabilities-plugin/'+file)];
-const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py'];
+const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py',
+  'scripts/native-image-delivery.mjs','scripts/drawing-capability.mjs',
+  'scripts/test-native-image-delivery.mjs','scripts/test-drawing-capability.mjs','scripts/test-drawing-tools.mjs',
+  'scripts/test-text-api-receipt.mjs','scripts/test_supplier_hook.py'];
 const sharedMemoryAndHookFiles=[
   'scripts/supplier_api.py','scripts/supplier_contacts.py','scripts/supplier_events.py','scripts/supplier_actions.py',
   'scripts/supplier_social_actions.py','scripts/supplier_social_gateway.py','scripts/supplier_social_results.py',

@@ -76,8 +76,9 @@ export function createNativeImageDelivery({root,config,enabledFor,receiver,fetch
     for(let current=target;;current=path.dirname(current)){if(fs.existsSync(current)&&fs.lstatSync(current).isSymbolicLink())fail('IMAGE_FILE_LINK_DENIED');if(current===base)break;}
     return target;
   }
-  const view=r=>({id:r.id,conversationKey:r.key,state:r.state,sent:r.state==='confirmed',confirmed:r.state==='confirmed',...(r.error?{code:safeError({message:r.error})}:{}),...(r.state==='confirmed'?{serverId:r.serverId,receipt:'wechat-image-server-id'}:{}),
-    message:r.state==='confirmed'?'图片已取得微信服务器回执。':r.state==='unconfirmed'?'图片发送结果未确认，不会自动重发。':r.state==='failed'?'图片没有发送成功。':'图片已生成，正在准备发送或核对微信回执。'});
+  const view=r=>({id:r.id,conversationKey:r.key,state:r.state,sent:['confirmed','api-acknowledged'].includes(r.state),confirmed:r.state==='confirmed',...(r.error?{code:safeError({message:r.error})}:{}),...(r.state==='confirmed'?{serverId:r.serverId,receipt:'wechat-image-server-id'}:{}),
+    ...(r.state==='api-acknowledged'?{apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'}:{}),
+    message:r.state==='confirmed'?'图片已取得微信服务器回执。':r.state==='api-acknowledged'?'图片发送接口已返回成功。':r.state==='unconfirmed'?'图片发送结果未确认，不会自动重发。':r.state==='failed'?'图片没有发送成功。':'图片已生成，正在准备发送或核对微信回执。'});
   function persist(r){local(path.join(directory,r.id+'.json'));fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json'),temporary=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(temporary,JSON.stringify(r),{flag:'wx',mode:0o600});fs.renameSync(temporary,file);records.set(r.id,r);}
   function getRecord(id,key){assertScope(key);const r=records.get(id);if(!identifier(id)||!r||r.key!==key||r.accountScope!==scope())fail('IMAGE_DELIVERY_NOT_FOUND');return r;}
   const get=(id,key)=>view(getRecord(id,key));
@@ -107,7 +108,12 @@ export function createNativeImageDelivery({root,config,enabledFor,receiver,fetch
           signal.throwIfAborted();if(assertScope(r.key)!==r.accountScope||r.binding!==binding())fail('IMAGE_ACCOUNT_CHANGED');
           r.state='dispatching';r.startedAt=now();persist(r);
           try{const result=await api('/SendImageMsg',{wxidorgid:r.target,path:file,md5:r.md5,size:r.size},signal);
-            if(result?.ret!==0){r.state='failed';r.error='IMAGE_NATIVE_REJECTED';persist(r);return;}if(result.confirmed===true&&serverId(result.serverId)&&result.target===r.target){r.state='confirmed';r.serverId=result.serverId;r.receipt=result.receipt;r.confirmedAt=now();persist(r);return;}r.state='submitted';persist(r);
+            if(result?.ret!==0){r.state='failed';r.error='IMAGE_NATIVE_REJECTED';persist(r);return;}if(result.confirmed===true&&serverId(result.serverId)&&result.target===r.target){r.state='confirmed';r.serverId=result.serverId;r.receipt=result.receipt;r.confirmedAt=now();persist(r);return;}
+            // The supplied image API documents code:1/data:null as success,
+            // without a message ID. Keep its acknowledgement as a distinct
+            // completed operation instead of waiting for a nonexistent receipt.
+            if(result.submitted===true&&result.confirmed===false&&result.apiAcknowledged===true){r.state='api-acknowledged';r.apiAcknowledged=true;r.receipt='supplier-api';r.acknowledgedAt=now();persist(r);return;}
+            r.state='submitted';persist(r);
           }catch(error){r.submissionCode=safeError(error);persist(r);}
         }
         r.state='unconfirmed';r.error='IMAGE_DELIVERY_UNCONFIRMED';persist(r);
@@ -132,9 +138,10 @@ export function createNativeImageDelivery({root,config,enabledFor,receiver,fetch
   if(fs.existsSync(directory)){
     local(path.join(directory,'state-check'));for(const name of fs.readdirSync(directory).filter(name=>/^[a-f0-9]{64}\.json$/.test(name)).slice(0,129)){
       try{if(records.size>=128)fail('IMAGE_STORAGE_LIMIT');const file=local(path.join(directory,name));if(fs.statSync(file).size>32768)fail('IMAGE_DELIVERY_STATE_INVALID');const r=JSON.parse(fs.readFileSync(file,'utf8'));
-        if(r.version!==1||name!==r.id+'.json'||!identifier(r.id)||!identifier(r.accountScope)||!identifier(r.binding)||!identifier(r.sha256)||!/^[a-f0-9]{32}$/.test(r.md5??'')||!/^wechat:(private|group):[1-9]\d*$/.test(r.key)||!['.png','.jpg'].includes(r.extension)||!Number.isSafeInteger(r.size)||r.size<1||r.size>maxBytes||!['queued','dispatching','submitted','confirmed','failed','unconfirmed'].includes(r.state)||!Number.isFinite(r.createdAt)||!['accountWxid','target'].every(field=>typeof r[field]==='string'&&/^[A-Za-z0-9_@.-]{1,180}$/.test(r[field])))fail('IMAGE_DELIVERY_STATE_INVALID');
+        if(r.version!==1||name!==r.id+'.json'||!identifier(r.id)||!identifier(r.accountScope)||!identifier(r.binding)||!identifier(r.sha256)||!/^[a-f0-9]{32}$/.test(r.md5??'')||!/^wechat:(private|group):[1-9]\d*$/.test(r.key)||!['.png','.jpg'].includes(r.extension)||!Number.isSafeInteger(r.size)||r.size<1||r.size>maxBytes||!['queued','dispatching','submitted','confirmed','api-acknowledged','failed','unconfirmed'].includes(r.state)||!Number.isFinite(r.createdAt)||!['accountWxid','target'].every(field=>typeof r[field]==='string'&&/^[A-Za-z0-9_@.-]{1,180}$/.test(r[field])))fail('IMAGE_DELIVERY_STATE_INVALID');
         if(r.state==='confirmed'&&!serverId(r.serverId))fail('IMAGE_DELIVERY_STATE_INVALID');
-        if(!['confirmed','failed','unconfirmed'].includes(r.state)){r.state=r.startedAt?'unconfirmed':'failed';r.error=r.startedAt?'IMAGE_DELIVERY_UNCONFIRMED':'IMAGE_INTERRUPTED_BEFORE_SUBMISSION';}
+        if(r.state==='api-acknowledged'&&(r.apiAcknowledged!==true||r.receipt!=='supplier-api'||!Number.isFinite(r.acknowledgedAt)||r.serverId!==undefined))fail('IMAGE_DELIVERY_STATE_INVALID');
+        if(!['confirmed','api-acknowledged','failed','unconfirmed'].includes(r.state)){r.state=r.startedAt?'unconfirmed':'failed';r.error=r.startedAt?'IMAGE_DELIVERY_UNCONFIRMED':'IMAGE_INTERRUPTED_BEFORE_SUBMISSION';}
         records.set(r.id,r);
       }catch{corrupt=true;}
     }

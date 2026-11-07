@@ -496,7 +496,7 @@ class SupplierContract(unittest.TestCase):
         for route in ('/SendTextMsg', '/SendImageMsg', '/SendFileMsg', '/SendStickerMsg', '/SendVoiceMsg'):
             with self.subTest(route=route):
                 expected = {'ret': 0, 'submitted': True, 'confirmed': False}
-                if route == '/SendTextMsg':
+                if route in ('/SendTextMsg', '/SendImageMsg'):
                     expected['apiAcknowledged'] = True
                 self.assertEqual(normalize_send_response(route, ack, 'wxid_self', 'wxid_friend'),
                                  expected)
@@ -514,6 +514,36 @@ class SupplierContract(unittest.TestCase):
                 with self.subTest(account=account, code=code):
                     self.assertTrue(normalize_send_response('/SendTextMsg', {code: 1, 'account_wxid': account}, 'wxid_self')['apiAcknowledged'])
         self.assertTrue(normalize_send_response('/SendTextMsg', {'errCode': 1, 'account_wxid': 'wxid_self'})['apiAcknowledged'])
+
+    def test_documented_image_success_is_an_api_acknowledgement_without_an_invented_server_id(self):
+        for result in ({'code': 1, 'data': None, 'msg': 'success'},
+                       {'errCode': 1, 'data': {}, 'errMsg': '请求处理成功'},
+                       {'code': 1, 'errCode': 1}):
+            with self.subTest(result=result):
+                self.assertEqual(normalize_send_response('/SendImageMsg', result, target='wxid_friend'),
+                                 {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
+        # A native response with no explicit supplier success envelope still
+        # needs its target-bound server ID; incomplete old replies stay unknown.
+        self.assertEqual(normalize_send_response('/SendImageMsg', {'baseResponse': {'ret': 0}}, target='wxid_friend'),
+                         {'ret': 0, 'submitted': True, 'confirmed': False})
+
+    def test_image_success_never_overrides_rejection_conflicts_or_malformed_native_status(self):
+        for result in ({'code': 0}, {'errCode': -1}, {'code': 1, 'errCode': 0},
+                       {'code': 0, 'errCode': 1},
+                       {'code': 1, 'data': {'baseResponse': {'ret': -1}}},
+                       {'errCode': 1, 'baseResponse': {'ret': -2}},
+                       {'code': 1, 'baseResponse': {'ret': 0}, 'data': {'baseResponse': {'ret': -3}}}):
+            with self.subTest(result=result):
+                self.assertEqual(normalize_send_response('/SendImageMsg', result, target='wxid_friend'),
+                                 {'ret': -1, 'submitted': False, 'confirmed': False})
+        for result in ({'code': True}, {'errCode': '1'}, {'code': 1.0},
+                       {'code': 1, 'data': []}, {'errCode': 1, 'data': 'success'},
+                       {'code': 1, 'baseResponse': None}, {'code': 1, 'baseResponse': {}},
+                       {'errCode': 1, 'data': {'baseResponse': {'ret': False}}},
+                       {'data': None, 'msg': 'success'}):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(RuntimeError, '^HOOK_SEND_RESPONSE_UNKNOWN$'):
+                    normalize_send_response('/SendImageMsg', result, target='wxid_friend')
 
     def test_failed_unknown_and_conflicting_send_envelopes_are_not_accepted(self):
         for result in ({'errCode': 0}, {'errCode': -1}, {'errCode': 2}, {'code': 1, 'errCode': 0}, {'code': 0, 'errCode': 1}):
@@ -556,18 +586,22 @@ class SupplierContract(unittest.TestCase):
         for route in ('/SendImageMsg', '/SendFileMsg', '/SendStickerMsg'):
             for response in (native, {'code': 1, 'data': native}, {'errCode': 1, **native}):
                 with self.subTest(route=route, response=response):
-                    self.assertEqual(normalize_send_response(route, response, target='wxid_friend'),
-                                     {'ret': 0, 'submitted': True, 'confirmed': True,
-                                      'serverId': native['newMsgId'], 'target': 'wxid_friend',
-                                      'receipt': 'wechat-message-response'})
+                    expected = {'ret': 0, 'submitted': True, 'confirmed': True,
+                                'serverId': native['newMsgId'], 'target': 'wxid_friend',
+                                'receipt': 'wechat-message-response'}
+                    if route == '/SendImageMsg' and any(key in response for key in ('code', 'errCode')):
+                        expected['apiAcknowledged'] = True
+                    self.assertEqual(normalize_send_response(route, response, target='wxid_friend'), expected)
             for changes in ({'toUserName': 'other'}, {'newMsgId': 8047442179716189588},
                             {'newMsgId': '0'}, {'newMsgId': ''}, {'newMsgId': '1'*21}):
                 with self.subTest(route=route, changes=changes):
                     result = normalize_send_response(route, {**native, **changes}, target='wxid_friend')
                     self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False})
             for response in ({'code': 1}, {'baseResponse': {'ret': 0}}, {'errCode': 1, 'data': {}}):
-                self.assertEqual(normalize_send_response(route, response, target='wxid_friend'),
-                                 {'ret': 0, 'submitted': True, 'confirmed': False})
+                expected = {'ret': 0, 'submitted': True, 'confirmed': False}
+                if route == '/SendImageMsg' and any(key in response for key in ('code', 'errCode')):
+                    expected['apiAcknowledged'] = True
+                self.assertEqual(normalize_send_response(route, response, target='wxid_friend'), expected)
             incomplete = {'baseResponse': {'ret': 0}, 'newMsgId': native['newMsgId']}
             self.assertFalse(normalize_send_response(route, incomplete)['confirmed'])
             self.assertFalse(normalize_send_response(route, {'code': 1, 'data': incomplete})['confirmed'])
@@ -609,7 +643,7 @@ class SupplierContract(unittest.TestCase):
                              {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
         file = self.image_file()
         self.assertEqual(call('/SendImageMsg', {'wxidorgid': 'wxid_friend', 'path': str(file), 'size': file.stat().st_size, 'md5': hashlib.md5(file.read_bytes()).hexdigest()}),
-                         {'ret': 0, 'submitted': True, 'confirmed': False})
+                         {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
         self.assertEqual(len([route for route, _ in self.fake.calls if route.startswith('/api/send_')]), 3)
         # An API acknowledgement cannot invent an observed outgoing callback.
         self.assertEqual(reader.messages('wxid_friend'), [])
@@ -767,7 +801,7 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual(sends[0].args[1]['wxid'], 'wxid_friend')
         self.assertTrue(sends[0].args[1]['filepath'].isascii())
         self.assertEqual(pathlib.Path(sends[0].args[1]['filepath']).read_bytes(), file.read_bytes())
-        self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False})
+        self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False, 'apiAcknowledged': True})
         health_request = urllib.request.Request(self.api.hook['baseUrl']+'/WeChatAgent/health', headers=headers)
         self.assertTrue(json.load(urllib.request.urlopen(health_request, timeout=5))['nativeImageSend'])
         body['wxidorgid'] = 'unselected_target'

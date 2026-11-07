@@ -38,6 +38,30 @@ test('GPT generation uses base64 PNG contract once, persists result and dispatch
   const saved=fs.readFileSync(path.join(f.root,'state/drawing/jobs',job.id,'job.json'),'utf8');assert(!saved.includes(secret));assert(!saved.includes('水彩猫咪'));
 });
 
+test('drawing jobs retain the image API success receipt across lookups and recovery without a second generation or send',async t=>{
+  let acknowledgement,sends=0;
+  const delivery={capture:async()=>({accountScope:'b'.repeat(64)}),send:async value=>{sends++;assert.deepEqual(fs.readFileSync(value.file),png);
+    acknowledgement={id:value.id,state:'api-acknowledged',sent:true,confirmed:false,apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'};return acknowledgement;},
+    lookup:()=>acknowledgement,refresh:async()=>acknowledgement};
+  const f=fixture(t,undefined,{delivery});f.save();const requestId=crypto.randomUUID(),{job}=await f.generate({requestId});await f.service.settled(job.id);
+  const result=await f.service.get(job.id,key);assert.equal(result.state,'success');assert.equal(result.sent,true);assert.deepEqual(result.delivery,acknowledgement);
+  assert.equal(result.delivery.confirmed,false);assert.equal(Object.hasOwn(result.delivery,'serverId'),false);assert.equal(sends,1);assert.equal(f.state.posts,1);
+  f.service.close();const restored=createDrawingCapability(f.options);t.after(()=>restored.close());
+  const recovered=await restored.get(job.id,key);assert.equal(recovered.sent,true);assert.deepEqual(recovered.delivery,acknowledgement);
+  assert.equal((await restored.generate({prompt:'水彩猫咪',requestId,conversationKey:key,previewOnly:false})).job.id,job.id);assert.equal(sends,1);assert.equal(f.state.posts,1);
+});
+
+test('drawing jobs do not infer API success from incomplete or contradictory delivery metadata',async t=>{
+  const valid={state:'api-acknowledged',sent:true,confirmed:false,apiAcknowledged:true,receipt:'supplier-api',delivered:'api-acknowledged'};
+  for(const mutate of [r=>delete r.sent,r=>r.sent=false,r=>delete r.confirmed,r=>r.confirmed=true,r=>delete r.apiAcknowledged,
+    r=>r.apiAcknowledged=false,r=>delete r.receipt,r=>r.receipt='wechat-image-server-id',r=>delete r.delivered,r=>r.delivered='server-confirmed']){
+    const acknowledgement={...valid};mutate(acknowledgement);let sends=0;
+    const delivery={capture:async()=>({accountScope:'b'.repeat(64)}),send:async()=>{sends++;return acknowledgement;},lookup:()=>acknowledgement,refresh:async()=>acknowledgement};
+    const f=fixture(t,undefined,{delivery});f.save();const {job}=await f.generate();await f.service.settled(job.id);
+    const result=await f.service.get(job.id,key);assert.equal(result.state,'success');assert.equal(result.sent,false);assert.equal(sends,1);assert.equal(f.state.posts,1);
+  }
+});
+
 test('local preview is independent of WeChat and never invokes native image send',async t=>{const f=fixture(t);f.save({enabled:false,chats:[]});
   const {job}=await f.generate({previewOnly:true,conversationKey:undefined,revision:f.service.snapshot().revision});await f.service.settled(job.id);assert.equal((await f.service.get(job.id)).state,'success');assert.equal(f.state.sends,0);assert.deepEqual(f.service.image(job.id),png);
   await assert.rejects(f.generate(),/未开启/);await assert.rejects(f.service.get(job.id,key),/不属于/);

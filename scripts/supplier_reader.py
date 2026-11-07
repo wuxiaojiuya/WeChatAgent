@@ -297,8 +297,8 @@ def normalize_send_response(route, result, account=None, target=None, duration=N
     if not isinstance(result, dict):
         raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
     # A supplier account field is informational, not another login gate.
-    # Supplied builds use either code or errCode. A text API acknowledgement
-    # is distinct from a delivery receipt; other media still require their receipt.
+    # Supplied builds use either code or errCode. Text and image API success
+    # acknowledgements are distinct from target-bound server delivery receipts.
     action_routes = ('/SendAtText', '/SendQuoteMsg', '/SendPatMsg', '/SendMp3VoiceMsg')
     media_routes = ('/SendImageMsg', '/SendFileMsg', '/SendStickerMsg')
     receipt_routes = action_routes + media_routes
@@ -322,7 +322,7 @@ def normalize_send_response(route, result, account=None, target=None, duration=N
                     native_rets.append(base_response['ret'])
             accepted = accepted and all(ret == 0 for ret in native_rets)
         normalized = {'ret': 0 if accepted else -1, 'submitted': accepted, 'confirmed': False}
-        if accepted and (route == '/SendTextMsg' or route in action_routes):
+        if accepted and (route in ('/SendTextMsg', '/SendImageMsg') or route in action_routes):
             normalized['apiAcknowledged'] = True
         if accepted and route in receipt_routes:
             native = result.get('data') if isinstance(result.get('data'), dict) else result

@@ -58,7 +58,9 @@ OneBot 支持 `get_friend_list`、`get_group_list`、`get_group_member_list`、`
 
 新动作发送前持久记录，超时或未知响应不自动重发。通用成功码只记为 `receipt:"supplier-api"`、`delivered:"api-acknowledged"`，返回本机 `operation_id`，不编造微信消息号；带完整服务器 ID 的目标匹配原生成功回执才记为服务器确认。普通文字仍使用明确的本机 `api-text:` 标识。
 
-图片、文件、表情的一般成功码只代表已提交；仅有 clientId 的发送回调可能无法取得最终确认，保持未确认且不自动重发。语音中间状态 `ret:-2/endFlag:1` 不是成功。最终上传确认需要 `ret=0/endFlag=2/cancelFlag=0`，以及目标、字节范围和服务器 ID 匹配。
+图片接口 `/api/send_image_msg` 的文档成功响应为 `{"code":1,"data":null,"msg":"success"}`，不要求返回微信消息号。项目将明确成功码记录为 `state:"api-acknowledged"`、`sent:true`、`confirmed:false`、`apiAcknowledged:true`、`receipt:"supplier-api"`；绘画工具据此认可接口发送成功，不再继续等待不存在的消息号，也不编造服务器回执或已读状态。完整且目标匹配的原生回执仍记录为服务器确认。超时、未知响应及旧未确认任务不追认成功、不自动重发；文件和表情的一般成功码保持原有提交状态处理。
+
+语音中间状态 `ret:-2/endFlag:1` 不是成功。最终上传确认需要 `ret=0/endFlag=2/cancelFlag=0`，以及目标、字节范围和服务器 ID 匹配。
 
 **时长限制：** 此 DLL 按 `floor(SILK字节数 / (1.8*1024))*1000` 估算时长，曾将 30 秒翻唱标为 62 秒。项目保留实际及供应方时长，不变速破坏音频；精确显示需供应方修复。
 
