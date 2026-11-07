@@ -2,6 +2,31 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 import {createConsole} from './console-server.mjs';
 import net from 'node:net';
 
+test('reader status explains an unreadable message database during polling or startup',async t=>{
+ for(const stage of ['poll','startup'])await t.test(stage,async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'reader-database-health-'));
+  fs.mkdirSync(path.join(root,'config'));fs.mkdirSync(path.join(root,'state/logs'),{recursive:true});
+  const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url),'utf8'));
+  fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));
+  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_token:'fixture'}));
+  fs.mkdirSync(path.join(root,'state/weflow'));
+  fs.writeFileSync(path.join(root,'state/weflow/WeFlow-config.json'),JSON.stringify({backend:'supplier-http'}));
+  fs.writeFileSync(path.join(root,'state/logs/reader.stderr.log'),'Reader initialization failed: HOOK_MESSAGE_DATABASE_UNREADABLE');
+  const app=createConsole({root,port:0,fetchImpl:async input=>{
+   const url=new URL(input);
+   if(stage==='poll'&&url.pathname==='/api/v1/reader/status')return Response.json({success:true,lastError:'HOOK_MESSAGE_DATABASE_UNREADABLE'});
+   if(stage==='poll'&&url.pathname==='/api/v1/sessions')return Response.json({success:true,sessions:[]});
+   throw Error('Fixture unavailable');
+  }});
+  t.after(async()=>{app.server.closeAllConnections();if(app.server.listening)await new Promise(resolve=>app.server.close(resolve));fs.rmSync(root,{recursive:true,force:true});});
+  const address=await app.start(),base='http://127.0.0.1:'+address.port,info=await(await fetch(base+'/api/info')).json();
+  const response=await fetch(base+'/api/status',{headers:{'X-Console-Token':info.token}}),status=await response.json();
+  assert.equal(response.status,200);assert.equal(status.ready,false);
+  const reader=status.services.find(item=>item.id==='reader');assert.equal(reader.ready,false);
+  assert.match(reader.detail,/消息数据库连接已失效/);assert.match(reader.detail,/托盘完整退出微信/);
+ });
+});
+
 test('unbound supplier account prevents service start or restart without stopping processes',async t=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'supplier-unbound-'));
  fs.mkdirSync(path.join(root,'config'));

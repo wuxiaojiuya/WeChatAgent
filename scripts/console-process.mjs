@@ -52,6 +52,7 @@ export function taskFailureMessage(output, code) {
   if(/HOOK_STOP_SERVICES_BEFORE_BIND/.test(output))return '请先停止助手服务，再通过新 Hook 绑定当前登录账号。';
   if(/HOOK_NON_LOOPBACK_LISTENER/.test(output))return '新 Hook 需要只监听 127.0.0.1。请准备新组件配置，再退出并重新打开匹配微信。';
   if(/HOOK_SUPPLIED_DLL_NOT_LOADED|HOOK_SUPPLIED_DLL_HASH_MISMATCH/.test(output))return '你提供的 Hook 组件尚未通过校验，请准备组件并从项目页面打开匹配微信。';
+  if(/HOOK_MESSAGE_DATABASE_UNREADABLE/.test(output))return '微信已登录，但 Hook 的消息数据库连接已失效，无法接收消息。请停止助手，从托盘完整退出微信，再通过项目“打开微信 4.1.8.27”启动并登录，然后连接并验证。无需重装或清除账号数据。';
   if(/HOOK_UPSTREAM_UNAVAILABLE|HOOK_MESSAGE_DATABASES_UNAVAILABLE|HOOK_SQL_RESPONSE_INVALID|HOOK_CONTACTS_UNAVAILABLE/.test(output))return '新 Hook 的读取接口暂未就绪。请确认 4.1.8.27 已登录并完成消息同步，查看读取服务日志。';
   if (/CLIENT_PIN_SCOPE_REQUIRED|CLIENT_PIN_LINK_REFUSED/.test(output)) return '客户端保护仅支持项目 state/hook 下没有目录链接的独立微信。请检查连接设置中的微信路径。';
   if (/CLIENT_PIN_VERSION_MISMATCH|CLIENT_PIN_SIGNATURE_INVALID/.test(output)) return '客户端保护未启用：微信版本或腾讯数字签名不符合当前配置，请选择匹配的原版客户端。';

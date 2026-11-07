@@ -176,6 +176,95 @@ class SupplierContract(unittest.TestCase):
         row = RemoteConnection(self.api, 'message_0.db').execute('SELECT COUNT(*) FROM sqlite_master WHERE name=?', (self.fake.table,)).fetchone()
         self.assertEqual(row, (1,))
 
+    def test_empty_scalar_counts_are_rows_and_other_empty_queries_are_not(self):
+        conn = RemoteConnection(self.api, 'contact.db')
+        for sql in (
+            'SELECT COUNT(*) FROM contact WHERE 0',
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='missing_table'",
+            "SELECT COUNT(*) FROM contact WHERE username='LIMIT 0 GROUP BY HAVING'",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(conn.execute(sql).fetchone(), (0,))
+        for sql in (
+            'SELECT username FROM contact WHERE 0',
+            'SELECT COUNT(*) FROM contact WHERE 0 GROUP BY username',
+            'SELECT COUNT(*) FROM contact HAVING COUNT(*) < 0',
+            'SELECT COUNT(*) FROM contact LIMIT 0',
+            'SELECT COUNT(*) FROM contact LIMIT 1 OFFSET 1',
+            'SELECT COUNT(*) FROM contact EXCEPT SELECT COUNT(*) FROM contact',
+        ):
+            with self.subTest(sql=sql):
+                self.assertIsNone(conn.execute(sql).fetchone())
+
+    def test_empty_shards_do_not_break_message_reads_or_polling(self):
+        empty = sqlite3.connect(':memory:', check_same_thread=False)
+        self.fake.databases['message_1.db'] = empty
+        empty.execute('CREATE TABLE Name2Id(user_name TEXT)')
+        reader = self.reader()
+        messages = reader.messages('wxid_friend')
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[-1]['fullText'], self.fake.full_text)
+        # Also cover an existing message table that has no rows.
+        self.fake.databases['message_0.db'].execute(f'DELETE FROM "{self.fake.table}"')
+        self.assertEqual(reader.messages('wxid_friend'), [])
+        reader.last_error = 'RuntimeError'
+        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
+            reader.poll()
+        self.assertEqual(reader.last_error, '')
+        self.assertGreater(reader.last_poll, 0)
+
+    def test_reader_rejects_a_listed_but_unreadable_message_database(self):
+        original = self.api.transport
+        for name in ('message_0.db', 'message_1.db'):
+            with self.subTest(database=name):
+                if name not in self.fake.databases:
+                    self.fake.databases[name] = sqlite3.connect(':memory:', check_same_thread=False)
+                    self.fake.databases[name].execute('CREATE TABLE Name2Id(user_name TEXT)')
+                self.api.transport = lambda route, body: ({'code': 0, 'msg': 'no data', 'total': 0}
+                    if route == '/api/sqlite3_exec' and body['db_name'] == name else original(route, body))
+                with self.assertRaisesRegex(RuntimeError, '^HOOK_MESSAGE_DATABASE_UNREADABLE$'):
+                    self.reader()
+        self.api.transport = original
+
+    def test_poll_reports_unreadable_database_and_recovers_without_replaying_history(self):
+        reader = self.reader()
+        original = self.api.transport
+        self.api.transport = lambda route, body: ({'code': 0, 'msg': 'no data', 'total': 0}
+            if route == '/api/sqlite3_exec' and body['db_name'] == 'message_0.db' else original(route, body))
+        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
+            reader.poll()
+        self.assertEqual(reader.last_error, 'HOOK_MESSAGE_DATABASE_UNREADABLE')
+        self.assertEqual(reader.last_poll, 0)
+        self.assertEqual(reader.pushed, 0)
+        self.api.transport = original
+        with patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
+            reader.poll()
+        self.assertEqual(reader.last_error, '')
+        self.assertGreater(reader.last_poll, 0)
+        self.assertEqual(reader.pushed, 0)
+
+    def test_scalar_count_does_not_hide_hook_errors(self):
+        conn = RemoteConnection(self.api, 'contact.db')
+        self.api.transport = lambda *_: {'code': 0, 'data': [], 'msg': 'failed'}
+        with self.assertRaisesRegex(RuntimeError, '^HOOK_SQL_RESPONSE_INVALID$'):
+            conn.execute('SELECT COUNT(*) FROM contact')
+        with patch.object(self.api, 'transport', side_effect=TimeoutError):
+            with self.assertRaises(TimeoutError):
+                conn.execute('SELECT COUNT(*) FROM contact')
+
+    def test_old_sticker_migration_does_not_block_receiving_on_startup(self):
+        reader = self.reader()
+        reader.image_index = {str(i): {'localType': 47, 'talker': 'wxid_friend'} for i in range(827)}
+        events = []
+        with patch.object(reader, 'messages', side_effect=lambda *_args, **_kwargs: events.append('messages') or []), \
+                patch.object(reader.sticker_collection, 'remember', side_effect=lambda *_: events.append('sticker')), \
+                patch.object(reader, 'pump_sticker_collection'), patch.object(reader, 'pump_sticker_pool_review'), \
+                patch.object(reader.stop, 'is_set', side_effect=(False, True)), patch.object(reader.stop, 'wait'):
+            reader.poll()
+        self.assertEqual(events, ['messages', 'sticker'])
+        self.assertGreater(reader.last_poll, 0)
+        self.assertEqual(reader.last_error, '')
+
     def test_reader_uses_remote_history_contacts_and_voice_blobs_without_key(self):
         reader = self.reader()
         self.assertFalse(hasattr(reader, 'message_db'))

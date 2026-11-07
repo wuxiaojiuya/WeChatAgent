@@ -218,7 +218,16 @@ def create_reader(Base):
             names = sorted(n for n in self.database_names() if re.fullmatch(r'message_\d+\.db', n))
             if not names or len(names) > 64:
                 raise RuntimeError('HOOK_MESSAGE_DATABASES_UNAVAILABLE')
-            return [RemoteConnection(self.api, n) for n in names]
+            connections = [RemoteConnection(self.api, n) for n in names]
+            # A listed handle can become unusable while login/contact APIs
+            # still work. This Hook reports SQL failures as "no data", too.
+            # A readable shard always has a schema count row; never let an
+            # unreadable handle masquerade as an empty conversation.
+            for connection in connections:
+                schema = connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()
+                if not schema or schema[0] < 1:
+                    raise RuntimeError('HOOK_MESSAGE_DATABASE_UNREADABLE')
+            return connections
 
         def exact_message(self, talker, identity):
             if not talker or not self.image_talker_allowed(talker):

@@ -69,6 +69,11 @@ test('startup formatting keeps only diagnostic codes and never prints arbitrary 
  assert.match(taskFailureMessage('Adapter startup failed: READER_CONNECTION_RESET stage=reader-status port=5031 system=ECONNRESET',1),/读取服务/);
 });
 
+test('an unreadable message handle explains the required WeChat recovery',()=>{
+ const message=taskFailureMessage('Reader initialization failed: HOOK_MESSAGE_DATABASE_UNREADABLE',1);
+ assert.match(message,/消息数据库连接已失效/);assert.match(message,/托盘完整退出微信/);assert.match(message,/4\.1\.8\.27/);assert.match(message,/无需重装/);
+});
+
 test('the PowerShell supervisor rejects bound sockets before spawning, and recovery inspection includes their owner',{skip:process.platform!=='win32'},async t=>{
  const f=fixture(t),bound=await boundSocket(t),file=path.join(f.directory,'supervisor-bound.ps1');
  fs.writeFileSync(file,'\uFEFF'+String.raw`

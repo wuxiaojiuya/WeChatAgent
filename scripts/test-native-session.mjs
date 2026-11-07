@@ -13,7 +13,7 @@ import { socialPersona } from '../components/qq-bridge/src/core/social-persona.j
 import { contextBufferVersion } from '../packages/dsh-social-bridge-plugin/context-policy.mjs';
 import { WebSearch } from '../components/qq-bridge/src/core/web-search.js';
 import { SEARCH_DEFAULTS } from '../packages/dsh-social-bridge-plugin/search-policy.mjs';
-import {CHAT_POLICY_NOTICE,CHAT_COHERENCE_NOTICE,GROUP_PARTICIPATION_NOTICE,CHAT_MESSAGE_LAYOUT_NOTICE,SOCIAL_PROTOCOL_NOTICE,SOCIAL_FINAL_OUTPUT_HINT} from '../packages/dsh-social-bridge-plugin/prompt-context.mjs';
+import {CHAT_POLICY_NOTICE,CHAT_COHERENCE_NOTICE,CHAT_RELATIONSHIP_NOTICE,GROUP_PARTICIPATION_NOTICE,CHAT_MESSAGE_LAYOUT_NOTICE,SOCIAL_PROTOCOL_NOTICE,SOCIAL_FINAL_OUTPUT_HINT} from '../packages/dsh-social-bridge-plugin/prompt-context.mjs';
 import {buildPrivatePrompt,buildSocialPrompt} from '../components/qq-bridge/src/core/social-engine.js';
 import {wakeContextHint} from '../packages/dsh-social-bridge-plugin/request-window.mjs';
 import {HistoryStore} from '../packages/dsh-social-bridge-plugin/history-store.mjs';
@@ -1201,6 +1201,22 @@ test('failed compaction keeps existing persona and duplicate batches avoid anoth
   const retry=await r.request('/followup',body);assert.equal(retry.cached,true);assert.equal(r.calls.model.length,1);
   await r.request('/followup',{...info,message:'下一条'});assert.equal(f.store.get(a.sessionId).snapshotEvents().filter(e=>e.data?.source?.socialBootstrap).length,1);
 });
+test('friend-specific nicknames remain in their own histories without rewriting a shared persona',async t=>{
+  const f=await fixture(t),r=await f.start(),other='wechat:private:456';
+  const shared=fs.readFileSync(path.join(f.dir,'state/bridge-config.json'),'utf8');
+  const first=await r.request('/followup',{...info,message:'我们约好了，我叫你小肥鱼，你叫我阿岚。'});
+  assert.equal(r.calls.model.at(-1).split(CHAT_RELATIONSHIP_NOTICE).length-1,1);
+  const second=await r.request('/followup',{...info,conversationKey:other,message:'我们约好了，我叫你鲸宝，你叫我阿夏。'});
+  assert.notEqual(first.sessionId,second.sessionId);
+  assert(r.calls.model.at(-1).includes('鲸宝'));assert(!r.calls.model.at(-1).includes('阿岚'));
+  const continued=await r.request('/followup',{...info,message:'还记得我们之间的叫法吗？'});
+  assert.equal(continued.sessionId,first.sessionId);
+  assert(r.calls.model.at(-1).includes('小肥鱼'));assert(r.calls.model.at(-1).includes('阿岚'));
+  assert(!r.calls.model.at(-1).includes('鲸宝'));assert(!r.calls.model.at(-1).includes('阿夏'));
+  assert.equal(f.store.get(first.sessionId).snapshotEvents().filter(event=>event.data?.source?.socialBootstrap).length,1);
+  assert.equal(fs.readFileSync(path.join(f.dir,'state/bridge-config.json'),'utf8'),shared);
+});
+
 test('persona changes reinitialize only that conversation and groups receive their own names',async t=>{
   const f=await fixture(t),r=await f.start(),a=await r.request('/followup',{...info,message:'私聊一'});
   const group=await r.request('/followup',{...info,conversationKey:'wechat:group:456',conversationName:'测试群',message:'群聊一'});

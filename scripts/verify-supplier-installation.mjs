@@ -13,7 +13,11 @@ const root=path.resolve(import.meta.dirname,'..');
 const resources=path.resolve(process.argv[2]??path.join(root,'release/installer/win-unpacked/resources'));
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'WeChatAgent installation '));
 const capabilityFiles=['scripts/dsh-capability-client.mjs',...CAPABILITY_PLUGIN_FILES.map(file=>'packages/dsh-capabilities-plugin/'+file)];
-const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py'];
+const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py',
+  'scripts/reader-api.py','scripts/supplier-probe.py','scripts/supplier-connect.mjs','scripts/console-process.mjs','scripts/console-server.mjs',
+  'packages/dsh-social-bridge-plugin/prompt-context.mjs','packages/dsh-social-bridge-plugin/history-runtime.mjs',
+  'packages/dsh-social-bridge-plugin/native-context.mjs','packages/dsh-social-bridge-plugin/persona-generation.mjs',
+  'packages/dsh-social-bridge-plugin/persona-evolution.mjs','packages/dsh-social-bridge-plugin/persona-proposal-tools.mjs'];
 const updatedFiles=[...capabilityFiles,...deliveryFiles];
 const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 try {

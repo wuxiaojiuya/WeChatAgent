@@ -27,7 +27,7 @@ try:
         if re.fullmatch(r'message_\d+\.db', name):
             schema = RemoteConnection(api, name).execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()
             if not schema or schema[0] < 1:
-                raise RuntimeError('HOOK_SQL_RESPONSE_INVALID')
+                raise RuntimeError('HOOK_MESSAGE_DATABASE_UNREADABLE')
     api.identity(identity['wxid'])
     print(json.dumps({'ok': True, **identity}))
 except Exception as error:

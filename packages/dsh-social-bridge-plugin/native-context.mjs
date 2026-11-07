@@ -36,7 +36,7 @@ const {nativeMemorySummaries}=await import(new URL('./memory-summary.mjs'+runtim
 const {AssistantThinkingFeedback,createProgressWriter}=await import(new URL('./assistant-feedback.mjs'+runtimeQuery,import.meta.url));
 const {bindModelSearch,createModelSearchTurn,modelSearchInstructions,builtinModelSearch,refreshSearchToolBaseline}=await import(new URL('./model-search.mjs'+runtimeQuery,import.meta.url));
 const {createMemeLibrary,bindMemeLibrary}=await import(new URL('./meme-library.mjs'+runtimeQuery,import.meta.url));
-const {PROMPT_POLICY,SOCIAL_FINAL_OUTPUT_HINT,stableChatInstructions,migrateChatContext,syncInstructionSlot,retireTurnContext,dedupePreviousReply}=await import(new URL('./prompt-context.mjs'+runtimeQuery,import.meta.url));
+const {PROMPT_POLICY,SOCIAL_FINAL_OUTPUT_HINT,CHAT_RELATIONSHIP_NOTICE,stableChatInstructions,migrateChatContext,syncInstructionSlot,retireTurnContext,dedupePreviousReply}=await import(new URL('./prompt-context.mjs'+runtimeQuery,import.meta.url));
 const {createMemberMemory,bindMemberMemory}=await import(new URL('./member-memory.mjs'+runtimeQuery,import.meta.url));
 const {admittedSearch,consumeSearchRequest,retireSearchContext}=await import(new URL('./search-budget.mjs'+runtimeQuery,import.meta.url));
 const {SOCIAL_TOOL_ISOLATION,retireSocialToolMetadata}=await import(new URL('./social-tool-policy.mjs'+runtimeQuery,import.meta.url));
@@ -518,7 +518,7 @@ function createNativeRuntime(ctx, config={}) {
     retireSocialToolMetadata(session,createUserMessage);
     migrateChatContext(session,createUserMessage);retireTurnContext(session,createUserMessage);
     const previous=profiles[key] ?? {};
-    const instructions=internalGroupChat?assistantChatInstructionsFor(root,body.replyMaxMessages):stableChatInstructions(root,key,{maxMessages:body.replyMaxMessages}),instructionsDigest=hash(instructions);
+    const instructions=internalGroupChat?[assistantChatInstructionsFor(root,body.replyMaxMessages),CHAT_RELATIONSHIP_NOTICE].join('\n'):stableChatInstructions(root,key,{maxMessages:body.replyMaxMessages}),instructionsDigest=hash(instructions);
     profiles[key]={...previous,...(workMode==='assistant'?{nativePreset:presetFor(key)}:{}),persona,digest,instructions,instructionsDigest,personaName:clean(locked.personaName,24),conversationName:clean(body.conversationName ?? previous.conversationName),cache:previous.digest===digest && previous.instructionsDigest===instructionsDigest && previous.behaviorPolicy===BEHAVIOR_POLICY && previous.coherencePolicy===COHERENCE_POLICY ? previous.cache ?? {} : {},behaviorPolicy:BEHAVIOR_POLICY,coherencePolicy:COHERENCE_POLICY};
     const fault=profiles[key].nativePrefixRecovery;
     const repairing=repairPrefix||fault?.status==='required'&&(fault.attempts??0)<1;

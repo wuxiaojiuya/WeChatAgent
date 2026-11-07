@@ -263,7 +263,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       const ready = readerReady && bridgeReady && hookReady && dshReady && adapter?.reader_connected === true;
       const { rows } = buffered();
       const services = [
-        { id: 'reader', label: '微信读取', ready: readerReady, detail: readerReady ? '数据库可读，消息同步正常' : readerState?.lastError ? '读取异常，请重新连接并验证' : readerFailureDetail(), port: config.ports.weflow },
+        { id: 'reader', label: '微信读取', ready: readerReady, detail: readerReady ? '数据库可读，消息同步正常' : readerFailureDetail(readerState?.lastError), port: config.ports.weflow },
         { id: 'bridge', label: '消息桥接', ready: bridgeReady && hookReady && adapter?.reader_connected === true, detail: bridgeReady && hookReady && adapter?.reader_connected ? '收发连接正常，账号已核验' : !hookReady ? '等待匹配微信登录与发送连接' : '等待消息桥接连接', port: config.ports.adapter },
         { id: 'dsh', label: '模型连接', ready: dshReady, detail: dshReady ? 'DSH 插件已连接' : '打开 DSH 并启用本项目插件', port: config.ports.dshPlugin },
       ];
@@ -303,7 +303,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     throw fault('不支持此操作。');
   }
   const execute = runner ?? ((spec, onOutput) => runConsoleCommand(spec, onOutput, { cwd: root, timeoutMs: spec.timeoutMs }));
-  function readerFailureDetail() {
+  function readerFailureDetail(readerError) {
+    if(readerError)return readerError==='HOOK_MESSAGE_DATABASE_UNREADABLE'?taskFailureMessage(readerError,1):'读取异常，请重新连接并验证';
     if(snapshot().config.hook.backend==='supplier-http'&&optionalJson(readerFile).backend!=='supplier-http')return '请在连接设置打开微信 4.1.8.27，登录后连接并验证账号';
     const file = path.join(root, 'state', 'logs', 'reader.stderr.log');
     if (!fs.existsSync(file)) return '请在首次配置中连接并验证微信';

@@ -131,7 +131,9 @@ test('visual helper receives only verified current images, no tools or chat hist
 test('Python media contracts cover exact quotes, synthetic video, CDN variants and emotional inference',()=>{
   const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.json',import.meta.url),'utf8').replace(/^\uFEFF/,''));
   for(const name of ['test-media-input.py','test-supplier-video.py','test-local-speech.py']){
-    const result=spawnSync(process.env.WECHATAGENT_TEST_PYTHON??config.runtime.python,['-B',path.join(import.meta.dirname,name)],{encoding:'utf8',timeout:45000,windowsHide:true});
+    const result=spawnSync(process.env.WECHATAGENT_TEST_PYTHON??config.runtime.python,['-B','-c',
+      'import runpy,sys; sys.path.insert(0,sys.argv[1]); target=sys.argv[2]; sys.argv=[target]; runpy.run_path(target,run_name="__main__")',
+      import.meta.dirname,path.join(import.meta.dirname,name)],{encoding:'utf8',timeout:45000,windowsHide:true,env:{...process.env,PYTHONUTF8:'1'}});
     assert.equal(result.status,0,result.stderr||result.stdout||result.error?.message);
   }
 });

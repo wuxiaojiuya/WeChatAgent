@@ -992,10 +992,8 @@ class Reader:
     def poll(self):
         since = self.started_at
         # Migrate only already observed sticker descriptors; do not replay old messages.
-        for image_id,descriptor in list(self.image_index.items()):
-            if descriptor.get('localType')==47:
-                try:self.sticker_collection.remember(image_id,descriptor,'wechat:'+('group:' if '@chatroom' in descriptor['talker'] else 'private:')+self.conversation_id(descriptor['talker']))
-                except (RuntimeError,ValueError,OSError):break
+        sticker_migration = iter((image_id, descriptor) for image_id, descriptor in list(self.image_index.items())
+            if descriptor.get('localType') == 47)
         while not self.stop.is_set():
             try:
                 self.refresh_names(max_age=30)
@@ -1043,12 +1041,20 @@ class Reader:
                         self.pushed += 1
                         print('Reader incoming ' + ('sticker' if payload['type'] == 47 else 'image' if payload['type'] == 3 else 'pat' if payload['type'] == PAT_TYPE else 'text') + '; OneBot conversation=' + self.conversation_id(talker), flush=True)
                 since = newest
+                # Migrate at most one old descriptor after checking messages.
+                # Hundreds of per-sticker account probes must not block the
+                # first poll (or receiving messages) for several minutes.
+                old_sticker = next(sticker_migration, None)
+                if old_sticker:
+                    image_id, descriptor = old_sticker
+                    try:self.sticker_collection.remember(image_id,descriptor,'wechat:'+('group:' if '@chatroom' in descriptor['talker'] else 'private:')+self.conversation_id(descriptor['talker']))
+                    except (RuntimeError,ValueError,OSError):pass
                 self.pump_sticker_collection()
                 self.pump_sticker_pool_review()
                 self.last_poll = time.time()
                 self.last_error = ''
             except Exception as error:
-                self.last_error = type(error).__name__
+                self.last_error = str(error) if isinstance(error, RuntimeError) and re.fullmatch(r'HOOK_[A-Z0-9_]{2,79}', str(error)) else type(error).__name__
                 print('Reader polling failed: ' + self.last_error, flush=True)
             self.stop.wait(1)
 

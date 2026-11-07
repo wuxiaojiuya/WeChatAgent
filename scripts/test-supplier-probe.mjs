@@ -37,3 +37,16 @@ test('unexpected failures expose a safe type instead of private exception text',
   const result=run(file);assert.equal(result.status,1);const data=JSON.parse(result.stdout);
   assert.equal(data.code,'HOOK_PROBE_FAILED');assert.equal(data.exceptionType,'ValueError');assert(!result.stdout.includes('private-test-credential'));assert.equal(result.stderr,'');
 });
+
+test('a listed but unreadable message shard cannot pass account connection verification',t=>{
+ const file=fixture(t,`class SupplierApi:
+ def __init__(self,*args): pass
+ def identity(self,*args): return {'wxid':'wxid_fixture','version':'4.1.8.27'}
+ def databases(self): return ['contact.db','message_0.db','message_1.db']
+class RemoteConnection:
+ def __init__(self,api,name): self.name=name
+ def execute(self,*args): return self
+ def fetchone(self): return None if self.name=='message_1.db' else (1,)
+`);
+ const result=run(file);assert.equal(result.status,1,result.stderr);assert.equal(JSON.parse(result.stdout).code,'HOOK_MESSAGE_DATABASE_UNREADABLE');
+});
