@@ -618,7 +618,7 @@
     "scripts/update-check.mjs": "4f5de67b7ac3355e0240d3100f0912786db095c177ceb799509f2ecc8d03f4c5",
     "scripts/verify-dsh-runtime.cjs": "de5fc7bc74405383a43650dfadc9c6d209e3f82a4a8641547a631fb574ecc1d9",
     "scripts/verify-local-feiyu.mjs": "332ca87482f2fe3df2146c780d9295bd36b81a006e70c198a119b823e59d581e",
-    "scripts/verify-plugin-release.mjs": "60d6b0faaba16fa910e8ddea4026ebfc2fac9a6f40a633444271dc18ee5bc8e7",
+    "scripts/verify-plugin-release.mjs": "07891125bcba5675bd8e6c53e10068c8ebbe15b30e573c7ec828e656daaaa272",
     "scripts/verify-supplier-installation.mjs": "179ec30a2672f8eb6bf3264206ce7006b0f1d8d47a0d6d621d927175338f9cda",
     "scripts/voice-emotion.mjs": "fa2d4e1a0c9287477a92ca767a1e78735ac4efed2d8feedb5d89d195287a7c2d",
     "scripts/voice-output-smoke.mjs": "b93fbcfaecf59501854a6e041666d7b1aa66f54ecef2a02b27746751de9407f6",

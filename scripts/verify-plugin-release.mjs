@@ -23,6 +23,7 @@ for(const directory of [stage,unpacked]){
   const manifest=JSON.parse(fs.readFileSync(path.join(directory,'deployment.json')));
   assertHookOnlyFiles(manifest.files);
   if(manifest.hookBackend!=='supplier-http'||manifest.wechatVersion!=='4.1.8.27')throw Error('INSTALLER_HOOK_CONTRACT_MISMATCH');
+  if(manifest.privateAccountDataBundled!==false)throw Error('INSTALLER_PRIVATE_DATA_CONTRACT_MISMATCH');
   if(manifest.version!==version||manifest.packageVersion!==packageVersion)throw Error('INSTALLER_VERSION_MISMATCH');
   for(const relative of ['package.json','../app/package.json']){
     const item=JSON.parse(fs.readFileSync(path.join(directory,relative),'utf8'));
@@ -61,6 +62,7 @@ const roleAsset='release/installer/蓝色大肥鱼-小助手.md';if(fs.existsSyn
 const assetRecords=assets.map(relative=>{const data=fs.readFileSync(path.join(root,relative));return {path:relative,bytes:data.length,sha256:hash(data)};});
 if(assetRecords.find(item=>item.path===sourceReport.asset.path).sha256!==sourceReport.asset.sha256)throw Error('SOURCE_ARCHIVE_CHANGED');
 const report={version,packageVersion,ok:true,...templateReports[0],checkedAt:new Date().toISOString(),pluginHost:sourceAudit.contract,
+  privateAccountDataBundled:false,
   sourcePrivacy:{candidateFiles:privacy.candidateFiles,findings:privacy.findings},templateFilesVerified:templateReports,bundledWechat:vendorReports[0],
   sourceFiles:sourceReport.sourceFiles,assets:assetRecords,regression:JSON.parse(fs.readFileSync(path.join(root,'release-profile.json'),'utf8')).verification?.publicRegression??null,pluginAutoInstalled:false,pluginAutoEnabled:false,
   servicesRestarted:false,realWeChatStarted:false,actualUserDataUsed:false,publication:'local-build-only',
