@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {inflateSync} from 'node:zlib';
-import {setTimeout as delay} from 'node:timers/promises';
-import {activeReaderAccount} from './reader-account-state.mjs';
+
+import {activeConnection} from './hook-connection-state.mjs';
 import {allowedConversation} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {conversationId} from './hook-onebot.mjs';
-import {hookAccountProblem} from './wechat-account-check.mjs';
+import {hookComponentProblem} from './hook-component-check.mjs';
 
 const identifier=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const serverId=value=>typeof value==='string'&&/^[1-9]\d{0,19}$/.test(value);
@@ -62,10 +62,10 @@ export function imageMetadata(bytes){
   return {format,mime:'image/'+format,extension:format==='png'?'.png':'.jpg',width,height,size:bytes.length,md5:digest(bytes,'md5'),sha256:digest(bytes)};
 }
 
-export function createNativeImageDelivery({root,config,enabledFor,reader,fetchImpl=fetch,now=Date.now,receiptTimeoutMs=18000,pollMs=400}={}){
+export function createNativeImageDelivery({root,config,enabledFor,receiver,fetchImpl=fetch,now=Date.now,receiptTimeoutMs=18000,pollMs=400}={}){
   root=path.resolve(root);const directory=path.join(root,'state/image-output/deliveries'),records=new Map(),tasks=new Map(),controllers=new Set();
   let closed=false,lane=Promise.resolve(),corrupt=false;
-  const scope=()=>{const value=activeReaderAccount(root).id;if(!identifier(value))fail('IMAGE_ACCOUNT_UNAVAILABLE');return value;};
+  const scope=()=>{const value=activeConnection(root).id;if(!identifier(value))fail('IMAGE_ACCOUNT_UNAVAILABLE');return value;};
   const token=()=>{const value=fs.readFileSync(path.join(root,'state/hook/native-token.txt'),'utf8').trim();if(!identifier(value))fail('IMAGE_HOOK_UNAVAILABLE');return value;};
   const origin=()=>{const h=config().hook;let url;try{url=new URL(h.baseUrl);}catch{fail('IMAGE_HOOK_UNAVAILABLE');}
     if(h.backend!=='supplier-http'||h.expectedVersion!=='4.1.8.27'||url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)fail('IMAGE_HOOK_UNAVAILABLE');return url.origin;};
@@ -86,29 +86,17 @@ export function createNativeImageDelivery({root,config,enabledFor,reader,fetchIm
     if(!response.ok)fail('IMAGE_HTTP_'+response.status);let size=0;const chunks=[];for await(const chunk of response.body){size+=chunk.length;if(size>128*1024)fail('IMAGE_HOOK_RESPONSE_INVALID');chunks.push(chunk);}return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
   async function capture(key,{signal=new AbortController().signal}={}){
-    const accountScope=assertScope(key),own=await reader('/api/v1/reader/status');
-    if(own?.backend!=='supplier-http'||typeof own.ownWxid!=='string'||!own.ownWxid||typeof own.accountDirectory!=='string'||!own.accountDirectory)fail('IMAGE_READER_UNAVAILABLE');
-    const health=await api('/WeChatAgent/health',undefined,signal),problem=hookAccountProblem(health,own.accountDirectory,'4.1.8.27');
+    const accountScope=assertScope(key),own=await receiver('/api/v1/receiver/status');
+    if(own?.backend!=='supplier-http'||typeof own.ownWxid!=='string'||!own.ownWxid)fail('IMAGE_READER_UNAVAILABLE');
+    const health=await api('/WeChatAgent/health',undefined,signal),problem=hookComponentProblem(health);
     if(problem||health.nativeImageSend!==true||health.ready!==true||!Number.isInteger(health.pid)||health.pid<=0)fail('IMAGE_HOOK_IDENTITY_INVALID');
-    const [,kind,id]=key.split(':'),sessions=await reader('/api/v1/sessions?limit=500');
+    const [,kind,id]=key.split(':'),sessions=await receiver('/api/v1/sessions?limit=500');
     const matches=(sessions.sessions??[]).filter(item=>typeof item.username==='string'&&(item.username.includes('@chatroom')?'group':'private')===kind&&String(conversationId(item.username,item.displayName,item.conversationId))===id);
     if(matches.length!==1||matches[0].username===own.ownWxid)fail('IMAGE_TARGET_UNRESOLVED');
     signal.throwIfAborted();if(assertScope(key)!==accountScope)fail('IMAGE_ACCOUNT_CHANGED');
-    return {accountScope,accountWxid:own.ownWxid,accountDirectory:own.accountDirectory.toLowerCase(),target:matches[0].username,binding:binding()};
+    return {accountScope,accountWxid:own.ownWxid,target:matches[0].username,binding:binding()};
   }
-  const same=(r,ticket)=>['accountScope','accountWxid','accountDirectory','target','binding'].every(field=>r[field]===ticket?.[field]);
-  async function rowsFor(r){const result=await reader('/api/v1/messages?talker='+encodeURIComponent(r.target)+'&limit=100');if(!Array.isArray(result.messages))fail('IMAGE_READER_UNAVAILABLE');return result.messages;}
-  async function reconcile(r,signal){
-    const deadline=Date.now()+receiptTimeoutMs;
-    do{
-      signal.throwIfAborted();if(!same(r,await capture(r.key,{signal})))fail('IMAGE_ACCOUNT_CHANGED');
-      const candidates=(await rowsFor(r)).filter(row=>(row.isSend===true||row.isSend===1)&&row.localType===3&&String(row.imageMd5??'').toLowerCase()===r.md5&&!r.baseline.includes(String(row.localId))&&Number.isSafeInteger(Number(row.localId))&&Number(row.localId)>0&&Number(row.createTime)>=Math.floor(r.startedAt/1000)-30&&Number(row.createTime)<=Math.floor(r.startedAt/1000)+120);
-      if(candidates.length>1)fail('IMAGE_RECEIPT_AMBIGUOUS');
-      const row=candidates[0];if(row&&(!r.candidateId||r.candidateId===String(row.localId))){r.candidateId=String(row.localId);persist(r);if(serverId(row.serverId)){r.serverId=row.serverId;r.state='confirmed';r.confirmedAt=now();delete r.error;persist(r);return;}}
-      if(Date.now()>=deadline)break;await delay(pollMs,undefined,{signal});
-    }while(!closed);
-    r.state='unconfirmed';r.error='IMAGE_DELIVERY_UNCONFIRMED';persist(r);
-  }
+  const same=(r,ticket)=>['accountScope','accountWxid','target','binding'].every(field=>r[field]===ticket?.[field]);
   function run(r){
     if(tasks.has(r.id))return tasks.get(r.id);const controller=new AbortController(),signal=controller.signal;controllers.add(controller);
     const task=lane.catch(()=>{}).then(async()=>{
@@ -116,13 +104,13 @@ export function createNativeImageDelivery({root,config,enabledFor,reader,fetchIm
         signal.throwIfAborted();if(!same(r,await capture(r.key,{signal})))fail('IMAGE_ACCOUNT_CHANGED');
         if(r.state==='queued'){
           const file=local(path.join(directory,r.id+r.extension)),bytes=fs.readFileSync(file);if(imageMetadata(bytes).sha256!==r.sha256)fail('IMAGE_FILE_CHANGED');
-          r.baseline=(await rowsFor(r)).map(row=>String(row.localId));signal.throwIfAborted();if(assertScope(r.key)!==r.accountScope||r.binding!==binding())fail('IMAGE_ACCOUNT_CHANGED');
+          signal.throwIfAborted();if(assertScope(r.key)!==r.accountScope||r.binding!==binding())fail('IMAGE_ACCOUNT_CHANGED');
           r.state='dispatching';r.startedAt=now();persist(r);
           try{const result=await api('/SendImageMsg',{wxidorgid:r.target,path:file,md5:r.md5,size:r.size},signal);
-            if(result?.ret!==0){r.state='failed';r.error='IMAGE_NATIVE_REJECTED';persist(r);return;}r.state='submitted';persist(r);
+            if(result?.ret!==0){r.state='failed';r.error='IMAGE_NATIVE_REJECTED';persist(r);return;}if(result.confirmed===true&&serverId(result.serverId)&&result.target===r.target){r.state='confirmed';r.serverId=result.serverId;r.receipt=result.receipt;r.confirmedAt=now();persist(r);return;}r.state='submitted';persist(r);
           }catch(error){r.submissionCode=safeError(error);persist(r);}
         }
-        await reconcile(r,signal);
+        r.state='unconfirmed';r.error='IMAGE_DELIVERY_UNCONFIRMED';persist(r);
       }catch(error){r.state=r.startedAt?'unconfirmed':'failed';r.error=safeError(error);try{persist(r);}catch{}}
       finally{controllers.delete(controller);}
     });tasks.set(r.id,task);lane=task;void task.finally(()=>tasks.delete(r.id));return task;
@@ -144,12 +132,12 @@ export function createNativeImageDelivery({root,config,enabledFor,reader,fetchIm
   if(fs.existsSync(directory)){
     local(path.join(directory,'state-check'));for(const name of fs.readdirSync(directory).filter(name=>/^[a-f0-9]{64}\.json$/.test(name)).slice(0,129)){
       try{if(records.size>=128)fail('IMAGE_STORAGE_LIMIT');const file=local(path.join(directory,name));if(fs.statSync(file).size>32768)fail('IMAGE_DELIVERY_STATE_INVALID');const r=JSON.parse(fs.readFileSync(file,'utf8'));
-        if(r.version!==1||name!==r.id+'.json'||!identifier(r.id)||!identifier(r.accountScope)||!identifier(r.binding)||!identifier(r.sha256)||!/^[a-f0-9]{32}$/.test(r.md5??'')||!/^wechat:(private|group):[1-9]\d*$/.test(r.key)||!['.png','.jpg'].includes(r.extension)||!Number.isSafeInteger(r.size)||r.size<1||r.size>maxBytes||!['queued','dispatching','submitted','confirmed','failed','unconfirmed'].includes(r.state)||!Number.isFinite(r.createdAt)||!['accountWxid','accountDirectory','target'].every(field=>typeof r[field]==='string'&&/^[A-Za-z0-9_@.-]{1,180}$/.test(r[field])))fail('IMAGE_DELIVERY_STATE_INVALID');
+        if(r.version!==1||name!==r.id+'.json'||!identifier(r.id)||!identifier(r.accountScope)||!identifier(r.binding)||!identifier(r.sha256)||!/^[a-f0-9]{32}$/.test(r.md5??'')||!/^wechat:(private|group):[1-9]\d*$/.test(r.key)||!['.png','.jpg'].includes(r.extension)||!Number.isSafeInteger(r.size)||r.size<1||r.size>maxBytes||!['queued','dispatching','submitted','confirmed','failed','unconfirmed'].includes(r.state)||!Number.isFinite(r.createdAt)||!['accountWxid','target'].every(field=>typeof r[field]==='string'&&/^[A-Za-z0-9_@.-]{1,180}$/.test(r[field])))fail('IMAGE_DELIVERY_STATE_INVALID');
         if(r.state==='confirmed'&&!serverId(r.serverId))fail('IMAGE_DELIVERY_STATE_INVALID');
         if(!['confirmed','failed','unconfirmed'].includes(r.state)){r.state=r.startedAt?'unconfirmed':'failed';r.error=r.startedAt?'IMAGE_DELIVERY_UNCONFIRMED':'IMAGE_INTERRUPTED_BEFORE_SUBMISSION';}
         records.set(r.id,r);
       }catch{corrupt=true;}
     }
   }
-  return {capture,send,get,lookup(id,key){if(!records.has(id)){assertScope(key);return null;}return get(id,key);},refresh(id,key,{wait=false}={}){const r=getRecord(id,key);if(r.state==='unconfirmed'&&r.startedAt){const task=run(r);if(wait)return task.then(()=>get(id,key));}return get(id,key);},async settled(id,key){getRecord(id,key);await tasks.get(id);return get(id,key);},close(){closed=true;for(const controller of controllers)controller.abort();}};
+  return {capture,send,get,lookup(id,key){if(!records.has(id)){assertScope(key);return null;}return get(id,key);},refresh(id,key,{wait=false}={}){const r=getRecord(id,key);return get(id,key);},async settled(id,key){getRecord(id,key);await tasks.get(id);return get(id,key);},close(){closed=true;for(const controller of controllers)controller.abort();}};
 }

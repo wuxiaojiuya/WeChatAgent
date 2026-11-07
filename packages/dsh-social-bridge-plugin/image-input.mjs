@@ -23,13 +23,13 @@ export async function imageBlocks(ctx,root,conversationKey,images,provider,model
   catch(error){return images.map((image,index)=>unavailableBlock(image,index,error));}
   if (!info.inputModalities?.includes('image')) return images.map((image,index)=>unavailableBlock(image,index,new Error('MODEL_IMAGE_INPUT_UNSUPPORTED')));
   const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,''));
-  const base=new URL(io.reader_base_url);
+  const base=new URL(io.receiver_base_url);
   if (base.protocol!=='http:' || base.hostname!=='127.0.0.1' || base.username || base.password || base.pathname!=='/' || base.search || base.hash) throw new Error('IMAGE_READER_LOOPBACK_REQUIRED');
   const blocks=new Array(images.length);let next=0;
   async function prepare(image,index) {
     try {
     return await boundedTask(async taskSignal=>{
-    const response=await fetch(base.origin+'/api/v1/images/'+image.id,{headers:{Authorization:'Bearer '+io.reader_token},redirect:'error',signal:taskSignal});
+    const response=await fetch(base.origin+'/api/v1/images/'+image.id,{headers:{Authorization:'Bearer '+io.receiver_token},redirect:'error',signal:taskSignal});
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}));
       const error = new Error('IMAGE_READER_NOT_READY');

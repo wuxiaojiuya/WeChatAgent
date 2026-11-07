@@ -1,5 +1,5 @@
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-export const needsWeChatRepair = output => /HOOK_CLIENT_UNHEALTHY|HOOK_INITIALIZATION_TIMEOUT|HOOK_NOT_LISTENING|HOOK_COMPONENT_UPDATE_PENDING|HOOK_AUTH_FAILED|HOOK_CONNECTION_RESET|HOOK_HEALTH_FAILED|HOOK_MULTIPLE_ACCOUNT_DATABASES|HOOK_ACCOUNT_METADATA_INVALID|HOOK_ACCOUNT_MISMATCH/.test(String(output??''));
+export const needsWeChatRepair = output => /HOOK_CLIENT_UNHEALTHY|HOOK_INITIALIZATION_TIMEOUT|HOOK_NOT_LISTENING|HOOK_COMPONENT_UPDATE_PENDING|HOOK_AUTH_FAILED|HOOK_CONNECTION_RESET|HOOK_HEALTH_FAILED|HOOK_SUPPLIED_DLL_NOT_LOADED|HOOK_SUPPLIED_DLL_HASH_MISMATCH/.test(String(output??''));
 const detail=item=>`<strong>${escape(item.name)} <span class="subtle">PID ${Number(item.pid)}</span></strong><span>${escape(item.reason)}</span><code>${escape(item.path||'无法确认程序路径')}</code>`;
 
 export async function openProcessRecovery({api,modal,refreshStatus,toast,repairWeChat=false,onRecovered}) {

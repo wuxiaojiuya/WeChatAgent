@@ -42,7 +42,7 @@ async function fixture(t){
  for(const directory of ['config','state','roles'])fs.mkdirSync(path.join(root,directory),{recursive:true});
  const config={ports:{dshPlugin:server.address().port},wechat:{whitelist:{private:['123'],groups:[]}},persona:{default:'测试人格'}};
  fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));
- fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${server.address().port}`,reader_token:'fixture-reader'}));
+ fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${server.address().port}`,receiver_token:'fixture-reader'}));
  fs.writeFileSync(path.join(root,'state/social-dsh-token.txt'),'fixture-dsh');
  fs.writeFileSync(path.join(root,'roles/测试人格.md'),'# 测试人格\n仅用于本地测试。');
  const run=(...args)=>new Promise((resolve,reject)=>{

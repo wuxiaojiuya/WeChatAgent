@@ -3,14 +3,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {consoleClient} from './console-client.mjs';
 import {allowedConversation,conversationWorkMode} from './conversation-policy.mjs';
-import {activeReaderAccount} from '../../scripts/reader-account-state.mjs';
+import {activeConnection} from '../../scripts/hook-connection-state.mjs';
 
 export const PERSONA_PROPOSAL_POLICY=Symbol.for('wechatagent.persona-proposals.v1');
 export function bindPersonaProposalTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,request=consoleClient(root)}={}) {
-  const account=activeReaderAccount(root).id;
+  const account=activeConnection(root).id;
   const active=()=>{
     try{const turn=turnFor(),config=JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8').replace(/^\uFEFF/,''));
-      const ready=!!account&&account===activeReaderAccount(root).id&&!!turn&&!turn.controller.signal.aborted&&isAllowed()===true&&allowedConversation(config.wechat,key);
+      const ready=!!account&&account===activeConnection(root).id&&!!turn&&!turn.controller.signal.aborted&&isAllowed()===true&&allowedConversation(config.wechat,key);
       if(ready&&!turn.personaBase&&config.persona?.default){
         const name=config.persona.chats?.[key]??config.persona.default;
         if(typeof name!=='string'||name.includes('..')||/[\\/\0]/.test(name))return false;

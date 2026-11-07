@@ -80,7 +80,7 @@ test('runtime only allows a bound voice in the current authorized chat; revocati
 });
 
 test('audio reader verifies chat binding and SHA256 instead of trusting reader fields',async t=>{
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'voice-reader-test-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));atomicJson(path.join(root,'state/wechat-io-config.json'),{reader_base_url:'http://127.0.0.1:9999',reader_token:'fixture'});
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'voice-reader-test-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));atomicJson(path.join(root,'state/wechat-io-config.json'),{receiver_base_url:'http://127.0.0.1:9999',receiver_token:'fixture'});
   const body={...audio,conversationKey:key,sha256:crypto.createHash('sha256').update(Buffer.from(audio.b64,'base64')).digest('hex')};
   const reader=createAudioReader(root,{fetchImpl:async(_url,options)=>{assert.equal(options.headers.Authorization,'Bearer fixture');return Response.json(body);}});
   assert.equal((await reader(id,key,'speech-recognition')).filename,'voice.wav');body.conversationKey=other;await assert.rejects(()=>reader(id,key,'speech-recognition'),/VOICE_CONVERSATION_MISMATCH/);body.conversationKey=key;body.sha256='0'.repeat(64);await assert.rejects(()=>reader(id,key,'speech-recognition'),/VOICE_INTEGRITY_FAILED/);

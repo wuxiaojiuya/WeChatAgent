@@ -191,7 +191,7 @@ body.has-wallpaper .page-heading{border-color:var(--lg-line-soft);border-radius:
 /* ---------- 卡片：轻玻璃 ---------- */
 .card{background-color:var(--lg-card);border-color:var(--lg-line);box-shadow:var(--lg-drop-sm),inset 0 1px 0 rgb(255 255 255/.75);border-radius:18px}
 :root[data-theme=dark] .card{box-shadow:var(--lg-drop-sm),inset 0 1px 0 rgb(255 255 255/.06)}
-.service-node,.mode-option,.role-item,.reader-steps span,.scope-tag{background-color:var(--lg-fill);border-color:var(--lg-line-soft)}
+.service-node,.mode-option,.role-item,.connection-steps span,.scope-tag{background-color:var(--lg-fill);border-color:var(--lg-line-soft)}
 .service-node{border-radius:14px;box-shadow:inset 0 1px 0 rgb(255 255 255/.6)}
 :root[data-theme=dark] .service-node{box-shadow:inset 0 1px 0 rgb(255 255 255/.05)}
 .mode-option,.role-item,.chat-picker-item{border-radius:13px}

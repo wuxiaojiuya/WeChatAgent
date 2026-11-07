@@ -33,8 +33,8 @@ test('default and chat-bound personas cannot be deleted through case variants or
 
 test('installer relaunch and upgrade remember explicit deletion while recreating a card restores normal seeding',async t=>{
  const f=await fixture(t),resources=path.join(f.home,'resources'),write=(relative,value)=>{const file=path.join(resources,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,value);};
- write('project/config/wechatagent.example.json',JSON.stringify(f.config));write('project/roles/Unused.md','# Bundled fixture');write('runtime/python/python.exe','fixture');write('runtime/node.exe','fixture');write('vendor/dsh/DeepSeek Harness.exe','fixture');write('vendor/wechat/Weixin.exe','fixture');write('vendor/hook/version.dll','fixture');write('vendor/hook/build.json','{}');
- const manifest={version:'0.0.1',files:['config/wechatagent.example.json','roles/Unused.md']};write('project/deployment.json',JSON.stringify(manifest));
+ write('project/config/wechatagent.example.json',JSON.stringify(f.config));write('project/roles/Unused.md','# Bundled fixture');write('runtime/python/python.exe','fixture');write('runtime/node.exe','fixture');
+ const manifest={version:'0.0.1',wechatVersion:'4.1.8.27',hookBackend:'supplier-http',dshBundled:false,files:['config/wechatagent.example.json','roles/Unused.md']};write('project/deployment.json',JSON.stringify(manifest));
  assert.equal((await f.request('/api/roles/delete',{name:'Unused',revision:f.target.revision,confirmed:true})).status,200);
  await deployment.bootstrapDeployment(resources,f.home);assert(!fs.existsSync(path.join(f.root,'roles/Unused.md')));
  manifest.version='0.0.2';write('project/deployment.json',JSON.stringify(manifest));await deployment.bootstrapDeployment(resources,f.home);assert(!fs.existsSync(path.join(f.root,'roles/Unused.md')));

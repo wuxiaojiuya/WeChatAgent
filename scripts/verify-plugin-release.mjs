@@ -5,7 +5,8 @@ import {spawnSync} from 'node:child_process';
 import {assertPluginHost} from './plugin-host-check.mjs';
 import {BUNDLED_PLUGINS} from '../packages/plugin-api/bundled.mjs';
 import {releaseIdentity} from './release-version.mjs';
-import {verifyHookBuild,verifyWeChatClient} from './hook-build-policy.mjs';
+import {createRequire} from 'node:module';
+const {assertHookOnlyFiles,assertHookRuntime}=createRequire(import.meta.url)('../apps/console-desktop/hook-only-policy.cjs');
 
 const root=path.resolve(import.meta.dirname,'..'),hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const {version,packageVersion}=releaseIdentity(JSON.parse(fs.readFileSync(path.join(root,'package.json'))));
@@ -20,6 +21,8 @@ const templateReports=[];
 for(const directory of [stage,unpacked]){
   await assertPluginHost(directory,{compareRoot:root});
   const manifest=JSON.parse(fs.readFileSync(path.join(directory,'deployment.json')));
+  assertHookOnlyFiles(manifest.files);
+  if(manifest.hookBackend!=='supplier-http'||manifest.wechatVersion!=='4.1.8.27')throw Error('INSTALLER_HOOK_CONTRACT_MISMATCH');
   if(manifest.version!==version||manifest.packageVersion!==packageVersion)throw Error('INSTALLER_VERSION_MISMATCH');
   for(const relative of ['package.json','../app/package.json']){
     const item=JSON.parse(fs.readFileSync(path.join(directory,relative),'utf8'));
@@ -35,13 +38,19 @@ for(const directory of [stage,unpacked]){
 }
 if(templateReports[0].buildId!==templateReports[1].buildId)throw Error('INSTALLER_STAGE_DIVERGED');
 const packagedManifest=JSON.parse(fs.readFileSync(path.join(stage,'deployment.json'),'utf8'));
-const bundledWechatVersion=packagedManifest.wechatVersion??'4.1.10.27';
+const bundledWechatVersion=packagedManifest.wechatVersion;
 const vendorReports=[];
-for(const directory of [path.join(root,'state/installer-stage/vendor'),path.join(root,'release/installer/win-unpacked/resources/vendor')]){
-  verifyWeChatClient(path.join(directory,'wechat'),bundledWechatVersion);
-  verifyHookBuild(path.join(directory,'hook'));
-  const current=bundledWechatVersion==='4.1.15.13'?verifyHookBuild(path.join(directory,'hook-current'),bundledWechatVersion):null;
-  vendorReports.push({version:bundledWechatVersion,clientSha256:hash(fs.readFileSync(path.join(directory,'wechat/Weixin.exe'))),coreSha256:hash(fs.readFileSync(path.join(directory,'wechat',bundledWechatVersion,'Weixin.dll'))),nativeProfile:current?.profile??null,nativeSha256:current?.sha256??null,loaderSha256:current?.loaderSha256??null});
+for(const directory of [stage,unpacked]){
+  const component=path.join(directory,'components/supplier-hook/4.1.8.27');
+  const entries=JSON.parse(fs.readFileSync(path.join(component,'files.sha256.json'),'utf8'));
+  if(entries.length!==2)throw Error('INSTALLER_HOOK_FILE_SET_INVALID');
+  for(const entry of entries){
+    if(!['libGLESv1.dll','x64 inject.exe'].includes(entry.file))throw Error('INSTALLER_HOOK_FILE_REJECTED');
+    const bytes=fs.readFileSync(path.join(component,entry.file));
+    if(bytes.length!==entry.bytes||hash(bytes)!==entry.sha256)throw Error('INSTALLER_HOOK_HASH_MISMATCH');
+  }
+  assertHookRuntime(path.resolve(directory,'../runtime'));
+  vendorReports.push({version:bundledWechatVersion,backend:'supplier-http',files:entries});
 }
 if(JSON.stringify(vendorReports[0])!==JSON.stringify(vendorReports[1]))throw Error('INSTALLER_VENDOR_RESOURCES_DIVERGED');
 const installerRelative='release/installer/WeChatAgent-Setup-'+version+'-x64.exe',installer=fs.readFileSync(path.join(root,installerRelative));

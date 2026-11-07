@@ -1,7 +1,6 @@
 import importlib.util
 import json
 import pathlib
-import sqlite3
 import sys
 import tempfile
 import threading
@@ -10,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from wechat_group_bindings import GroupBindings, legacy_group_id
-spec = importlib.util.spec_from_file_location('group_reader', pathlib.Path(__file__).with_name('reader-api.py'))
+spec = importlib.util.spec_from_file_location('group_reader', pathlib.Path(__file__).with_name('hook_receiver_core.py'))
 api = importlib.util.module_from_spec(spec); spec.loader.exec_module(api)
 
 
@@ -81,8 +80,7 @@ class GroupRecovery(unittest.TestCase):
         self.assertEqual(self.bindings.identifier('room@chatroom'), old)
 
     def test_reader_uses_stable_identity_for_selection_search_and_media_permissions(self):
-        reader = api.Reader.__new__(api.Reader); reader.root = self.root; reader.account = self.account
-        reader.settings_file = self.root/'settings.json'; reader.settings_file.write_text(json.dumps({'messagePushFilterList': ['room@chatroom', 'unselected@chatroom']}))
+        reader = api.HookReceiver.__new__(api.HookReceiver); reader.root = self.root; reader.account = self.account
         (self.root/'config').mkdir(); config = self.root/'config/wechatagent.json'
         old = legacy_group_id('旧名'); config.write_text(json.dumps({'wechat': {'whitelist': {'groups': [old], 'private': []}}}))
         reader.names = {'room@chatroom': '旧名', 'unselected@chatroom': '其他群'}; reader.group_bindings = self.bindings
@@ -97,33 +95,24 @@ class GroupRecovery(unittest.TestCase):
         contacts = reader.contacts('旧名', 'groups')
         self.assertEqual(contacts[0]['conversationId'], old)
         self.assertEqual(reader.sessions()[0]['conversationId'], old)
-        payload = reader.make_payload('room@chatroom', {'senderUsername': 'friend', 'isSend': 0, 'localType': 1, 'fullText': 'fixture', 'createTime': 1})
+        payload = reader.make_payload('room@chatroom', {'senderUsername': 'friend', 'isSend': 0, 'localType': 1, 'fullText': 'fixture', 'createTime': 1, 'rawid': 'a'*64})
         self.assertEqual(payload['conversationId'], old)
         self.assertEqual(payload['groupName'], '重进新名')
 
-    def test_session_catalog_restores_a_room_missing_from_contacts_without_reading_summary(self):
-        self.account.mkdir(); file = self.account/'db_storage/session/session.db'; file.parent.mkdir(parents=True)
-        connection = sqlite3.connect(file)
-        connection.executescript("CREATE TABLE SessionTable(username TEXT, summary TEXT); CREATE TABLE SessionNoContactInfoTable(username TEXT,session_title TEXT); INSERT INTO SessionTable VALUES ('room@chatroom','private message must not be selected'); INSERT INTO SessionNoContactInfoTable VALUES ('room@chatroom','重进后的群');")
-        connection.commit(); connection.close()
-        reader = api.Reader.__new__(api.Reader); reader.account = self.account; reader.passphrase = 'fixture'; reader.group_metadata_error = ''
-        statements = []
-        def connect(*args):
-            conn = sqlite3.connect(file); conn.set_trace_callback(statements.append); return conn, conn.cursor()
-        with patch.object(api.nt, 'derive_database_key', return_value=('fixture', 'fixture')), patch.object(api.nt, 'connect_nt_db', side_effect=connect):
-            self.assertEqual(reader.group_session_names(), {'room@chatroom': '重进后的群'})
-        self.assertFalse(any('SELECT summary' in s or 'message_content' in s for s in statements))
 
-    def test_fresh_session_titles_are_searchable_when_the_contact_title_is_only_an_identifier(self):
-        (self.root/'config').mkdir(); (self.root/'config/wechatagent.json').write_text(json.dumps({'wechat': {'whitelist': {'groups': [], 'private': []}}}))
-        reader = api.Reader.__new__(api.Reader); reader.root = self.root; reader.account = self.account
-        reader.names = {}; reader.names_lock = threading.Lock(); reader.names_refreshed_at = 0
-        reader.contact_db = self.root/'contact.db'; reader.passphrase = 'fixture'; reader.group_bindings = self.bindings
-        reader.group_session_names = lambda: {'room@chatroom': '会话库里的新群名'}
-        with patch.object(reader, 'load_contact_catalog', return_value=({'friend': 'Friend', 'room@chatroom': 'room@chatroom'}, {}, '')):
-            found = reader.contacts('新群名', 'groups', refresh=True)
-        self.assertEqual(found[0]['displayName'], '会话库里的新群名')
-        self.assertEqual(found[0]['conversationId'], self.bindings.identifier('room@chatroom'))
+
+    def test_group_names_come_from_the_dedicated_hook_catalog(self):
+        calls = []
+        class Api:
+            def post(self, route, body=None):
+                calls.append(route)
+                if route != '/api/get_chatroom_list':
+                    raise AssertionError('Only dedicated group lookup is allowed')
+                return {'data': [{'userName': 'room@chatroom', 'nickName': 'Rejoined room'}]}
+        receiver = api.HookReceiver.__new__(api.HookReceiver)
+        receiver.api = Api()
+        self.assertEqual(receiver.group_session_names(), {'room@chatroom': 'Rejoined room'})
+        self.assertEqual(calls, ['/api/get_chatroom_list'])
 
 
 if __name__ == '__main__':

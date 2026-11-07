@@ -75,4 +75,4 @@ $arguments='"'+$exe+'" "'+(Join-Path $runtime 'libGLESv1.dll')+'" "'+$parameters
 $process=Start-Process -FilePath (Join-Path $runtime 'x64 inject.exe') -ArgumentList $arguments -WorkingDirectory (Split-Path -Parent $exe) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $stage 'injector.stdout.log') -RedirectStandardError (Join-Path $stage 'injector.stderr.log')
 . (Join-Path $PSScriptRoot 'supplier-runtime-check.ps1')
 $clientPid=Wait-SupplierRuntime -Executable $exe -Dll (Join-Path $runtime 'libGLESv1.dll') -Port $upstream.Port
-Write-Output ('Supplier DLL and HTTP listener verified (WeChat PID '+$clientPid+'). This supplied DLL binds all IPv4 interfaces; project requests use 127.0.0.1. Log in, then use Connect and verify. No chat messages were sent.')
+Write-Output ('Supplier DLL and HTTP listener verified (WeChat PID '+$clientPid+'). This supplied DLL binds all IPv4 interfaces; project requests use 127.0.0.1. Log in, then start the assistant from Overview; the connection is prepared automatically. No chat messages were sent.')

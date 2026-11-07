@@ -72,7 +72,7 @@ if(process.argv[2]==='--bridge-entry-fixture'){
     ws.addEventListener('error',event=>{logs+='\nuncaughtException '+String(event.error??'fixture WebSocket');});
     ws.addEventListener('message',event=>{
       const action=JSON.parse(event.data);let data={enabled:false,stickers:[],labels:[]};
-      if(['send_private_msg','send_group_msg'].includes(action.action)){sent.push(action);data={receipt:'wechat-server-id',message_id:sent.length};}
+      if(['send_private_msg','send_group_msg'].includes(action.action)){sent.push(action);data={receipt:'wechat-message-response',delivered:'server-confirmed',confirmed:true,message_id:String(sent.length)};}
       ws.send(JSON.stringify({status:'ok',retcode:0,echo:action.echo,data}));
     });
     await until(()=>ws.readyState===WebSocket.OPEN,'OneBot connection');

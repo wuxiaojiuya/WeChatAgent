@@ -6,11 +6,11 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 function fixture(t){
  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'adapter-startup-'));
  for(const dir of ['config','state/hook'])fs.mkdirSync(path.join(directory,dir),{recursive:true});
- fs.writeFileSync(path.join(directory,'config/wechatagent.json'),JSON.stringify({runtime:{sender:'wechat-hook',weflowMode:'nt'},hook:{baseUrl:'http://127.0.0.1:30001',expectedVersion:'4.1.10.27'},ports:{adapter:0},wechat:{whitelist:{private:[],groups:[]}}}));
- fs.writeFileSync(path.join(directory,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:5031',reader_token:'fixture'}));fs.writeFileSync(path.join(directory,'state/hook/native-token.txt'),'a'.repeat(64));
+ fs.writeFileSync(path.join(directory,'config/wechatagent.json'),JSON.stringify({runtime:{sender:'wechat-hook'},hook:{backend:'supplier-http',baseUrl:'http://127.0.0.1:30001',expectedVersion:'4.1.8.27'},ports:{adapter:0},wechat:{whitelist:{private:[],groups:[]}}}));
+ fs.writeFileSync(path.join(directory,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:5031',receiver_token:'fixture'}));fs.writeFileSync(path.join(directory,'state/hook/native-token.txt'),'a'.repeat(64));
  const calls=[],adapter=new HookOneBot({directory,fetchImpl:async input=>{
   const url=new URL(input);calls.push(url.pathname);
-  return new Response(JSON.stringify(url.pathname==='/api/v1/reader/status'?{backend:'weflow-cli-nt',ownWxid:'wxid_fixture',accountDirectory:'wxid_fixture'}:{backend:'wechat-hook',integration:'WeChatAgent-1',version:'4.1.10.27',databaseAccounts:['wxid_fixture']}));
+  return new Response(JSON.stringify(url.pathname==='/api/v1/receiver/status'?{backend:'supplier-http',ownWxid:'wxid_fixture'}:{backend:'wechat-hook',provider:'supplier-http',integration:'WeChatAgent-supplier-v1',version:'4.1.8.27',startupState:'ready'}));
  }});
  adapter.connectOneBot=async()=>{};adapter.receiveSse=async()=>{};
  t.after(async()=>{if(adapter.server?.listening)await adapter.stop();assert(directory.startsWith(os.tmpdir()+path.sep));fs.rmSync(directory,{recursive:true,force:true,maxRetries:5,retryDelay:50});});
@@ -49,10 +49,10 @@ test('Windows bind denial is classified separately and retains EACCES without st
  await assert.rejects(f.adapter.start(),error=>{assert.equal(error.message,'ADAPTER_PORT_DENIED');assert.match(adapterStartupMessage(error),/port=8766 system=EACCES/);return true;});assert.equal(f.adapter.tasks,undefined);
 });
 
-test('reader resets and Hook failures retain their own stage and port instead of becoming a generic backend failure',async t=>{
- for(const [stage,code,expected]of [['reader','ECONNRESET','READER_CONNECTION_RESET'],['hook','ECONNRESET','HOOK_CONNECTION_RESET'],['reader','ECONNREFUSED','READER_NOT_LISTENING']]){
-  const f=fixture(t),original=f.adapter.fetch;f.adapter.fetch=(url,options)=>{if(new URL(url).pathname===(stage==='reader'?'/api/v1/reader/status':'/WeChatAgent/health'))throw new TypeError('fetch failed',{cause:{code}});return original(url,options);};
-  await assert.rejects(f.adapter.start(),error=>{assert.equal(error.message,expected);const message=adapterStartupMessage(error);assert(message.includes('stage='+(stage==='reader'?'reader-status':'hook-health')));assert(message.includes('port='+(stage==='reader'?5031:30001)));assert(message.includes('system='+code));return true;});
+test('receiver resets and Hook failures retain their own stage and port instead of becoming a generic backend failure',async t=>{
+ for(const [stage,code,expected]of [['receiver','ECONNRESET','RECEIVER_CONNECTION_RESET'],['hook','ECONNRESET','HOOK_CONNECTION_RESET'],['receiver','ECONNREFUSED','RECEIVER_NOT_LISTENING']]){
+  const f=fixture(t),original=f.adapter.fetch;f.adapter.fetch=(url,options)=>{if(new URL(url).pathname===(stage==='receiver'?'/api/v1/receiver/status':'/WeChatAgent/health'))throw new TypeError('fetch failed',{cause:{code}});return original(url,options);};
+  await assert.rejects(f.adapter.start(),error=>{assert.equal(error.message,expected);const message=adapterStartupMessage(error);assert(message.includes('stage='+(stage==='receiver'?'receiver-status':'hook-health')));assert(message.includes('port='+(stage==='receiver'?5031:30001)));assert(message.includes('system='+code));return true;});
  }
 });
 
@@ -66,12 +66,20 @@ test('startup formatting keeps only diagnostic codes and never prints arbitrary 
  assert.match(message,/ADAPTER_START_FAILED/);assert.match(message,/system=EACCES/);assert(!message.includes('Bearer'));assert(!message.includes('f'.repeat(64)));
  assert.match(taskFailureMessage('Adapter startup failed: ADAPTER_PORT_DENIED stage=adapter-port-bind port=8766 system=EACCES',1),/Windows.*8766/);
  assert.match(taskFailureMessage('SERVICE_PORT_IN_USE service=adapter port=8766 owners=123',1),/再次确认/);
- assert.match(taskFailureMessage('Adapter startup failed: READER_CONNECTION_RESET stage=reader-status port=5031 system=ECONNRESET',1),/读取服务/);
+ assert.match(taskFailureMessage('Adapter startup failed: RECEIVER_CONNECTION_RESET stage=receiver-status port=5031 system=ECONNRESET',1),/消息接收服务/);
 });
 
-test('an unreadable message handle explains the required WeChat recovery',()=>{
- const message=taskFailureMessage('Reader initialization failed: HOOK_MESSAGE_DATABASE_UNREADABLE',1);
- assert.match(message,/消息数据库连接已失效/);assert.match(message,/托盘完整退出微信/);assert.match(message,/4\.1\.8\.27/);assert.match(message,/无需重装/);
+test('supplier list failures keep their API diagnosis when the receiver supervisor also reports an exit',()=>{
+ for(const [code,route,label] of [['HOOK_CONTACTS_RESPONSE_INVALID','/api/get_frien_lists','好友列表'],['HOOK_GROUPS_RESPONSE_INVALID','/api/get_chatroom_list','群列表']]){
+  const message=taskFailureMessage('receiver exited; see state/logs/receiver.stderr.log\nHook receiver initialization failed: '+code,1);
+  assert(message.includes(route));assert(message.includes(label));assert.match(message,/消息接收服务/);assert(!/数据库|选择账号/.test(message));
+ }
+});
+
+test('generic receiver startup failures do not ask Hook users to configure a WeChat database',()=>{
+ for(const output of ['receiver exited; see state/logs/receiver.stderr.log','Hook receiver initialization failed: KeyError','Hook receiver initialization failed: FileNotFoundError']){
+  const message=taskFailureMessage(output,1);assert.match(message,/消息接收服务/);assert(!/数据库|选择账号/.test(message));
+ }
 });
 
 test('the PowerShell supervisor rejects bound sockets before spawning, and recovery inspection includes their owner',{skip:process.platform!=='win32'},async t=>{
@@ -156,7 +164,7 @@ test('Python redirector adoption requires the exact venv parent, base interprete
  fs.writeFileSync(file,'\uFEFF'+String.raw`
 param([string]$Helper)
 $ErrorActionPreference='Stop';. $Helper
-$python=Join-Path $PSScriptRoot 'venv/Scripts/python.exe';$marker=Join-Path $PSScriptRoot 'reader-api.py'
+$python=Join-Path $PSScriptRoot 'venv/Scripts/python.exe';$marker=Join-Path $PSScriptRoot 'hook-receiver.py'
 $script:case='valid'
 function Get-CimInstance{param($Class,$Filter)
  if($Filter -eq 'ProcessId=101'){return [pscustomobject]@{ExecutablePath=$(if($script:case -eq 'parent-exe'){'foreign.exe'}else{$python});CommandLine=$(if($script:case -eq 'parent-marker'){'foreign.py'}else{$marker})}}

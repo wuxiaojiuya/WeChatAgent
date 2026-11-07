@@ -6,11 +6,11 @@ import path from 'node:path';
 import {createProcessRecovery,startupConflictPorts} from './process-recovery.mjs';
 import {dshConfigurationMatches} from './dsh-configuration.mjs';
 
-const config={ports:{weflow:5031,onebot:11229,adapter:8766,dshPlugin:11230},hook:{baseUrl:'http://127.0.0.1:30001',wechatExecutable:'state/hook/Weixin.exe'},dsh:{provider:'fixture',model:'fixture-model'}};
-const item={pid:333,name:'node.exe',path:'E:/fixture/node.exe',start:'100',commandHash:'fixture-command',ports:[5031],reason:'占用读取端口',canStop:true};
+const config={ports:{receiver:5031,onebot:11229,adapter:8766,dshPlugin:11230},hook:{baseUrl:'http://127.0.0.1:30001',wechatExecutable:'state/hook/Weixin.exe'},dsh:{provider:'fixture',model:'fixture-model'}};
+const item={pid:333,name:'node.exe',path:'E:/fixture/node.exe',start:'100',commandHash:'fixture-command',ports:[5031],reason:'占用消息接收端口',canStop:true};
 test('startup conflicts override stale healthy port caches only for configured ports',()=>{
- assert.deepEqual(startupConflictPorts('Adapter startup failed: ADAPTER_PORT_IN_USE stage=adapter-port-bind port=8766 system=EADDRINUSE\nSERVICE_PORT_OWNER_MISMATCH service=reader port=5031 owners=33\nSERVICE_PORT_IN_USE port=9999 owners=1',[5031,8766]),[8766,5031]);
- assert.deepEqual(startupConflictPorts('READER_CONNECTION_RESET port=5031\nchat contains port=8766',[5031,8766]),[]);
+ assert.deepEqual(startupConflictPorts('Adapter startup failed: ADAPTER_PORT_IN_USE stage=adapter-port-bind port=8766 system=EADDRINUSE\nSERVICE_PORT_OWNER_MISMATCH service=receiver port=5031 owners=33\nSERVICE_PORT_IN_USE port=9999 owners=1',[5031,8766]),[8766,5031]);
+ assert.deepEqual(startupConflictPorts('RECEIVER_CONNECTION_RESET port=5031\nchat contains port=8766',[5031,8766]),[]);
 });
 function fixture(){let items=[{...item}],time=1000;const stopped=[];const recovery=createProcessRecovery({root:process.cwd(),now:()=>time,probe:async()=>({items}),stop:async request=>{stopped.push(request);return {stopped:request.items.map(item=>item.pid)};}});return {recovery,stopped,setItems:next=>{items=next;},expire:()=>{time+=120001;}};}
 
@@ -38,12 +38,12 @@ test('stopping selected conflicts never adds unselected processes',async()=>{
   const f=fixture();f.setItems([item,{...item,pid:444,start:'200',ports:[11230]}]);const scan=await f.recovery.scan(config,'r');
   const prepared=await f.recovery.prepare(scan.scanId,[scan.items[1].id],'r');await f.recovery.stop(prepared.confirmation,true,'r');assert.deepEqual(f.stopped[0].items.map(item=>item.pid),[444]);
 });
-test('DSH restart verification requires the actual project, model, plugin revision and selected account',t=>{
+test('DSH reload verification requires the actual project, model, plugin revision and connection scope',t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-dsh-revision-'));t.after(()=>{assert(root.startsWith(os.tmpdir()+path.sep));fs.rmSync(root,{recursive:true,force:true});});
-  fs.mkdirSync(path.join(root,'packages/dsh-social-bridge-plugin'),{recursive:true});fs.mkdirSync(path.join(root,'state/weflow'),{recursive:true});
+  fs.mkdirSync(path.join(root,'packages/dsh-social-bridge-plugin'),{recursive:true});fs.mkdirSync(path.join(root,'state/hook'),{recursive:true});
   fs.writeFileSync(path.join(root,'packages/dsh-social-bridge-plugin/cordis.patch.yml'),'name: file:///fixture/native-context.mjs?wechatagent=aaaaaaaaaaaaaaaa');
-  fs.writeFileSync(path.join(root,'state/weflow/active-account.json'),JSON.stringify({id:'account-a'}));
-  const health={ok:true,project:'WeChatAgent',projectRoot:root,provider:'fixture',model:'fixture-model',pluginRevision:'aaaaaaaaaaaaaaaa',capabilityExecution:'dsh-generation-v1',accountScope:'account-a'};
+  fs.writeFileSync(path.join(root,'state/hook/active-connection.json'),JSON.stringify({id:'a'.repeat(64)}));
+  const health={ok:true,project:'WeChatAgent',projectRoot:root,provider:'fixture',model:'fixture-model',pluginRevision:'aaaaaaaaaaaaaaaa',capabilityExecution:'dsh-generation-v1',accountScope:'a'.repeat(64)};
   assert(dshConfigurationMatches(root,config,health));
-  for(const change of [{ok:false},{projectRoot:root+'-other'},{provider:'other'},{model:'old-model'},{pluginRevision:'bbbbbbbbbbbbbbbb'},{capabilityExecution:undefined},{capabilityExecution:'old-version'},{accountScope:'account-b'}])assert.equal(dshConfigurationMatches(root,config,{...health,...change}),false);
+  for(const change of [{ok:false},{projectRoot:root+'-other'},{provider:'other'},{model:'old-model'},{pluginRevision:'bbbbbbbbbbbbbbbb'},{capabilityExecution:undefined},{capabilityExecution:'old-version'},{accountScope:'b'.repeat(64)}])assert.equal(dshConfigurationMatches(root,config,{...health,...change}),false);
 });

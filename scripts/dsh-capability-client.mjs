@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 import {CAPABILITY_EXECUTION_VERSION,CAPABILITY_OPERATIONS,capabilityFault} from '../packages/dsh-capabilities-plugin/contract.mjs';
 
-export function createDshCapabilityClient({root,config,fetchImpl=fetch,accountScope=()=>activeReaderAccount(root).id}={}){
+export function createDshCapabilityClient({root,config,fetchImpl=fetch,accountScope=()=>activeConnection(root).id}={}){
   const execute=async(operation,payload,{signal,onProgress,timeoutMs}={})=>{
     if(!Object.hasOwn(CAPABILITY_OPERATIONS,operation))throw capabilityFault('CAPABILITY_OPERATION_INVALID','未知的生成能力。',400);
     const tokenFile=path.join(root,'state/social-dsh-token.txt');

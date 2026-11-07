@@ -7,6 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import crypto from 'node:crypto';
 import deployment from '../apps/console-desktop/deployment.cjs';
+import hookPolicy from '../apps/console-desktop/hook-only-policy.cjs';
 import {CAPABILITY_PLUGIN_FILES,CAPABILITY_EXECUTION_VERSION} from '../packages/dsh-capabilities-plugin/contract.mjs';
 
 const root=path.resolve(import.meta.dirname,'..');
@@ -14,7 +15,7 @@ const resources=path.resolve(process.argv[2]??path.join(root,'release/installer/
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'WeChatAgent installation '));
 const capabilityFiles=['scripts/dsh-capability-client.mjs',...CAPABILITY_PLUGIN_FILES.map(file=>'packages/dsh-capabilities-plugin/'+file)];
 const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/supplier_reader.py',
-  'scripts/reader-api.py','scripts/supplier-probe.py','scripts/supplier-connect.mjs','scripts/console-process.mjs','scripts/console-server.mjs',
+  'scripts/hook-receiver.py','scripts/hook_receiver_core.py','scripts/hook-connection-state.mjs','scripts/supplier-probe.py','scripts/supplier-connect.mjs','scripts/console-process.mjs','scripts/console-server.mjs',
   'packages/dsh-social-bridge-plugin/prompt-context.mjs','packages/dsh-social-bridge-plugin/history-runtime.mjs',
   'packages/dsh-social-bridge-plugin/native-context.mjs','packages/dsh-social-bridge-plugin/persona-generation.mjs',
   'packages/dsh-social-bridge-plugin/persona-evolution.mjs','packages/dsh-social-bridge-plugin/persona-proposal-tools.mjs'];
@@ -23,6 +24,9 @@ const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest
 try {
   const manifest=JSON.parse(fs.readFileSync(path.join(resources,'project/deployment.json')));
   assert.equal(manifest.hookBackend,'supplier-http');
+  assert.equal(manifest.wechatVersion,'4.1.8.27');
+  hookPolicy.assertHookOnlyFiles(manifest.files);
+  hookPolicy.assertHookRuntime(path.join(resources,'runtime'));
   const installed=await deployment.bootstrapDeployment(resources,temporary);
   const configFile=path.join(installed.root,'config/wechatagent.json');
   const config=JSON.parse(fs.readFileSync(configFile));
@@ -43,7 +47,7 @@ try {
   const checked=spawnSync(powershell,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(installed.root,'scripts/check-runtime.ps1')],
     {windowsHide:true,encoding:'utf8',timeout:60000,env:{...process.env,PATH:''}});
   assert.equal(checked.status,0,checked.stdout+'\n'+checked.stderr);
-  assert.match(checked.stdout,/Hook components and image worker verified/);
+  assert.match(checked.stdout,/Bundled Hook receiver, media codecs and WeChat 4\.1\.8\.27 components verified/);
   assert(!fs.existsSync(path.join(installed.root,'components/weflow-cli/resources/key/win32/x64/wx_key.dll')));
   const page=fs.readFileSync(path.join(installed.root,'public/console/console.js'),'utf8');
   const setup=page.slice(page.indexOf('function setupPage()'),page.indexOf('async function logsPage()'));
@@ -63,12 +67,16 @@ try {
   const retired=['scripts/music-soulx-worker.py','scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md',
     'state/maintenance/audio-capabilities/soulx-singer/source/pretrained_models/model.pt'];
   for(const relative of retired){const file=path.join(installed.root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'retired engine fixture');}
+  const oldHook=['scripts/reader-api.py','scripts/reader_setup.py','scripts/hook-client-health.ps1','components/weflow-cli/scripts/nt_decrypt.py','scripts/native-hook/probe.cpp'];
+  for(const relative of oldHook){const file=path.join(installed.root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'retired connection fixture');}
   for(const relative of updatedFiles)fs.writeFileSync(path.join(installed.root,relative),'prior-version feature fixture\n');
   await deployment.bootstrapDeployment(resources,temporary);
+  for(const relative of oldHook)assert(!fs.existsSync(path.join(installed.root,relative)),'Upgrade retained obsolete connection program: '+relative);
+  assert(fs.readdirSync(path.join(installed.root,'state/maintenance')).some(name=>name.startsWith('retired-hook-')),'Upgrade must archive retired programs');
   for(const relative of retired)assert(!fs.existsSync(path.join(installed.root,relative)),'Upgrade retained obsolete singing engine: '+relative);
   for(const relative of updatedFiles)assert.equal(sha(path.join(installed.root,relative)),manifest.sourceHashes[relative],'Upgrade retained stale feature code: '+relative);
   const upgradeState=JSON.parse(fs.readFileSync(path.join(installed.root,'state/console-state.json')));
-  assert.equal(upgradeState.pendingApply,true);assert.equal(upgradeState.dshRestartRequired,true);
+  assert.equal(upgradeState.pendingApply,true);assert.equal(upgradeState.dshReloadRequired,true);
   assert.deepEqual(JSON.parse(fs.readFileSync(configFile)).wechat.whitelist.private,['123']);
   for(const [relative,text]of fixtures)assert.equal(fs.readFileSync(path.join(installed.root,relative),'utf8'),text);
   const {createAudioCapabilities}=await import(pathToFileURL(path.join(installed.root,'scripts/audio-capabilities.mjs')).href);
@@ -79,7 +87,7 @@ try {
     capabilityHost:'dsh',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,capabilityFilesDeployed:true,upgradeReplacesCapabilityAndDeliveryFiles:true,upgradeRequiresDshReload:true,
     setupWechatLocation:true,upgradePreservesChatSettings:true,upgradePreservesPersona:true,upgradePreservesPrivateKey:true,
     upgradePreservesCustomModel:true,upgradePreservesMusicCredential:true,upgradePreservesDrawingCredential:true,upgradePreservesPersonaBackup:true,
-    drawingAndPersonaFiles:true,neteaseLoginPage:true,obsoleteSingingEnvironmentRemoved:true,servicesStarted:false}));
+    drawingAndPersonaFiles:true,neteaseLoginPage:true,obsoleteSingingEnvironmentRemoved:true,legacyConnectionProgramsRemoved:true,wechatDatabaseAccess:false,servicesStarted:false}));
 } finally {
   const resolved=path.resolve(temporary),parent=path.resolve(os.tmpdir());
   if(path.dirname(resolved)!==parent||!path.basename(resolved).startsWith('WeChatAgent installation '))throw Error('Invalid verification cleanup path');

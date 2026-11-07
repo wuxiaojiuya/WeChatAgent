@@ -1,4 +1,4 @@
-param([string]$PythonPath = '', [switch]$BuildOriginalWeFlow)
+param([string]$PythonPath = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $node = (Get-Command node -ErrorAction Stop).Source
@@ -17,10 +17,9 @@ function Install-Npm([string]$Directory,[bool]$Legacy) {
     } finally { Pop-Location }
 }
 Install-Npm (Join-Path $root 'packages\dsh-social-bridge-plugin') $false
-& $python -m pip install --only-binary=:all: -r (Join-Path $PSScriptRoot 'reader-requirements.txt')
-if ($LASTEXITCODE -ne 0) { throw 'Independent reader dependency installation failed.' }
-if ($BuildOriginalWeFlow) { throw 'The public source does not include historical WeFlow Desktop. Use the independent desktop build dependencies.' }
+& $python -m pip install --only-binary=:all: -r (Join-Path $PSScriptRoot 'hook-requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Hook receiver dependency installation failed.' }
 & $python -m pip check
 if ($LASTEXITCODE -ne 0) { throw 'Python dependency conflicts detected.' }
 Write-Output ('Install the local plugin in DSH Desktop: '+(Join-Path $root 'packages\dsh-social-bridge-plugin'))
-Write-Output 'Dependencies installed. For WeChat-Hook, build the native component and prepare the matching client as described in docs/WECHAT_HOOK.md. Then start WeChatAgent.cmd.'
+Write-Output 'Dependencies installed. Select WeChat 4.1.8.27 in Settings, open it with the bundled Hook, log in, then start the assistant from Overview.'

@@ -22,7 +22,7 @@ import {validateMemberMemory} from '../packages/dsh-social-bridge-plugin/member-
 
 import {validateConversationSettings,conversationMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {migrateDshSettings} from '../packages/dsh-social-bridge-plugin/dsh-migration.mjs';
-import {hookProfile} from './hook-profiles.mjs';
+import {ensureConnectionMigration} from './hook-connection-state.mjs';
 export const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const BUNDLED_SUPPLIER_HOOK = Object.freeze({
   sourceDirectory:'components/supplier-hook/4.1.8.27',
@@ -31,9 +31,16 @@ export const BUNDLED_SUPPLIER_HOOK = Object.freeze({
   voiceBaseUrl:'http://127.0.0.1:30001',
 });
 export function configureBundledHook(config) {
-  if(config.hook?.backend!=='supplier-http')return false;
-  const changed=Object.entries(BUNDLED_SUPPLIER_HOOK).some(([key,value])=>config.hook[key]!==value);
-  Object.assign(config.hook,BUNDLED_SUPPLIER_HOOK);
+  const before=JSON.stringify(config);
+  config.runtime??={};
+  config.ports??={};
+  const previous=config.hook??{};
+  config.hook={...BUNDLED_SUPPLIER_HOOK,backend:'supplier-http',expectedVersion:'4.1.8.27',wechatExecutable:previous.wechatExecutable??'',requestTimeoutMs:previous.requestTimeoutMs??5000,receiptTimeoutMs:previous.receiptTimeoutMs??18000,maxConcurrentSends:previous.maxConcurrentSends??4};
+  config.runtime.sender='wechat-hook';
+  delete config.runtime.weflowMode;
+  config.ports.receiver??=config.ports.weflow;
+  delete config.ports.weflow;
+  const changed=before!==JSON.stringify(config);
   return changed;
 }
 const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
@@ -54,36 +61,14 @@ export function validateConfig(config) {
   validateContextSettings(config.wechat?.context);
   validateWebReaderSettings(config.wechat?.webReader);
   if (config.version !== 1) throw new Error('Unsupported WeChatAgent config version');
-  if (!['nt', 'bundled', 'existing'].includes(config.runtime?.weflowMode ?? 'nt')) throw new Error('weflowMode must be nt, bundled or existing');
-  if (config.runtime?.sender !== 'wechat-hook') throw new Error('sender must be wechat-hook; the UIA sender has been removed');
-  if (config.runtime.sender === 'wechat-hook') {
-    if ((config.runtime.weflowMode ?? 'nt') !== 'nt') throw new Error('WeChat-Hook requires the NT reader for account and receipt checks');
-    const url = new URL(config.hook?.baseUrl ?? '');
-    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Hook API must be an HTTP loopback base URL');
-    if (!hookProfile(config.hook.expectedVersion) || !config.hook.wechatExecutable || /[\r\n"\0]/.test(config.hook.wechatExecutable)) throw new Error('Configure a supported, exactly matching WeChat-Hook executable and version');
-    const supplier=config.hook.backend==='supplier-http';
-    if(config.hook.backend!==undefined&&!['supplier-http','project-native'].includes(config.hook.backend))throw new Error('Invalid Hook backend');
-    if(supplier!==(config.hook.expectedVersion==='4.1.8.27'))throw new Error('Supplier Hook requires matching version 4.1.8.27');
-    if(supplier){
-      if(Object.entries(BUNDLED_SUPPLIER_HOOK).some(([key,value])=>config.hook[key]!==value))throw new Error('Bundled Hook paths and API addresses are managed by the project');
-      const upstream=new URL(config.hook.upstreamUrl??'');
-      if(upstream.protocol!=='http:'||upstream.hostname!=='127.0.0.1'||upstream.username||upstream.password||upstream.pathname!=='/'||upstream.search||upstream.hash||!upstream.port||upstream.port===url.port||Object.values(config.ports??{}).includes(Number(upstream.port)))throw new Error('Supplier Hook requires a distinct HTTP loopback upstream port');
-      if(typeof config.hook.sourceDirectory!=='string'||!config.hook.sourceDirectory||/[\r\n"\0]/.test(config.hook.sourceDirectory))throw new Error('Supplier Hook source directory missing');
-    }
-    for (const [key, low, high] of [['requestTimeoutMs',1000,5000],['receiptTimeoutMs',1000,18000],['maxConcurrentSends',1,4]]) {
-      const value = config.hook[key];
-      if (!Number.isInteger(value) || value < low || value > high) throw new Error('Invalid Hook ' + key);
-    }
-    const port = Number(url.port || 80);
-    if (Object.values(config.ports ?? {}).includes(port)) throw new Error('Hook port must be distinct from the four project ports');
-    if(config.hook.voiceBaseUrl!==undefined){
-      const voice=new URL(config.hook.voiceBaseUrl);
-      if(supplier?voice.origin!==url.origin||voice.href!==url.origin+'/':config.hook.expectedVersion!=='4.1.10.27'||voice.origin!=='http://127.0.0.1:30002'||voice.href!=='http://127.0.0.1:30002/'||port===30002||Object.values(config.ports??{}).includes(30002))throw new Error('Voice API must match the selected Hook backend');
-    }
-  }
+  if (config.runtime?.sender !== 'wechat-hook' || config.hook?.backend !== 'supplier-http' || config.hook.expectedVersion !== '4.1.8.27') throw new Error('The bundled supplier Hook requires WeChat 4.1.8.27');
+  if (typeof config.hook.wechatExecutable!=='string' || /[\r\n"\0]/.test(config.hook.wechatExecutable)) throw new Error('Configure the WeChat 4.1.8.27 executable');
+  if(Object.entries(BUNDLED_SUPPLIER_HOOK).some(([key,value])=>config.hook[key]!==value))throw new Error('Bundled Hook paths and API addresses are managed by the project');
+  for(const key of ['baseUrl','upstreamUrl','voiceBaseUrl']){const url=new URL(config.hook[key]);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||url.pathname!=='/'||url.search||url.hash||Object.values(config.ports??{}).includes(Number(url.port)))throw new Error('Hook API must use the managed distinct loopback port');}
+  for (const [key,low,high] of [['requestTimeoutMs',1000,5000],['receiptTimeoutMs',1000,18000],['maxConcurrentSends',1,4]]) if(!Number.isInteger(config.hook[key])||config.hook[key]<low||config.hook[key]>high)throw new Error('Invalid Hook '+key);
   const ports = Object.values(config.ports ?? {});
   if (ports.length !== 4 || ports.some(p => !Number.isInteger(p) || p < 1024 || p > 65535) || new Set(ports).size !== 4) throw new Error('Configure four distinct service ports between 1024 and 65535');
-  if (!['weflow','onebot','adapter','dshPlugin'].every(key => Number.isInteger(config.ports[key]))) throw new Error('Required ports: weflow, onebot, adapter, dshPlugin');
+  if (!['receiver','onebot','adapter','dshPlugin'].every(key => Number.isInteger(config.ports[key]))) throw new Error('Required ports: receiver, onebot, adapter, dshPlugin');
   if (!config.runtime?.python || !Array.isArray(config.account?.nicknames) || !config.account.nicknames.length) throw new Error('Python and account nicknames are required');
   for (const kind of ['groups', 'private']) {
     if (!Array.isArray(config.wechat?.whitelist?.[kind]) || config.wechat.whitelist[kind].some(id => !/^\d+$/.test(String(id)) || !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) throw new Error(`Invalid ${kind} OneBot IDs; use the numeric IDs in Bridge logs`);
@@ -98,11 +83,12 @@ export function prepare(root = projectRoot) {
   const configFile = path.join(root, 'config', 'wechatagent.json');
   if (!fs.existsSync(configFile)) fs.copyFileSync(path.join(root, 'config', 'wechatagent.example.json'), configFile);
   migrateConnections(root);
+  ensureConnectionMigration(root);
   const config = read(configFile);
   const bundledHookChanged=configureBundledHook(config);
   validateConfig(config);
   if(bundledHookChanged){
-    const previous=path.join(root,'state/migrations/bundled-hook-v1/wechatagent.json');
+    const previous=path.join(root,'state/migrations/supplier-hook-only-v1/wechatagent.json');
     fs.mkdirSync(path.dirname(previous),{recursive:true});
     if(!fs.existsSync(previous))fs.copyFileSync(configFile,previous);
     write(configFile,config);
@@ -110,7 +96,7 @@ export function prepare(root = projectRoot) {
   if(migrateHistorySettings(config)){validateConfig(config);write(configFile,config);}
   const migratedMeme=migrateDshSettings(root,config);if(migratedMeme!==null){validateConfig(config);write(configFile,config);}
   const state = path.join(root, 'state');
-  for (const dir of ['logs', 'weflow', 'attachments']) fs.mkdirSync(path.join(state, dir), { recursive: true });
+  for (const dir of ['logs', 'hook', 'attachments']) fs.mkdirSync(path.join(state, dir), { recursive: true });
   if (config.runtime.sender === 'wechat-hook') {
     const hookDir = path.join(state, 'hook');
     fs.mkdirSync(hookDir, { recursive: true });
@@ -132,8 +118,8 @@ export function prepare(root = projectRoot) {
   }
   const ioFile = path.join(state, 'wechat-io-config.json');
   const previousIo = fs.existsSync(ioFile) ? read(ioFile) : {};
-  write(ioFile, { reader_base_url: `http://127.0.0.1:${config.ports.weflow}`,
-    reader_token: previousIo.reader_token || crypto.randomBytes(32).toString('hex'),
+  write(ioFile, { receiver_base_url: `http://127.0.0.1:${config.ports.receiver}`,
+    receiver_token: previousIo.receiver_token || previousIo.reader_token || crypto.randomBytes(32).toString('hex'),
     self_wxid: previousIo.self_wxid || '', onebot_ws_url: `ws://127.0.0.1:${config.ports.onebot}/ws` });
   const roleText = name => roleTexts.get(name);
   write(path.join(state, 'bridge-config.json'), {
@@ -189,7 +175,7 @@ export function prepare(root = projectRoot) {
     if(migratedMeme&&Object.keys(migratedMeme).length&&!/^        memeSearch:/m.test(after))after=after.replace(/^(        port:.*)$/m,'$1\n        memeSearch: '+JSON.stringify(migratedMeme));
     if (existingPatch !== after) fs.writeFileSync(patchFile, after);
   }
-  // Original WeFlow owns its encrypted configuration in every provider mode.
+
   return config;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

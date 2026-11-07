@@ -40,10 +40,10 @@ export function createVideoIngress({root,canRead=()=>true,fetchImpl=fetch}){
     const unavailable=code=>appendMediaText(message,'['+(message.video||link?'视频/链接已收到，但本轮未取得画面和声音':'引用文件未能读取')+'，不能猜测内容。'+code+(link?'。抖音链接可能需要新的访问 Cookie 或暂不可访问，可请对方把视频直接发到微信；也可在本机能力设置配置抖音 Cookie，不要让对方在聊天发送 Cookie。':'')+']');
     if(!await canRead(message))return unavailable('VIDEO_NOT_ALLOWED');
     try{
-      const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,'')),base=new URL(io.reader_base_url);
+      const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,'')),base=new URL(io.receiver_base_url);
       if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.pathname!=='/'||base.username||base.password||base.search||base.hash)throw Error('VIDEO_READER_INVALID');
       async function read(route){
-        const response=await fetchImpl(base.origin+route,{headers:{Authorization:'Bearer '+io.reader_token},redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(link?85000:50000)].filter(Boolean))});
+        const response=await fetchImpl(base.origin+route,{headers:{Authorization:'Bearer '+io.receiver_token},redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(link?85000:50000)].filter(Boolean))});
         let size=0;const chunks=[];for await(const chunk of response.body){size+=chunk.length;if(size>64000)throw Error('VIDEO_RESPONSE_INVALID');chunks.push(chunk);}
         const result=JSON.parse(Buffer.concat(chunks).toString('utf8'));
         if(!response.ok)throw Error(/^VIDEO_[A-Z_]{3,80}$/.test(result.error??'')?result.error:'VIDEO_READER_UNAVAILABLE');

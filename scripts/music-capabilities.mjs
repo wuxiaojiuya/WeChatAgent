@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {validateMusicQuery} from '../packages/music-source/kugou.mjs';
 import {songRequest,rankSongCandidates} from '../packages/music-source/song-request.mjs';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 import {validatePerformance} from '../packages/dsh-social-bridge-plugin/singing-performance.mjs';
 
 const fault = (message, status = 400) => Object.assign(new Error(message), {status});
@@ -207,9 +207,9 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     if(Object.keys(body??{}).some(key=>!['videoId','conversationKey','startSeconds','seconds','localOnly'].includes(key))||typeof localOnly!=='boolean'||!/^[a-f0-9]{64}$/.test(videoId??'')||!/^wechat:(private|group):[1-9]\d*$/.test(conversationKey??'')||!Number.isFinite(startSeconds)||startSeconds<0||startSeconds>14400||!Number.isInteger(seconds)||seconds<10||seconds>30)throw fault('请选择当前聊天中已收到的视频，片段长度为 10～30 秒。');
     if(!isAllowed())throw fault('当前聊天的唱歌能力未开启。',403);
     signal?.throwIfAborted();
-    const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,'')),base=new URL(io.reader_base_url);
-    if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.pathname!=='/'||base.username||base.password||base.search||base.hash||typeof io.reader_token!=='string'||!io.reader_token)throw fault('微信视频读取服务未就绪。',503);
-    const result=await fetchImpl(base.origin+'/api/v1/videos/'+videoId+'/singing-audio?'+new URLSearchParams({conversationKey,startSeconds:String(startSeconds),seconds:String(seconds),localOnly:String(localOnly)}),{headers:{Authorization:'Bearer '+io.reader_token},redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(85000),...(signal?[signal]:[])])});
+    const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,'')),base=new URL(io.receiver_base_url);
+    if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.pathname!=='/'||base.username||base.password||base.search||base.hash||typeof io.receiver_token!=='string'||!io.receiver_token)throw fault('微信视频读取服务未就绪。',503);
+    const result=await fetchImpl(base.origin+'/api/v1/videos/'+videoId+'/singing-audio?'+new URLSearchParams({conversationKey,startSeconds:String(startSeconds),seconds:String(seconds),localOnly:String(localOnly)}),{headers:{Authorization:'Bearer '+io.receiver_token},redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(85000),...(signal?[signal]:[])])});
     if(!result.ok)throw fault('没有取得视频音轨，请确认视频可访问、有声音且当前聊天已启用唱歌。',422);
     const chunks=[];let size=0;
     for await(const chunk of result.body){size+=chunk.length;if(size>9*1024*1024)throw fault('视频音轨超过处理上限。',413);chunks.push(chunk);}
@@ -301,7 +301,7 @@ export function createMusicCapabilities({root, fetchImpl = fetch, settings = () 
     }
     const config=structuredClone(settings()),model=models?.get(config.modelId);
     if(models&&!model)throw fault('当前音色没有可用的翻唱模型，请在“语音回复”中补充配套 RVC 模型。',409);
-    const accountScope=()=>fs.existsSync(path.join(root,'state/wechat-io-config.json'))?readerScope():null,scope=accountScope(),accountId=activeReaderAccount(root).id;
+    const accountScope=()=>fs.existsSync(path.join(root,'state/wechat-io-config.json'))?readerScope():null,scope=accountScope(),accountId=activeConnection(root).id;
     const id = crypto.randomUUID(), output = path.join(jobDirectory, id);
     const job = {id, state:'running', stage:'正在获取歌曲音频', startedAt:new Date().toISOString(), source:body.songId,modelId:config.modelId,sourceKind:source?'video':'song',conversationKey:source?.conversationKey??body.conversationKey,...(accountId?{accountScope:accountId}:{}),...(source?{sourceStartSeconds:source.sourceStartSeconds,performance:body.performance}:{})};
     persistJob(job);jobs.set(id, job); active = true;

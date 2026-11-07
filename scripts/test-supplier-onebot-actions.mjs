@@ -16,13 +16,13 @@ function fixture(t, { reply = ack, members, backend = 'supplier-http' } = {}) {
   for (const relative of ['config', 'state/hook']) fs.mkdirSync(path.join(directory, relative), { recursive: true });
   const config = { runtime: { sender: 'wechat-hook', weflowMode: 'nt' }, hook: { backend, baseUrl: 'http://127.0.0.1:30001', expectedVersion: '4.1.8.27' }, account: { nicknames: ['小鱼'] }, wechat: { whitelist: { private: [privateId], groups: [groupId] } } };
   fs.writeFileSync(path.join(directory, 'config/wechatagent.json'), JSON.stringify(config));
-  fs.writeFileSync(path.join(directory, 'state/wechat-io-config.json'), JSON.stringify({ reader_base_url: 'http://127.0.0.1:5031', reader_token: 'isolated-actions' }));
+  fs.writeFileSync(path.join(directory, 'state/wechat-io-config.json'), JSON.stringify({ receiver_base_url: 'http://127.0.0.1:5031', receiver_token: 'isolated-actions' }));
   fs.writeFileSync(path.join(directory, 'state/hook/native-token.txt'), 'c'.repeat(64));
   const calls = [], requests = [];
   const fetchImpl = async (url, init) => {
     const parsed = new URL(url), route = parsed.pathname; requests.push(route);
     let result;
-    if (route === '/api/v1/reader/status') result = { backend: 'supplier-http', ownWxid: self, accountDirectory: self };
+    if (route === '/api/v1/receiver/status') result = { backend: 'supplier-http', ownWxid: self, accountDirectory: self };
     else if (route === '/WeChatAgent/health') result = { integration: 'WeChatAgent-supplier-v1', backend: 'wechat-hook', provider: 'supplier-http', version: '4.1.8.27', startupState: 'ready' };
     else if (route === '/api/v1/sessions') result = { sessions: [{ username: peer, displayName: '好友' }, { username: room, displayName: '测试群' }] };
     else if (route === '/api/v1/group-members') {

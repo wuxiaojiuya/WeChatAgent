@@ -6,10 +6,10 @@
 
 ## 配套宿主
 
-- `reader-api.py` 接收类型 34，仅为已启用并授权的插件/聊天登记引用，不通过 SSE 传递路径、数据库凭据或音频字节。
-- 引用绑定项目账号、聊天、服务器消息 ID、本地 ID、时间及原发送者。当前 `supplier_reader.py` 从 Hook 回调与项目缓存验证原语音，使用真实 `MsgId`、完整 `newMsgId` 和长度调用 `/api/download_voice`，不读取微信媒体数据库；`wechat_voice_input.py` 保留旧后端兼容实现。
-- 带令牌的读取端点 `GET /api/v1/voices/:id?conversationKey=...&pluginId=...&format=wav|silk` 再检查当前账号、聊天和授权；只供宿主使用。
-- 插件 API 的 `ctx.audio.read(id,{format})` 需要 `audio_read`，且 id 必须在当前宿主动作的绑定范围内。不会向插件传递读取器令牌或数据库密钥。
+- `scripts/hook-receiver.py` 接收 Hook 推送的类型 34，仅为已启用并授权的插件/聊天登记引用，不通过 SSE 传递路径或音频字节。
+- 引用绑定项目连接、聊天、服务器消息 ID、本地 ID、时间及原发送者。`hook_receiver_core.py` 从 Hook 回调与项目缓存验证原语音，使用真实 `MsgId`、完整 `newMsgId` 和长度调用 `/api/download_voice`。没有微信数据库读取或旧后端回退。
+- 带令牌的端点 `GET /api/v1/voices/:id?conversationKey=...&pluginId=...&format=wav|silk` 再检查项目资源归属、聊天和授权；只供宿主使用。字段不足时明确失败，不截断服务器 ID，也不查询微信历史。
+- 插件 API 的 `ctx.audio.read(id,{format})` 需要 `audio_read`，且 id 必须在当前宿主动作的绑定范围内。不会向插件传递 Hook 接收服务令牌。
 - DSH 的认证端点 `POST /voice-input` 为当前语音调用插件的 `transcribe` 动作；不创建或切换 DSH 会话，不给模型增加执行权限。
 - Bridge 的 `VoiceIngress` 对同一聊天保序，识别失败转为真实的未读取占位；独立聊天不互相等待。转写文字继续经过既有唤醒、管理员、去重、发送限流及回执流程。
 
@@ -21,7 +21,7 @@
 
 ## 当前验证范围
 
-当前 supplier-http 测试使用模拟 Hook 推送、项目缓存和本机 HTTP API，覆盖原消息绑定、专用下载、鉴权、超时、大小限制、跨聊天拒绝与撤权。旧后端的合成 SQLite 媒体表测试继续作为兼容回归。另以合成短句验证过一组现有服务的 HTTP JSON ASR 调用；本地真实微信音频仅用于此前受授权的解码准备检查。本次发布未重放历史消息或自动发送微信回复。
+当前测试使用模拟 Hook 推送、项目缓存和本机 HTTP API，覆盖原消息绑定、专用下载、鉴权、超时、大小限制、跨聊天拒绝与撤权。另以合成短句验证过一组现有服务的 HTTP JSON ASR 调用；本地真实微信音频仅用于此前受授权的解码准备检查。本次迁移未重放历史消息或自动发送微信回复。
 
 ## 1.2 协议与现场诊断
 

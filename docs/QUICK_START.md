@@ -5,7 +5,7 @@
 1. 从 [Releases](https://github.com/wuxiaojiuya/WeChatAgent/releases) 下载所需版本的 Windows x64 安装包，选择程序和数据目录。
 2. 准备 **Windows 微信 4.1.8.27** 与独立 DSH Desktop。安装包不包含微信客户端或 DSH。
 3. 在连接设置选择微信 Weixin.exe 和 DSH 程序。Hook 已内置，无需填写组件路径和 HTTP 地址。
-4. 从托盘完全退出普通微信，通过项目打开微信，登录后点击「连接并验证」。
+4. 从托盘完全退出普通微信，通过项目打开微信，登录后到概览点击「启动助手」，程序自动准备 Hook 连接和消息接收服务。
 5. 在 DSH 配置模型，安装并启用本机桥接插件包，按页面提示授权。能力插件会随包自动配置和加载，无需手动注册第二个插件。
 6. 添加允许的好友或群聊，选择人格卡、唤醒方式并启动服务。初始允许聊天列表为空。
 
@@ -44,12 +44,14 @@ git clone https://github.com/wuxiaojiuya/WeChatAgent.git
 cd WeChatAgent
 npm ci
 npm --prefix packages/dsh-social-bridge-plugin ci
-python -m pip install -r scripts/reader-requirements.txt
+python -m pip install -r scripts/hook-requirements.txt
 node scripts/project-config.mjs
 npm run console:web
 ```
 
 Git 源码不含 Hook 二进制。将同版本 Release 的 Hook 4.1.8.27 附件解压至根目录，保留 components/supplier-hook/4.1.8.27 层级。安装包已内置。项目配置会把桥接和能力插件一同加载到 DSH；不需要另给能力插件注册独立入口。
+
+当前唯一微信接收入口是 `scripts/hook-receiver.py`，通过 Hook 回调接收新消息。项目没有微信数据库读取器、数据库密钥抓取或 SQL 访问；消息缓存和共同记忆来自项目自己的 `state/`。停机期间未收到的消息不能通过查询微信历史补回。详见 [Hook 接入](SUPPLIER_HOOK_41827.md)。
 
 桌面开发构建：`npm run desktop:build` 后运行 WeChatAgent.exe。
 

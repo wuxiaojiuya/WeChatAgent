@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {createRequire} from 'node:module';
+const {assertHookOnlyFiles}=createRequire(import.meta.url)('../apps/console-desktop/hook-only-policy.cjs');
 import {unpackZip} from '../packages/plugin-api/zip.mjs';
 import {inspectPackage,packageFiles} from '../packages/plugin-api/catalog.mjs';
 import {BUNDLED_PLUGINS} from '../packages/plugin-api/bundled.mjs';
@@ -17,6 +19,7 @@ export function sourceHostFiles(root){
   return [...new Set(required)].sort();
 }
 export function assertSourceHostCoverage(root,files){
+  assertHookOnlyFiles(files.filter(file=>fs.existsSync(path.join(root,file))));
   const selected=new Set(files),missing=sourceHostFiles(root).filter(file=>!selected.has(file));
   if(missing.length)throw Error('SOURCE_PLUGIN_HOST_FILES_OMITTED: '+missing.join(', '));
 }

@@ -42,7 +42,7 @@ class MediaInput(unittest.TestCase):
             return self.current_reader.bound_message('wxid_friend', server)
         # Allow a callback to arrive before the local reader is constructed;
         # reader() admits these same original callback envelopes to its inbox.
-        return base.supplier_reader.normalize_callbacks(body, 'wxid_self')[0][1]
+        return base.reader_module.normalize_callbacks(body, 'wxid_self')[0][1]
 
     def quote(self, reader, original, source=None, kind=None):
         text = '<msg><appmsg><type>57</type><title>这个是什么意思</title><refermsg><type>'+str(kind or original['localType'])+'</type><svrid>'+original['serverId']+'</svrid><fromusr>'+(source or original['senderUsername'])+'</fromusr><displayname>引用人</displayname><content>untrusted</content></refermsg></appmsg></msg>'

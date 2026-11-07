@@ -72,7 +72,7 @@ export const VOICE_CODEC_FILES = Object.freeze([
 ]);
 export const VOICE_HOST_FILES = Object.freeze([
   ...VOICE_CODEC_FILES, 'scripts/wechat_voice_input.py', 'scripts/voice-requirements.txt',
-  'scripts/reader-api.py', 'scripts/hook-onebot.mjs', 'scripts/reader-account-state.mjs',
+  'scripts/hook-receiver.py', 'scripts/hook_receiver_core.py', 'scripts/hook-component-check.mjs', 'scripts/hook-onebot.mjs', 'scripts/hook-connection-state.mjs',
   'components/qq-bridge/src/core/voice-ingress.js', 'components/qq-bridge/src/onebot/normalize.js',
   'components/qq-bridge/src/adapters/wechat/wechat-onebot-adapter.js',
   'components/qq-bridge/src/social-bridge.js', 'components/qq-bridge/src/dsh/plugin-client.js',

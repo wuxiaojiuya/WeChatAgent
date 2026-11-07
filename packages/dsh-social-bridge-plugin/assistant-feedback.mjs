@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {formatAssistantTask,assistantProgressText,publicProgressText} from './assistant-tasks.mjs';
-import {activeReaderAccount} from '../../scripts/reader-account-state.mjs';
+import {activeConnection} from '../../scripts/hook-connection-state.mjs';
 import {boundedTask} from './deadline.mjs';
 
 export const FEEDBACK_STAGES=[
@@ -118,7 +118,7 @@ export class AssistantThinkingFeedback{
  * model request or a write to the bridge's incoming chat-history buffer. */
 export class AssistantFeedback{
   constructor({root,now=Date.now}={}){this.root=root;this.now=now;this.inFlight=new Set();this.ledgers=new Map();}
-  ledger(){const account=activeReaderAccount(this.root),scope=account.id||account.legacyId||'legacy';if(this.ledgers.has(scope))return this.ledgers.get(scope);const file=path.join(this.root,'state/assistant-feedback',scope,'state.json');let data={version:1,tasks:{},recent:{}};try{const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>4*1024*1024)throw Error('FEEDBACK_STATE_INVALID');data=JSON.parse(fs.readFileSync(file,'utf8'));if(data.version!==1||!plain(data.tasks)||!plain(data.recent))throw Error('FEEDBACK_STATE_INVALID');}catch(error){if(error.code!=='ENOENT')throw error;}const value={file,data};this.ledgers.set(scope,value);return value;}
+  ledger(){const account=activeConnection(this.root),scope=account.id||account.legacyId||'legacy';if(this.ledgers.has(scope))return this.ledgers.get(scope);const file=path.join(this.root,'state/assistant-feedback',scope,'state.json');let data={version:1,tasks:{},recent:{}};try{const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>4*1024*1024)throw Error('FEEDBACK_STATE_INVALID');data=JSON.parse(fs.readFileSync(file,'utf8'));if(data.version!==1||!plain(data.tasks)||!plain(data.recent))throw Error('FEEDBACK_STATE_INVALID');}catch(error){if(error.code!=='ENOENT')throw error;}const value={file,data};this.ledgers.set(scope,value);return value;}
   persist(ledger){const {file,data}=ledger;for(const id of Object.keys(data.tasks).slice(0,-256))delete data.tasks[id];for(const id of Object.keys(data.recent).slice(0,-500))delete data.recent[id];fs.mkdirSync(path.dirname(file),{recursive:true});const temporary=file+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,JSON.stringify(data),{mode:0o600});fs.renameSync(temporary,file);}
   async generated(job,send,config,ledger,entry,now){
     if(job.state!=='running'||entry.count>=config.maxUpdates||entry.count>0&&now-entry.lastAt<config.intervalSeconds*1000)return false;

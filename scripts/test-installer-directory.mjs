@@ -13,7 +13,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const nsisName = 'nsis-3.0.4.1-nsis-3.0.4.1';
 const caches = [root, path.join(path.dirname(root), 'WeChatAgent')];
 const compiler = caches.map(base => path.join(base, 'state/installer-cache/electron-builder/nsis', nsisName, 'makensis.exe')).find(file => fs.existsSync(file));
-const templates = [path.join(root, 'node_modules/app-builder-lib/templates/nsis'), path.join(root, 'components/WeFlowComplete/node_modules/app-builder-lib/templates/nsis')];
+const templates = [path.join(root, 'node_modules/app-builder-lib/templates/nsis')];
 const templateFile = templates.map(base => path.join(base, 'assistedInstaller.nsh')).find(file => fs.existsSync(file));
 const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
 const ini = (section, values) => '[' + section + ']\r\n' + Object.entries(values).map(([key, value]) => key + '=' + value).join('\r\n') + '\r\n';
@@ -32,7 +32,11 @@ test('the installer has one native root selector and validates before uninstalli
   const include = fs.readFileSync(path.join(root, 'apps/console-desktop/installer-storage.nsh'), 'utf8');
   assert(!/Page custom|CreateDirRequest|SelectFolderDialog|WcaStoragePage/.test(include));
   assert.match(include, /StrCpy \$0 \$mui\.DirectoryPage\.Directory\s+System::Call 'user32::GetWindowTextW/);
-  assert.match(fs.readFileSync(path.join(root, 'scripts/build-installer.mjs'), 'utf8'), /singleDirectoryTemplate\(assisted\)/);
+  const installer=fs.readFileSync(path.join(root,'scripts/build-installer.mjs'),'utf8');
+  assert.match(installer,/import ['"]\.\/build-supplier-installer\.mjs['"]/);assert.doesNotMatch(installer,/singleDirectoryTemplate|Platform\.WINDOWS|wechatVersion:/);
+  const supplier=fs.readFileSync(path.join(root,'scripts/build-supplier-installer.mjs'),'utf8');
+  assert.match(supplier,/singleDirectoryTemplate\(fs\.readFileSync\(path\.join\(customNsis,'assistedInstaller\.nsh'\)/);
+  assert.match(supplier,/wechatVersion:'4\.1\.8\.27',hookBackend:'supplier-http'/);
 });
 
 test('compiled NSIS storage selection preserves upgrades and derives both folders from one root', {

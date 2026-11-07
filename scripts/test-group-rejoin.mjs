@@ -25,7 +25,7 @@ test('the real session CLI keeps the same key and persona after a group changes 
   });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));assert(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(root,{recursive:true,force:true});});
   const port=server.address().port;
-  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:'+port,reader_token:'fixture'}));fs.writeFileSync(path.join(root,'state/social-dsh-token.txt'),'fixture');
+  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:'+port,receiver_token:'fixture'}));fs.writeFileSync(path.join(root,'state/social-dsh-token.txt'),'fixture');
   fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify({ports:{dshPlugin:port},wechat:{whitelist:{private:[],groups:['123']}},persona:{default:'fixture',chats:{'wechat:group:123':'fixture'}}}));
   const run=()=>new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[path.join(root,'scripts/manage-dsh-sessions.mjs'),'configure','wechat:group:123'],{windowsHide:true});let output='',errors='';

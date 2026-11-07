@@ -5,7 +5,10 @@ import pathlib
 import tempfile
 import time
 import unittest
-from wechat_files import FILE_TYPE, FileCatalog, file_policy, parse_file_message
+from wechat_files import FILE_TYPE, file_policy, parse_file_message
+from supplier_reader import SupplierFiles
+from types import SimpleNamespace
+from unittest.mock import patch
 
 KEY, SENDER = 'wechat:group:123', 'wxid_fixture'
 
@@ -15,17 +18,31 @@ class Files(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
         self.account = self.root / 'account'
-        (self.account / 'msg/file/2026-10').mkdir(parents=True)
+        self.account.mkdir(parents=True)
         (self.root / 'config').mkdir()
         self.config = {'wechat': {'whitelist': {'groups': ['123'], 'private': []}, 'workModes': {KEY: 'assistant'}, 'assistant': {'administrators': [SENDER], 'fileTransferChats': {KEY: True}}}}
         self.save()
-        self.catalog = FileCatalog(self.root, self.account)
+        self.active, self.download = True, b'file proof'
+        def exact(talker, record):
+            self.assertEqual(talker, 'fixture@chatroom')
+            return {'fullText': '<msg><appmsg><type>6</type><title>报告.txt</title><appattach><attachid>fixture-only</attachid></appattach></appmsg></msg>'}
+        def post(route, body):
+            self.assertEqual(route, '/api/download_file')
+            if self.download is not None:
+                pathlib.Path(body['path']).write_bytes(self.download)
+            return {'code': 1}
+        self.reader = SimpleNamespace(root=self.root, account=self.account,
+            sticker_account_active=lambda: self.active, exact_message=exact, api=SimpleNamespace(post=post))
+        patcher = patch('supplier_reader.runtime_directory', return_value=self.root/'runtime')
+        patcher.start();self.addCleanup(patcher.stop)
+        self.catalog = SupplierFiles(self.reader)
 
     def save(self):
         (self.root / 'config/wechatagent.json').write_text(json.dumps(self.config), encoding='utf-8')
 
     def info(self, data=b'file proof'):
-        return {'name': '报告.txt', 'size': len(data), 'md5': hashlib.md5(data).hexdigest()}
+        return {'name': '报告.txt', 'size': len(data), 'md5': hashlib.md5(data).hexdigest(),
+                'talker': 'fixture@chatroom', 'serverId': '1234567890123456789'}
 
     def remember(self, info=None):
         return self.catalog.remember({'rawid': 'a' * 64, 'talkerId': SENDER, 'timestamp': int(time.time()), 'file': info or self.info()}, KEY)
@@ -42,16 +59,15 @@ class Files(unittest.TestCase):
 
     def test_real_file_is_verified_and_catalog_survives_restart(self):
         data = b'file proof'
-        target = self.account / 'msg/file/2026-10/报告.txt'
-        target.write_bytes(data)
         self.remember()
-        restarted = FileCatalog(self.root, self.account)
+        restarted = SupplierFiles(self.reader)
         result = restarted.resolve('a' * 64, KEY, SENDER)
         self.assertEqual(result['status'], 'ready')
         self.assertEqual(result['sha256'], hashlib.sha256(data).hexdigest())
-        self.assertEqual(pathlib.Path(result['path']), target)
+        self.assertEqual(pathlib.Path(result['path']), self.root/'runtime/incoming-files'/('a'*64+'.txt'))
 
     def test_not_downloaded_returns_immediately_and_unauthorized_refs_are_rejected(self):
+        self.download = None
         self.remember()
         started = time.monotonic()
         self.assertEqual(self.catalog.resolve('a' * 64, KEY, SENDER)['status'], 'not_downloaded')
@@ -64,15 +80,14 @@ class Files(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.catalog.resolve('a' * 64, KEY, SENDER)
 
-    def test_wrong_digest_and_ambiguous_filenames_are_not_substituted(self):
-        (self.account / 'msg/file/2026-10/报告.txt').write_bytes(b'wrong data')
+    def test_wrong_download_digest_cannot_be_replaced_by_old_client_files(self):
+        legacy = self.account/'msg/file'
+        legacy.mkdir(parents=True)
+        (legacy/'报告.txt').write_bytes(b'file proof')
+        self.download = b'wrong data'
         self.remember()
-        self.assertEqual(self.catalog.resolve('a' * 64, KEY, SENDER)['status'], 'integrity_failed')
-        info = self.info();info['md5'] = ''
-        self.remember(info)
-        folder = self.account / 'msg/file/other';folder.mkdir()
-        (folder / '报告.txt').write_bytes(b'wrong data')
-        self.assertEqual(self.catalog.resolve('a' * 64, KEY, SENDER)['status'], 'ambiguous')
+        with self.assertRaisesRegex(RuntimeError, 'FILE_INTEGRITY_FAILED'):
+            self.catalog.resolve('a'*64, KEY, SENDER)
 
     def test_group_open_mode_does_not_open_private_or_unselected_chats(self):
         w = self.config['wechat'];w['assistant']['adminOnlyGroups'] = {KEY: False}
@@ -81,7 +96,7 @@ class Files(unittest.TestCase):
         self.assertFalse(file_policy(self.config, 'wechat:group:999', SENDER))
 
     def test_account_change_and_cache_junctions_fail_closed(self):
-        self.remember();self.catalog.active = lambda: False
+        self.remember();self.active = False
         with self.assertRaises(PermissionError):
             self.catalog.resolve('a' * 64, KEY, SENDER)
 

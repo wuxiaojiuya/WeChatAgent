@@ -26,7 +26,7 @@ TTS 与 RVC 使用各自独立的 Python 3.11 环境；分离依赖放在 RVC �
 模型从原发布方下载，保留许可、校验文件并记录实际下载版本。
 已有安装先检查和复用，不覆盖我的账号配置、模型或 API Key。
 
-不要把 TTS、RVC、微信读取器的 Python 环境混装。优先使用设置页一键安装；只需 TTS 和 RVC；升级清理已停用的旧演唱环境，保留用户上传的音色。
+不要把 TTS、RVC、Hook 消息接收服务的 Python 环境混装。微信仅使用 4.1.8.27 Hook 回调和专用 API，不安装数据库读取器或抓取数据库密钥。优先使用设置页一键安装；只需 TTS 和 RVC；升级清理已停用的旧演唱环境，保留用户上传的音色。
 WeChatAgent 负责设置、密钥、任务、微信收发和环境安装，DSH 能力插件负责执行，DSH 中的 AI 负责决策和编排。
 通过项目现有桥接插件安装流程加载能力插件，不另外手动注册第二个插件；确认 DSH 指向当前数据工作区并保持运行。
 不要仅凭 pip 安装成功或 HTTP health 成功就报告完成。
@@ -51,7 +51,7 @@ WeChatAgent 负责设置、密钥、任务、微信收发和环境安装，DSH �
 | Git | 可在子进程的 PATH 中执行，用于固定源码和运行期校验 |
 | 音频 Python | TTS 与 RVC 各自独立的 Python 3.11 x64 环境；维护机为 3.11.18 |
 | DSH | 独立安装 DSH Desktop，配置可用的对话模型，加载当前项目桥接插件包及其自动配置的能力插件 |
-| 微信读取器 Python | 源码安装按 QUICK_START 使用独立 Python 3.13，依赖见 `scripts/reader-requirements.txt` |
+| Hook 接收服务 Python | 源码安装按 QUICK_START 使用独立 Python 3.13，依赖见 `scripts/hook-requirements.txt`；入口为 `scripts/hook-receiver.py` |
 | PyTorch | CPU 构建；TTS 与 RVC 的版本不同，见下一节 |
 | FFmpeg | 需要真实 `ffmpeg.exe`；翻唱优先使用 `imageio-ffmpeg` 提供的程序，缺少该依赖时使用 `C:/ffmpeg-tools/bin/ffmpeg.exe` |
 | 内存 | 建议 16 GB 或以上；这是部署建议，不是已认证的最低要求 |

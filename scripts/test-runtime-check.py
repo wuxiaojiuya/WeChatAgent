@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -30,10 +32,10 @@ class RuntimeCheck(unittest.TestCase):
         self.manifest_file = self.folder / 'files.sha256.json'
         self.manifest_file.write_text(json.dumps(self.manifest))
 
-    def test_supplier_passes_without_legacy_key_and_does_not_execute_hook(self):
+    def test_supplier_passes_without_database_components_and_does_not_execute_hook(self):
         with patch.object(check.subprocess, 'run', side_effect=AssertionError('must not launch')):
             check.verify_hook_components(self.root)
-        self.assertFalse((self.root / 'components/weflow-cli/resources/key/win32/x64/wx_key.dll').exists())
+        self.assertEqual(sorted(item.name for item in (self.root / 'components').iterdir()), ['supplier-hook'])
 
     def test_missing_hook_has_precise_error(self):
         (self.folder / 'libGLESv1.dll').unlink()
@@ -53,17 +55,25 @@ class RuntimeCheck(unittest.TestCase):
 
     def test_unsupported_supplier_version_does_not_pass(self):
         self.config.write_text(json.dumps({'hook': {'backend': 'supplier-http', 'expectedVersion': '4.1.10.27'}}))
-        with self.assertRaisesRegex(RuntimeError, 'version unsupported'):
+        with self.assertRaisesRegex(RuntimeError, 'Only the bundled WeChat 4.1.8.27 Hook is supported'):
             check.verify_hook_components(self.root)
 
-    def test_legacy_backend_still_requires_key_component(self):
-        self.config.write_text(json.dumps({'hook': {'backend': 'wechat-hook'}}))
-        with self.assertRaisesRegex(RuntimeError, 'Reader key component missing'):
-            check.verify_hook_components(self.root)
-        key = self.root / 'components/weflow-cli/resources/key/win32/x64/wx_key.dll'
-        key.parent.mkdir(parents=True)
-        key.write_bytes(b'fixture-only')
-        check.verify_hook_components(self.root)
+    def test_other_backends_are_rejected_without_fallback(self):
+        for hook in ({'backend': 'wechat-hook'}, {'backend': 'anything', 'expectedVersion': '4.1.8.27'}, {}):
+            with self.subTest(hook=hook):
+                self.config.write_text(json.dumps({'hook': hook}))
+                with self.assertRaisesRegex(RuntimeError, 'Only the bundled WeChat 4.1.8.27 Hook is supported'):
+                    check.verify_hook_components(self.root)
+
+    def test_receiver_runtime_probe_does_not_require_a_connection(self):
+        entry = pathlib.Path(__file__).with_name('hook-receiver.py')
+        result = subprocess.run([sys.executable, '-B', str(entry), '--check-runtime'], cwd=self.root,
+                                capture_output=True, text=True, encoding='utf-8', timeout=20,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'ok': True, 'receiverReady': True,
+                                                    'backend': 'supplier-http', 'wechatVersion': '4.1.8.27'})
+        self.assertFalse((self.root / 'state').exists())
 
 
 if __name__ == '__main__':

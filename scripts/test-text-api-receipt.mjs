@@ -32,7 +32,7 @@ function fixture(t,{backend='supplier-http',reply=acknowledged,rows,forbidMessag
     hook:{backend,baseUrl:'http://127.0.0.1:30001',expectedVersion:version,requestTimeoutMs:1000},
     wechat:{whitelist:{private:[target],groups:[]}}};
   fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));
-  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:5031',reader_token:'isolated-fixture'}));
+  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:5031',receiver_token:'isolated-fixture'}));
   fs.writeFileSync(path.join(root,'state/hook/native-token.txt'),'a'.repeat(64));
   const sent=[],requests=[];let messageReads=0;
   const fetchImpl=async(url,init)=>{
@@ -40,7 +40,7 @@ function fixture(t,{backend='supplier-http',reply=acknowledged,rows,forbidMessag
     if(route==='/WeChatAgent/health')body={integration:supplier?'WeChatAgent-supplier-v1':'WeChatAgent-1',
       backend:'wechat-hook',...(supplier?{provider:'supplier-http'}:{profile:'4.1.15.13-text-v1'}),
       version,startupState:'ready',nativeTextSend:true,databaseAccounts:[account]};
-    else if(route==='/api/v1/reader/status')body={backend:supplier?'supplier-http':'weflow-cli-nt',ownWxid:account,accountDirectory:account};
+    else if(route==='/api/v1/receiver/status')body={backend:supplier?'supplier-http':'weflow-cli-nt',ownWxid:account,accountDirectory:account};
     else if(route==='/api/v1/sessions')body={sessions:[{username:peer,displayName:'Fixture peer'}]};
     else if(route==='/api/v1/messages'){
       messageReads++;assert.equal(forbidMessages,false,'ordinary supplier text must not require the message database');
@@ -124,13 +124,6 @@ test('pre-upgrade unknown, accepted and interrupted submissions without a server
   }
 });
 
-test('a pre-upgrade unknown submission can still be confirmed by its exact real database server receipt',async t=>{
-  const f=fixture(t,{forbidMessages:false,rows:()=>[{localId:51,serverId:'123456789',isSend:true,localType:1,createTime:Math.floor(Date.now()/1000),fullText:text}]}),id=hash('legacy-real-server');
-  const key=f.adapter.textDeliveries.key('private',target,id,text);
-  f.adapter.textDeliveries.put({version:1,key,deliveryId:id,account,wxid:peer,text,baseline:[],startedAt:Date.now(),state:'unconfirmed'});
-  assert.deepEqual(await f.adapter.send('private',target,text,id),{message_id:51,receipt:'wechat-server-id',delivered:'database-confirmed'});
-  assert.equal(f.sent.length,0);assert(f.messageReads>0);
-});
 
 test('a transport timeout stays unknown across restart and never submits the operation twice',async t=>{
   const f=fixture(t,{reply:()=>{throw Object.assign(new Error('isolated fixture deadline'),{name:'TimeoutError'});},forbidMessages:false,rows:()=>[]}),id=hash('api-timeout');
@@ -187,18 +180,7 @@ test('a corrupt text confirmation mode fails closed instead of falling back to S
   assert.equal(f.sent.length,0);assert.equal(f.messageReads,0);
 });
 
-test('project-native text keeps database confirmation rather than acquiring a supplier API receipt',async t=>{
-  const f=fixture(t,{backend:'project-native',reply:{ret:0}}),id=hash('native-still-database');
-  assert.deepEqual(await f.adapter.send('private',target,text,id),{message_id:51,receipt:'wechat-server-id',delivered:'database-confirmed'});
-  assert(f.messageReads>=2);assert.equal(f.sent.length,1);
-});
 
-test('project-native acceptance without a database receipt remains unknown and is not resent',async t=>{
-  const f=fixture(t,{backend:'project-native',reply:{ret:0},rows:()=>[]}),id=hash('native-no-database');
-  await assert.rejects(f.adapter.send('private',target,text,id),/TEXT_DELIVERY_UNCONFIRMED/);
-  await assert.rejects(f.rebuild().send('private',target,text,id),/TEXT_DELIVERY_UNCONFIRMED/);
-  assert.equal(f.sent.length,1);assert(f.messageReads>=2);
-});
 
 function downstream(f){
   const adapter=new WechatOneBotAdapter();
@@ -272,29 +254,13 @@ test('a fresh incoming message blocks proactive submission even when API text ac
   assert.equal(f.messageReads,1);assert.equal(f.sent.length,0);
 });
 
-test('a subsequent proactive part may bind only the unique exact server row of its preceding API receipt',async t=>{
+test('subsequent proactive parts use their persisted API context without send-row matching',async t=>{
   const f=fixture(t,{forbidMessages:false}),proactive=enableProactive(f),firstId=hash('proactive-first');
   await f.adapter.send('private',target,text,firstId,proactive);
   const second=await f.adapter.send('private',target,text+' second',hash('proactive-second'),{...proactive,precedingDeliveryId:firstId});
   assert.equal(second.receipt,'supplier-api');assert.equal(f.sent.length,2);assert.equal(f.messageReads,2);
 });
 
-test('ambiguous, unconfirmed or changed recent rows prevent a later proactive part',async t=>{
-  for(const variant of ['duplicate','no-server-id','other-incoming']){
-    await t.test(variant,async t=>{
-      const f=fixture(t,{forbidMessages:false,rows:sent=>{
-        if(!sent.length)return [];
-        const row={localId:51,serverId:'123456789',isSend:true,localType:1,createTime:Math.floor(Date.now()/1000),fullText:sent[0].msg};
-        if(variant==='duplicate')return [row,{...row,localId:52}];
-        if(variant==='no-server-id')return [{...row,serverId:'0'}];
-        return [row,{...row,localId:52,isSend:false,fullText:'new fixture incoming'}];
-      }}),proactive=enableProactive(f),firstId=hash('proactive-guard-'+variant);
-      await f.adapter.send('private',target,text,firstId,proactive);
-      await assert.rejects(f.adapter.send('private',target,text+' second',hash('proactive-blocked-'+variant),{...proactive,precedingDeliveryId:firstId}),/PROACTIVE_CONTEXT_CHANGED/);
-      assert.equal(f.sent.length,1);assert.equal(f.messageReads,2);
-    });
-  }
-});
 
 test('an API receipt from a different proactive context cannot exempt a recent row',async t=>{
   const f=fixture(t,{forbidMessages:false}),proactive=enableProactive(f),firstId=hash('proactive-old-context');
@@ -302,17 +268,4 @@ test('an API receipt from a different proactive context cannot exempt a recent r
   const next=enableProactive(f,[{id:'changed',message_id:'changed',timestamp:1}]);
   await assert.rejects(f.adapter.send('private',target,text+' second',hash('proactive-cross-context'),{...next,precedingDeliveryId:firstId}),/INVALID_PROACTIVE_CONTEXT/);
   assert.equal(f.sent.length,1);
-});
-
-test('a preceding API receipt cannot silently rebind to a different SQL message after restart',async t=>{
-  let localId=51;
-  const f=fixture(t,{forbidMessages:false,rows:sent=>sent.length?[{localId,serverId:'123456789',isSend:true,localType:1,createTime:Math.floor(Date.now()/1000),fullText:text}]:[]});
-  const proactive=enableProactive(f),firstId=hash('proactive-stable-binding');
-  await f.adapter.send('private',target,text,firstId,proactive);
-  await f.adapter.send('private',target,text+' second',hash('proactive-bind-second'),{...proactive,precedingDeliveryId:firstId});
-  const key=f.adapter.textDeliveries.key('private',target,firstId,text);
-  assert.equal(f.adapter.textDeliveries.get(key).candidateId,'51');
-  localId=52;
-  await assert.rejects(f.rebuild().send('private',target,text+' third',hash('proactive-bind-third'),{...proactive,precedingDeliveryId:firstId}),/PROACTIVE_CONTEXT_CHANGED/);
-  assert.equal(f.sent.length,2);assert.equal(f.adapter.textDeliveries.get(key).candidateId,'51');
 });

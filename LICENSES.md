@@ -5,16 +5,14 @@
 | 内容 | 来源与范围 |
 | --- | --- |
 | Bridge 运行子集 | [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge)，MIT；完整通知见 [组件 LICENSE](components/qq-bridge/LICENSE)；裁剪与修改说明见该目录 README |
-| NT 数据库读取源码子集 | [zhuobichen/weflow-cli](https://github.com/zhuobichen/weflow-cli)，MIT；完整通知见 [组件 LICENSE](components/weflow-cli/LICENSE)；来源提交与修改范围见该目录 README |
-| scripts/wechat_media.py | 同一 weflow-cli 来源版本中媒体辅助函数的复用，保留文件头来源说明和对应 MIT 通知 |
-| scripts/wechat_sticker.py | 本项目新增绑定和下载逻辑；缓存布局及 CBC 约定参考同一 MIT 上游，保留来源说明 |
+| 保留的媒体辅助与表情解码约定 | [zhuobichen/weflow-cli](https://github.com/zhuobichen/weflow-cli)，固定来源提交 `3d56da9b91ab46f610ca811029e5782c528a58ec`，MIT；完整通知见 [保留的 MIT 许可](docs/licenses/weflow-cli-MIT.txt)。数据库读取组件与凭据提取代码已移除 |
+| scripts/wechat_media.py | 保留并整理的纯 MIME/消息标识辅助函数，不含客户端目录发现或数据库访问 |
+| scripts/wechat_sticker.py | 本项目新增绑定和下载逻辑；AES-CBC 解码约定参考上述 MIT 上游，保留文件头来源说明和许可通知，不扫描微信缓存 |
 | packages/voice-codec/silk-wasm | [idranme/silk-wasm](https://github.com/idranme/silk-wasm)，固定 npm 3.7.1 最小运行载荷；MIT，保留 LICENSE、版本来源和逐文件 SHA-256（PROVENANCE.json） |
 | imageio-ffmpeg | 独立安装的 Python 包，BSD-2-Clause；其 FFmpeg 程序按构建自带许可使用，本源码副本不分发二进制，见 [包元数据](https://pypi.org/project/imageio-ffmpeg/0.6.0/) |
 | yt-dlp | [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)，固定 2026.10.26；解析抖音视频元数据。PyPI 源码按 Unlicense；可选依赖适用各自许可，源代码及包保留其许可证。项目不分发平台视频内容 |
 | 有权独立授权的本项目新增代码、桌面界面及已授权人格预设 | 依根目录许可的适用范围，不扩大到维护者无权授权的内容 |
 | 安装时获取的 SDK 和 Python 包 | 各自原许可与依赖声明；副本不包含 node_modules 或解释器环境 |
-| SoulX 演唱及预处理源码 | [Soul-AILab/SoulX-Singer](https://github.com/Soul-AILab/SoulX-Singer)，Apache-2.0；安装器从固定提交获取并保留 LICENSE，版本及摘要见 `scripts/audio-runtime-manifest.json`、`scripts/soulx-assets.json` |
-| SoulX 演唱与预处理模型 | 从 Soul-AILab 官方 Hugging Face 仓库按固定版本下载；不存入 Git 仓库或项目下载服务器，使用遵循各模型仓库声明 |
 
 独立预部署 CPU 依赖包包含 Python、Git 和第三方 Python 库，保留原许可文件与包元数据；不包含私有音色、歌曲、生成音频或模型权重。包内 `DEPENDENCIES.json` 记录实际依赖版本。
 

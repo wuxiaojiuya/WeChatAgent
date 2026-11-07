@@ -55,8 +55,8 @@ export function createMemeLibrary({ctx,root,fetchImpl=fetch,download=safeDownloa
   async function readerImageRequest(route,key,raw,description,tags,signal){
     check(key);if(!Buffer.isBuffer(raw)||!raw.length||raw.length>MAX_IMAGE)throw Error('MEME_INVALID_IMAGE');signal?.throwIfAborted();
     const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,''));
-    const base=new URL(io.reader_base_url);if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw Error('MEME_READER_LOOPBACK_REQUIRED');
-    const response=await fetchImpl(base.origin+'/api/v1/stickers/'+route,{method:'POST',headers:{authorization:'Bearer '+io.reader_token,'content-type':'application/json'},body:JSON.stringify({conversationKey:key,b64:raw.toString('base64'),description:clean(description),tags:tags.map(tag=>clean(tag,16)).filter(Boolean).slice(0,6)}),redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(25000),...(signal?[signal]:[])])});
+    const base=new URL(io.receiver_base_url);if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw Error('MEME_READER_LOOPBACK_REQUIRED');
+    const response=await fetchImpl(base.origin+'/api/v1/stickers/'+route,{method:'POST',headers:{authorization:'Bearer '+io.receiver_token,'content-type':'application/json'},body:JSON.stringify({conversationKey:key,b64:raw.toString('base64'),description:clean(description),tags:tags.map(tag=>clean(tag,16)).filter(Boolean).slice(0,6)}),redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(25000),...(signal?[signal]:[])])});
     const result=JSON.parse((await bytes(response,route==='inspect'?1100000:8192)).toString('utf8'));signal?.throwIfAborted();check(key);return result;
   }
   async function prepare(key,raw,description,tags,signal){

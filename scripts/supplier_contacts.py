@@ -77,7 +77,7 @@ def _contact(row, error):
 def load_contacts(api, own_wxid):
     """Return names, confirmed private friends, and friendship metadata error."""
     error = 'HOOK_CONTACTS_RESPONSE_INVALID'
-    rows = _rows(api.post('/api/get_frien_lists'), ('data', 'list', 'friends', 'friendList', 'contacts'), error)
+    rows = _rows(api.post('/api/get_frien_lists'), ('data', 'list', 'friends', 'friendList', 'contacts', 'contact_list'), error)
     names, friends, incomplete = {}, {}, False
     for row in rows:
         parsed = _contact(row, error)

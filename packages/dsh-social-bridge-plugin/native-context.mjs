@@ -1,7 +1,7 @@
 import {AssistantNotifications} from './assistant-notifications.mjs';
 import {AssistantTasks,ASSISTANT_CONTROLLER,liveTask,taskFault,assistantHelp,formatAssistantTask} from './assistant-tasks.mjs';
 import {createAssistantControl} from './assistant-control.mjs';
-import { activeReaderAccount } from '../../scripts/reader-account-state.mjs';
+import { activeConnection } from '../../scripts/hook-connection-state.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -154,8 +154,8 @@ function createNativeRuntime(ctx, config={}) {
   const instanceId=crypto.randomUUID(),instanceStartedAt=Date.now();
   const disposeToolOrigins=trackToolOrigins(ctx);
   const root = config.projectRoot ? path.resolve(config.projectRoot) : path.resolve(import.meta.dirname,'..','..');
-  const loadedAccount = activeReaderAccount(root);
-  const accountReady = () => activeReaderAccount(root).id === loadedAccount.id;
+  const loadedAccount = activeConnection(root);
+  const accountReady = () => activeConnection(root).id === loadedAccount.id;
   const chatInputAllowed=(key,sender)=>readWorkMode(root,key)==='assistant'&&assistantGroupChatAllowed(JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8')).wechat,key,sender??'');
   const acceptsInput=(key,sender)=>internalGroupChat?chatInputAllowed(key,sender):assistantSenderAllowed(JSON.parse(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8')).wechat,key,sender);
   const chatCwd=internalGroupChat?path.join(root,'state/assistant-group-chat',loadedAccount.id||loadedAccount.legacyId||'legacy','workspace'):null;

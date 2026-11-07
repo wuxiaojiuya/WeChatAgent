@@ -21,7 +21,7 @@ test('native image admission verifies authenticated source, integrity and conver
   const server=http.createServer((req,res)=>{assert.equal(req.headers.authorization,'Bearer fixture-reader-token');res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({imageId:id,conversationKey:target,b64:bytes.toString('base64'),mime:'image/jpeg',sha256:crypto.createHash('sha256').update(bytes).digest('hex')}));});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   t.after(async()=>{await new Promise(r=>server.close(r));fs.rmSync(dir,{recursive:true,force:true});});
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${server.address().port}`,reader_token:'fixture-reader-token'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${server.address().port}`,receiver_token:'fixture-reader-token'}));
   const services={llm:{resolveModelInfo:async()=>({inputModalities:['text','image']})},attachments:{saveImage:async image=>{saved.push(image);return {attachmentId:'sha256:fixture',mediaType:image.mediaType};}}};
   const ctx={get:name=>services[name]};
   const blocks=await imageBlocks(ctx,dir,key,[{id}],'fixture-provider','fixture-model');
@@ -32,7 +32,7 @@ test('native image admission verifies authenticated source, integrity and conver
 
 test('thumbnail-only input is explicitly labelled without discarding other images or admitting private source metadata',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-image-quality-'));fs.mkdirSync(path.join(dir,'state'));
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture'}));
   const ids=['a','b'].map(value=>value.repeat(64)),bytes=Buffer.from('fixture'),original=globalThis.fetch,saved=[];
   t.after(()=>{globalThis.fetch=original;assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});});
   globalThis.fetch=async url=>({ok:true,json:async()=>({imageId:url.split('/').at(-1),conversationKey:'wechat:private:123',mime:'image/jpeg',
@@ -55,7 +55,7 @@ test('reader failures preserve safe image codes without forwarding arbitrary res
   const server=http.createServer((_req,res)=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error,detail:'fixture-private-detail'}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));const resolved=path.resolve(dir);assert(resolved.startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(resolved,{recursive:true,force:true});});
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${server.address().port}`,reader_token:'fixture-token'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${server.address().port}`,receiver_token:'fixture-token'}));
   const ctx={get:name=>name==='llm'?{resolveModelInfo:async()=>({inputModalities:['image']})}:{saveImage:async()=>{throw Error('must not save failed data');}}};
   await assert.rejects(imageBlocks(ctx,dir,'wechat:private:123',[{id:'a'.repeat(64)}],'fixture','fixture'),failure=>failure.message==='IMAGE_READER_NOT_READY'&&failure.imageError==='IMAGE_DEPENDENCY_MISSING'&&!failure.message.includes('fixture-private-detail'));
   error='fixture-private-error';
@@ -72,7 +72,7 @@ test('one missing or timed-out sticker keeps other images and preserves their pr
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(dir,{recursive:true,force:true});});
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${server.address().port}`,reader_token:'fixture-token'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${server.address().port}`,receiver_token:'fixture-token'}));
   const services={llm:{resolveModelInfo:async()=>({inputModalities:['image']})},attachments:{saveImage:async()=>({attachmentId:'sha256:fixture'})}},ctx={get:name=>services[name]};
   const blocks=await imageBlocks(ctx,dir,'wechat:private:123',ids.map(id=>({id})),'fixture','fixture',{onUnavailable:item=>failures.push(item)});
   assert.deepEqual(blocks.map(block=>block.type),['text','image']);assert.match(blocks[0].text,/I1 读取失败/);assert.equal(failures[0].code,'IMAGE_STICKER_LOCAL_COPY_UNAVAILABLE');
@@ -83,7 +83,7 @@ test('one missing or timed-out sticker keeps other images and preserves their pr
 
 test('two image workers preserve order and fast later images survive a slow first image',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-image-concurrency-'));fs.mkdirSync(path.join(dir,'state'));
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture'}));
   const ids=['a','b','c','d'].map(x=>x.repeat(64)),original=globalThis.fetch;let active=0,max=0;
   t.after(()=>{globalThis.fetch=original;assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});});
   globalThis.fetch=async url=>{const id=url.split('/').at(-1);active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,id===ids[0]?100:5));active--;const bytes=Buffer.from(id);return {ok:true,json:async()=>({imageId:id,conversationKey:'wechat:private:123',mime:'image/png',b64:bytes.toString('base64'),sha256:crypto.createHash('sha256').update(bytes).digest('hex')})};};
@@ -94,7 +94,7 @@ test('two image workers preserve order and fast later images survive a slow firs
 
 test('a noncooperative fetch or attachment store cannot retain the image admission lock',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-image-hang-'));fs.mkdirSync(path.join(dir,'state'));
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture'}));
   const original=globalThis.fetch,id='a'.repeat(64),bytes=Buffer.from('fixture');
   t.after(()=>{globalThis.fetch=original;assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});});
   const services={llm:{resolveModelInfo:async()=>({inputModalities:['image']})},attachments:{saveImage:()=>new Promise(()=>{})}},ctx={get:name=>services[name]};
@@ -119,7 +119,7 @@ test('a text-only model rejects image bytes but still admits a truthful text pla
 
 test('invalid binding and integrity drop the image without poisoning later text admission',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-image-reject-'));fs.mkdirSync(path.join(dir,'state'));
-  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture'}));
+  fs.writeFileSync(path.join(dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture'}));
   const id='a'.repeat(64),bytes=Buffer.from('fixture'),original=globalThis.fetch;let saved=0;
   t.after(()=>{globalThis.fetch=original;assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});});
   const ctx={get:name=>name==='llm'?{resolveModelInfo:async()=>({inputModalities:['image']})}:{saveImage:async()=>{saved++;}}};

@@ -24,8 +24,8 @@ test('console discovers only friends and resolves allowed names before any messa
   const write=(relative,value)=>{const file=path.join(root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify(value));};
   write('config/wechatagent.json',config);fs.mkdirSync(path.join(root,'roles'));
   fs.writeFileSync(path.join(root,'roles',config.persona.default+'.md'),'Fixture persona');
-  write('state/wechat-io-config.json',{self_wxid:'wxid_self',reader_token:'fixture-contacts-token'});
-  write('state/weflow/active-account.json',{id:'a'.repeat(64)});
+  write('state/wechat-io-config.json',{self_wxid:'wxid_self',receiver_token:'fixture-contacts-token'});
+  write('state/hook/active-connection.json',{id:'a'.repeat(64)});
   const calls=[];let offline=false,name='新好友昵称';
   const app=createConsole({root,port:0,fetchImpl:async(input,options)=>{
     if(offline)throw Error('offline');
@@ -42,7 +42,7 @@ test('console discovers only friends and resolves allowed names before any messa
   name='新备注';assert.equal((await get('/api/chats')).chats[0].name,name);
   assert(calls.some(url=>url.searchParams.get('selected')==='1'&&url.searchParams.get('refresh')==='1'));
   offline=true;assert.equal((await get('/api/chats')).chats[0].name,name);
-  write('state/weflow/active-account.json',{id:'b'.repeat(64)});
+  write('state/hook/active-connection.json',{id:'b'.repeat(64)});
   assert.equal((await get('/api/chats')).chats[0].name,''); // Never reuse A's name cache in account B.
   assert.equal((await fetch(base+'/api/contacts')).status,401);
 });

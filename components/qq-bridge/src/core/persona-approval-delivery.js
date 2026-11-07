@@ -14,7 +14,7 @@ export function createPersonaApprovalDelivery({root,adapter,settingsFor,isReady,
         if(!ready())break;
         if(!assistantSenderAllowed(settingsFor(),'wechat:private:'+notice.target,notice.wxid))continue;
         const receipt=await adapter.sendText({kind:'private',target:notice.target,text:notice.text,deliveryId:notice.id});
-        const confirmed=receipt?.confirmed===true||receipt?.accepted===true&&receipt?.delivered==='database-confirmed'&&receipt?.response?.data?.receipt==='wechat-server-id';
+        const confirmed=receipt?.confirmed===true||receipt?.accepted===true&&receipt?.apiAcknowledged===true&&receipt?.delivered==='api-acknowledged';
         if(!confirmed)break;
         if(!ready())break;
         await request('/api/persona-proposals/ack',{id:notice.id});

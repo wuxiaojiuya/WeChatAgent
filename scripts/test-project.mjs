@@ -7,10 +7,10 @@ import { prepare, validateConfig, projectRoot } from './project-config.mjs';
 const example = JSON.parse(fs.readFileSync(path.join(projectRoot, 'config', 'wechatagent.example.json'), 'utf8'));
 validateConfig(example);
 assert.deepEqual(example.wechat.whitelist, { groups: [], private: [] });
-assert.throws(() => validateConfig({ ...example, ports: { ...example.ports, onebot: example.ports.weflow } }), /distinct/);
+assert.throws(() => validateConfig({ ...example, ports: { ...example.ports, onebot: example.ports.receiver } }), /distinct/);
 assert.throws(() => validateConfig({ ...example, persona: { default: '../bad' } }), /persona/);
-assert.throws(() => validateConfig({ ...example, hook: { ...example.hook, baseUrl: 'http://0.0.0.0:30001' } }), /loopback/);
-assert.throws(() => validateConfig({ ...example, hook: { ...example.hook, expectedVersion: '4.1.15.56' } }), /matching/);
+assert.throws(() => validateConfig({ ...example, hook: { ...example.hook, baseUrl: 'http://0.0.0.0:30001' } }), /managed/);
+assert.throws(() => validateConfig({ ...example, hook: { ...example.hook, expectedVersion: '4.1.15.56' } }), /4\.1\.8\.27/);
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'WeChatAgent portable '));
 try {
   fs.mkdirSync(path.join(fixture, 'config')); fs.mkdirSync(path.join(fixture, 'roles'));
@@ -64,15 +64,15 @@ try {
   const token = fs.readFileSync(path.join(fixture, 'state', 'social-dsh-token.txt'), 'utf8');
   prepare(fixture); assert.equal(fs.readFileSync(path.join(fixture, 'state', 'social-dsh-token.txt'), 'utf8'), token);
   assert(!JSON.stringify(example).includes(token));
-  const settingsFile = path.join(fixture, 'state', 'weflow', 'WeFlow-config.json');
+  const settingsFile = path.join(fixture, 'state', 'retired-settings.json');
   const settings = JSON.stringify({ httpApiPort: 22222, httpApiHost: 'custom-host', decryptKey: 'fixture-encrypted-key' });
   fs.writeFileSync(settingsFile, settings);
   const configFile = path.join(fixture, 'config', 'wechatagent.json');
   const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
   prepare(fixture);
   assert.equal(fs.readFileSync(settingsFile, 'utf8'), settings, 'database configuration must remain untouched');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'wechat-io-config.json'), 'utf8')).reader_token, io.reader_token);
-  assert.throws(() => validateConfig({ ...config, runtime: { ...config.runtime, sender: 'uia' } }), /removed/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'wechat-io-config.json'), 'utf8')).receiver_token, io.receiver_token);
+  assert.throws(() => validateConfig({ ...config, runtime: { ...config.runtime, sender: 'uia' } }), /4\.1\.8\.27/);
 } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
-for (const file of ['components/qq-bridge/src/social-bridge.js','packages/dsh-social-bridge-plugin/native-context.mjs','components/qq-bridge/LICENSE','components/weflow-cli/LICENSE']) assert(fs.existsSync(path.join(projectRoot, file)), `Missing source/license: ${file}`);
+for (const file of ['components/qq-bridge/src/social-bridge.js','packages/dsh-social-bridge-plugin/native-context.mjs','components/qq-bridge/LICENSE','docs/licenses/weflow-cli-MIT.txt']) assert(fs.existsSync(path.join(projectRoot, file)), `Missing source/license: ${file}`);
 console.log('Project config, portable paths, shared token preservation, and component completeness checks passed.');

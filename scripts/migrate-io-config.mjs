@@ -19,7 +19,7 @@ export function migrateConnections(root) {
   const current = fs.existsSync(destination) ? read(destination) : null;
   const oldPort = config.ports?.akasha;
   if (oldPort != null && config.ports.adapter != null && oldPort !== config.ports.adapter) throw new Error('Conflicting adapter ports; configuration was not migrated');
-  if (old && current && ((old.access_token && current.reader_token && old.access_token !== current.reader_token) ||
+  if (old && current && ((old.access_token && (current.receiver_token||current.reader_token) && old.access_token !== (current.receiver_token||current.reader_token)) ||
       (old.bot_wxid && current.self_wxid && old.bot_wxid !== current.self_wxid))) throw new Error('Conflicting connection credentials; configuration was not migrated');
   if (!old && oldPort == null) return;
   const backup = path.join(root, 'state', 'migrations', 'connection-config-v1');
@@ -27,8 +27,8 @@ export function migrateConnections(root) {
   if (!fs.existsSync(path.join(backup, 'wechatagent.json'))) fs.copyFileSync(file, path.join(backup, 'wechatagent.json'));
   if (old && !fs.existsSync(path.join(backup, 'legacy-connection.json'))) fs.copyFileSync(legacy, path.join(backup, 'legacy-connection.json'));
   if (old) write(destination, {
-    reader_base_url: current?.reader_base_url ?? old.weflow_base_url,
-    reader_token: current?.reader_token || old.access_token || '',
+    receiver_base_url: current?.receiver_base_url ?? current?.reader_base_url ?? old.weflow_base_url,
+    receiver_token: current?.receiver_token || current?.reader_token || old.access_token || '',
     self_wxid: current?.self_wxid || old.bot_wxid || '',
     onebot_ws_url: current?.onebot_ws_url ?? old.astrbot_ob_url,
   });

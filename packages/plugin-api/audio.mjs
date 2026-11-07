@@ -6,11 +6,11 @@ export function createAudioReader(root, {fetchImpl = fetch} = {}) {
   return async (id, key, pluginId, {format = 'wav', signal} = {}) => {
     if (!/^[a-f0-9]{64}$/.test(id) || !['wav', 'silk'].includes(format)) throw Error('VOICE_REFERENCE_INVALID');
     const io = JSON.parse(fs.readFileSync(path.join(root, 'state/wechat-io-config.json'), 'utf8').replace(/^\uFEFF/, ''));
-    const base = new URL(io.reader_base_url);
+    const base = new URL(io.receiver_base_url);
     if (base.protocol !== 'http:' || base.hostname !== '127.0.0.1' || base.username || base.password || base.pathname !== '/' || base.search || base.hash) throw Error('VOICE_READER_LOOPBACK_REQUIRED');
     const query = new URLSearchParams({conversationKey: key, pluginId, format});
     const response = await fetchImpl(base.origin+'/api/v1/voices/'+id+'?'+query, {
-      headers: {Authorization: 'Bearer '+io.reader_token}, redirect: 'error',
+      headers: {Authorization: 'Bearer '+io.receiver_token}, redirect: 'error',
       signal: AbortSignal.any([AbortSignal.timeout(9000), ...(signal ? [signal] : [])]),
     });
     const chunks = []; let size = 0;

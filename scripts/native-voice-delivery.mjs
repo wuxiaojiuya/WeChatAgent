@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {setTimeout as delay} from 'node:timers/promises';
+
 import {prepareVoiceClip} from '../packages/voice-output/prepare.mjs';
 import {allowedConversation} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {conversationId} from './hook-onebot.mjs';
-import {hookAccountProblem} from './wechat-account-check.mjs';
+import {hookComponentProblem} from './hook-component-check.mjs';
 import {mediaFfmpeg} from './media-tools.mjs';
 
 const idPattern=/^[a-f0-9]{64}$/;
@@ -37,12 +37,12 @@ export async function audioFileToSilk(file,{signal,root}={}){
   return prepareVoiceClip({pcm,sampleRate:24000});
 }
 
-// The reviewed WeChatVoice.dll listens on 30002, independently of StartPort.
-export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl=fetch,convert=audioFileToSilk,receiptTimeoutMs=18000,pollMs=400}={}){
+// Native voice sends use the packaged supplier Hook API.
+export function createNativeVoiceDelivery({root,settings,config,receiver,fetchImpl=fetch,convert=audioFileToSilk,receiptTimeoutMs=18000,pollMs=400}={}){
   const directory=path.join(root,'state/voice-output/deliveries'),records=new Map(),tasks=new Map(),controllers=new Set();
   let closed=false,lane=Promise.resolve();
   const token=()=>{const value=fs.readFileSync(path.join(root,'state/hook/native-token.txt'),'utf8').trim();if(!/^[a-f0-9]{64}$/.test(value))fail('HOOK_TOKEN_MISSING');return value;};
-  const origin=()=>{const h=config().hook;if(h?.backend==='supplier-http'&&h.expectedVersion==='4.1.8.27')return voiceHookOrigin(h.baseUrl);if(h?.expectedVersion!=='4.1.10.27'||!h.voiceBaseUrl)fail('VOICE_HOOK_DISABLED');return voiceHookOrigin(h.voiceBaseUrl);};
+  const origin=()=>{const h=config().hook;if(h?.backend!=='supplier-http'||h.expectedVersion!=='4.1.8.27')fail('VOICE_HOOK_DISABLED');return voiceHookOrigin(h.baseUrl);};
   const binding=()=>hash(JSON.stringify([config().hook,token()]));
   const policy=kind=>hash(JSON.stringify([config().wechat,settings()[kind]]));
   function assertNoRecentAmbiguous(key,account,exceptId){
@@ -59,21 +59,19 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     ...(r.error?{code:/^[A-Z][A-Z0-9_]{0,79}$/.test(r.error)?r.error:'VOICE_DELIVERY_FAILED'}:{}),...(r.submission?.code?{submissionCode:r.submission.code}:{}),...(r.state==='confirmed'?{serverId:r.serverId,receipt:r.receipt??'wechat-server-id'}:{}),message:notice(r)});
   function persist(r){fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json');fs.writeFileSync(file+'.tmp',JSON.stringify(r),{mode:0o600});fs.renameSync(file+'.tmp',file);records.set(r.id,r);}
   async function api(base,route,body,signal,account){
-    const response=await fetchImpl(base+route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token(),...(body===undefined?{}:{'Content-Type':'application/json'}),...(account&&config().hook.backend!=='supplier-http'?{'X-WeChatAgent-Account':account}:{})},
+    const response=await fetchImpl(base+route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token(),...(body===undefined?{}:{'Content-Type':'application/json'})},
       ...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(body===undefined?4000:route==='/SendVoiceMsg'?35000:8000)])});
     if(!response.ok)throw Error('VOICE_HTTP_'+response.status);
     const chunks=[];let size=0;for await(const chunk of response.body){size+=chunk.length;if(size>128*1024)fail('VOICE_HOOK_UNAVAILABLE');chunks.push(chunk);}
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
   async function identity(signal){
-    const own=await reader('/api/v1/reader/status');
-    if(own?.backend!==(config().hook.backend==='supplier-http'?'supplier-http':'weflow-cli-nt')||!own.ownWxid||!own.accountDirectory)fail('VOICE_READER_UNAVAILABLE');
-    const main=await api(voiceHookOrigin(config().hook.baseUrl),'/WeChatAgent/health',undefined,signal);
-    const problem=hookAccountProblem(main,own.accountDirectory,config().hook.expectedVersion);if(problem)fail(problem);
-    const health=await api(origin(),'/health',undefined,signal);
-    if(health?.backend!=='wechat-voice'||health.ready!==true||health.version!==config().hook.expectedVersion||!Number.isInteger(main.pid)||main.pid<=0||health.pid!==main.pid)fail('VOICE_HOOK_IDENTITY_INVALID');
-    if(config().hook.backend!=='supplier-http'&&(!Array.isArray(health.databaseAccounts)||health.databaseAccounts.length!==1||String(health.databaseAccounts[0]).toLowerCase()!==String(own.accountDirectory).toLowerCase()))fail('VOICE_HOOK_ACCOUNT_MISMATCH');
-    return {account:String(own.accountDirectory).toLowerCase(),wxid:own.ownWxid,pid:health.pid};
+    const own=await receiver('/api/v1/receiver/status');
+    if(own?.backend!=='supplier-http'||!own.ownWxid)fail('VOICE_RECEIVER_UNAVAILABLE');
+    const main=await api(origin(),'/WeChatAgent/health',undefined,signal);
+    const problem=hookComponentProblem(main);if(problem)fail(problem);
+    if(main.nativeVoiceSend!==true)fail('VOICE_HOOK_IDENTITY_INVALID');
+    return {account:own.ownWxid,wxid:own.ownWxid,pid:main.pid};
   }
   async function check({signal}={}){
     const c=new AbortController();controllers.add(c);
@@ -83,31 +81,9 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     finally{controllers.delete(c);}
   }
   async function targetFor(key){
-    const [,kind,target]=key.split(':'),result=await reader('/api/v1/sessions?limit=500');
+    const [,kind,target]=key.split(':'),result=await receiver('/api/v1/sessions?limit=500');
     const matches=(result.sessions??[]).filter(s=>typeof s.username==='string'&&(s.username.includes('@chatroom')?'group':'private')===kind&&String(conversationId(s.username,s.displayName,s.conversationId))===target);
     if(matches.length!==1)fail('VOICE_TARGET_UNRESOLVED');return matches[0].username;
-  }
-  async function rowsFor(r){const result=await reader('/api/v1/messages?talker='+encodeURIComponent(r.wxid)+'&limit=100');if(!Array.isArray(result.messages))fail('VOICE_READER_UNAVAILABLE');return result.messages;}
-  async function reconcile(r,signal){
-    const deadline=Date.now()+receiptTimeoutMs;
-    do{
-      assertScope(r.key,r.kind);signal.throwIfAborted();
-      const own=await reader('/api/v1/reader/status');
-      if(own.ownWxid!==r.accountWxid||String(own.accountDirectory).toLowerCase()!==r.account)fail('VOICE_HOOK_ACCOUNT_MISMATCH');
-      const rows=await rowsFor(r),candidates=rows.filter(row=>{
-        const duration=Number(/<voicemsg\b[^>]*\bvoicelength\s*=\s*["'](\d{1,6})["']/i.exec(String(row.fullText??row.content??''))?.[1]);
-        return (row.isSend===true||row.isSend===1)&&row.localType===34&&!r.baseline.includes(String(row.localId))&&Number.isSafeInteger(Number(row.localId))&&Number(row.localId)>0&&Number(row.createTime)>=Math.floor(r.startedAt/1000)-2&&Number(row.createTime)<=Math.floor(r.startedAt/1000)+60&&Math.abs(duration-r.durationMs)<=20;
-      });
-      // Multiple new voice messages cannot be unambiguously associated with this operation.
-      if(candidates.length>1)fail('VOICE_RECEIPT_AMBIGUOUS');
-      const row=candidates[0];
-      if(row&&(!r.candidateId||r.candidateId===String(row.localId))){
-        r.candidateId=String(row.localId);persist(r);
-        if(serverId(row.serverId)){r.serverId=row.serverId;r.state='confirmed';r.confirmedAt=Date.now();delete r.error;persist(r);return true;}
-      }
-      if(Date.now()>=deadline)break;await delay(pollMs,undefined,{signal});
-    }while(!closed);
-    return false;
   }
   function run(r,callerSignal){
     if(tasks.has(r.id))return tasks.get(r.id);
@@ -120,7 +96,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
         if(own.account!==r.account||own.wxid!==r.accountWxid||await targetFor(r.key)!==r.wxid||r.wxid===own.wxid)fail('VOICE_HOOK_ACCOUNT_MISMATCH');
         if(r.state==='queued'){
           const file=path.join(directory,r.id+'.silk');if(hash(fs.readFileSync(file))!==r.silkHash)fail('VOICE_SETTINGS_CHANGED');
-          r.baseline=(await rowsFor(r)).map(row=>String(row.localId));
+
           signal.throwIfAborted();assertScope(r.key,r.kind);if(r.binding!==binding()||r.origin!==origin()||r.policy!==policy(r.kind))fail('VOICE_SETTINGS_CHANGED');
           assertNoRecentAmbiguous(r.key,r.account,r.id);
           r.state='dispatching';r.startedAt=Date.now();persist(r); // Must precede the native call; never resubmit after a crash/timeout.
@@ -128,13 +104,13 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
             const result=await api(r.origin,'/SendVoiceMsg',{wxidorgid:r.wxid,path:file,duration:r.durationMs},signal,r.account);
             r.submission={state:result?.ret===0?'accepted':'rejected',startedAt:r.startedAt,completedAt:Date.now()};
             if(result?.ret!==0){r.state='failed';r.error='NATIVE_VOICE_REJECTED';persist(r);return;}
-            if(config().hook.backend==='supplier-http'&&result.confirmed===true&&result.receipt==='wechat-uploadvoice-response'&&serverId(result.serverId)&&result.account===own.wxid&&result.target===r.wxid&&result.durationMs===r.durationMs){
+            if(result.confirmed===true&&result.receipt==='wechat-uploadvoice-response'&&serverId(result.serverId)&&result.account===own.wxid&&result.target===r.wxid&&result.durationMs===r.durationMs){
               r.state='confirmed';r.serverId=result.serverId;r.receipt=result.receipt;r.reportedDurationMs=result.reportedDurationMs;r.confirmedAt=Date.now();delete r.error;persist(r);return;
             }
             r.state='submitted';persist(r);
-          }catch(e){r.error=e.message;r.submission={state:'unconfirmed',code:submissionCode(e),startedAt:r.startedAt,completedAt:Date.now()};persist(r);/* A lost HTTP reply may still mean submitted. Reconcile only. */}
+          }catch(e){r.error=e.message;r.submission={state:'unconfirmed',code:submissionCode(e),startedAt:r.startedAt,completedAt:Date.now()};persist(r);/* The operation is never submitted again after a lost reply. */}
         }
-        if(!await reconcile(r,signal)){r.state='unconfirmed';r.error='VOICE_DELIVERY_UNCONFIRMED';persist(r);}
+        r.state='unconfirmed';r.error='VOICE_DELIVERY_UNCONFIRMED';persist(r);
       }catch(e){r.error=e.message;r.state=r.startedAt?'unconfirmed':'failed';persist(r);}
       finally{controllers.delete(c);}
     });
@@ -163,7 +139,7 @@ export function createNativeVoiceDelivery({root,settings,config,reader,fetchImpl
     get(id,key);const r=records.get(id);
     // Status requests must not wait through the receipt polling window. The
     // same durable operation is checked in the background and is never resent.
-    if(r.state==='unconfirmed'&&r.startedAt){const task=run(r);if(wait)await task;}
+
     return get(id,key);
   }
   if(fs.existsSync(directory))for(const name of fs.readdirSync(directory).filter(n=>/^[a-f0-9]{64}\.json$/.test(n))){

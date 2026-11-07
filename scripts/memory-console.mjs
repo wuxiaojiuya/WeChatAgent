@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {Worker} from 'node:worker_threads';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 import {MEMBER_TAGS,memberMemoryEnabled} from '../packages/dsh-social-bridge-plugin/member-memory-policy.mjs';
 
 const HEX=/^[a-f0-9]{64}$/,KEY=/^wechat:(private|group):[1-9]\d{0,15}$/,AGE=90*86400000;
@@ -18,7 +18,7 @@ function safeFile(root,...parts){
 }
 function pageNumber(value,fallback,max){const n=value===null?fallback:Number(value);if(!Number.isSafeInteger(n)||n<0||n>max)throw fault('记忆筛选参数无效。');return n;}
 export function createMemoryConsole({root,configFor,plugin,now=Date.now}){
-  function scope(expected){const activeFile=safeFile(root,'weflow','active-account.json');void activeFile;const value=activeReaderAccount(root),id=value.id||value.legacyId;if(!id||!HEX.test(id))throw fault('请先连接并验证微信，再查看当前账号的记忆。',409);if(expected!==undefined&&expected!==null&&expected!==id)throw fault('微信账号已切换，请刷新记忆页面。',409);return id;}
+  function scope(expected){const activeFile=safeFile(root,'hook','active-connection.json');void activeFile;const value=activeConnection(root),id=value.id||value.legacyId;if(!id||!HEX.test(id))throw fault('请先连接并验证微信，再查看当前账号的记忆。',409);if(expected!==undefined&&expected!==null&&expected!==id)throw fault('微信账号已切换，请刷新记忆页面。',409);return id;}
   function chat(key){const config=configFor(),match=KEY.exec(key??'');if(!match||!(config.wechat.whitelist?.[match[1]==='group'?'groups':'private']??[]).map(String).includes(key.split(':')[2]))throw fault('请选择已保存聊天范围中的会话。',403);return config;}
   function overview(){
     let accountScope;try{accountScope=scope();}catch(error){if(error.status!==409)throw error;return {available:false,message:error.message,chats:[]};}

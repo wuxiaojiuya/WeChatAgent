@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import {activeReaderAccount} from '../../scripts/reader-account-state.mjs';
+import {activeConnection} from '../../scripts/hook-connection-state.mjs';
 const query=new URL(import.meta.url).search;
 const {CAPABILITY_EXECUTION_VERSION,CAPABILITY_OPERATIONS,capabilityFault}=await import(new URL('./contract.mjs'+query,import.meta.url));
 const {createDrawingExecution}=await import(new URL('./drawing.mjs'+query,import.meta.url));
@@ -16,7 +16,7 @@ function abortable(promise,signal){
     Promise.resolve(promise).then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
   });
 }
-export function createCapabilityRuntime({root,fetchImpl=fetch,executors,accountScope=()=>activeReaderAccount(root).id,now=Date.now}={}){
+export function createCapabilityRuntime({root,fetchImpl=fetch,executors,accountScope=()=>activeConnection(root).id,now=Date.now}={}){
   const drawing=executors?.drawing??createDrawingExecution({fetchImpl});
   const voice=executors?.voice??createVoiceExecutor({root,fetchImpl});
   const singing=executors?.singing??createSingingExecutor({root,fetchImpl});

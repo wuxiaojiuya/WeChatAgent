@@ -21,7 +21,7 @@ from supplier_api import SupplierApi, process_identity, runtime_directory, liste
 from supplier_reader import map_send, normalize_send_response, stage_media
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location('reader_contract_test', SCRIPT_ROOT/'reader-api.py')
+spec = importlib.util.spec_from_file_location('reader_contract_test', SCRIPT_ROOT/'hook_receiver_core.py')
 reader_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reader_module)
 
@@ -85,7 +85,7 @@ class SupplierContract(unittest.TestCase):
             config['hook']['baseUrl'] = 'http://127.0.0.1:'+str(sock.getsockname()[1])
         config['wechat']['whitelist'] = {'private': [reader_module.onebot_id('wxid_friend')], 'groups': []}
         self.write('config/wechatagent.json', config)
-        self.write('state/weflow/WeFlow-config.json', {'backend': 'supplier-http', 'myWxid': self.fake.wxid, 'dbPath': str(self.root/'state/hook/accounts')})
+        self.write('state/hook/connection.json', {'version': 1, 'backend': 'supplier-http', 'wechatVersion': '4.1.8.27', 'ownWxid': self.fake.wxid})
         self.write('state/wechat-io-config.json', {'self_wxid': self.fake.wxid})
         stage = self.root/'state/hook/supplier-4.1.8.27'
         stage.mkdir(parents=True)
@@ -103,8 +103,8 @@ class SupplierContract(unittest.TestCase):
         file.write_text(json.dumps(value), encoding='utf-8')
 
     def reader(self):
-        with patch.object(supplier_reader, 'SupplierApi', return_value=self.api):
-            reader = supplier_reader.create_reader(reader_module.Reader)(self.root)
+        with patch.object(reader_module, 'SupplierApi', return_value=self.api):
+            reader = reader_module.HookReceiver(self.root)
         for pool in ('image_executor', 'sticker_executor', 'sticker_review_executor'):
             self.addCleanup(getattr(reader, pool).shutdown, wait=False, cancel_futures=True)
         self.addCleanup(reader.events.close)
@@ -131,7 +131,7 @@ class SupplierContract(unittest.TestCase):
 
     def test_push_messages_preserve_full_text_and_64_bit_ids_without_history_fetch(self):
         reader = self.reader()
-        self.assertEqual(reader.open_messages(), [])
+        self.assertFalse(hasattr(reader, 'open_messages'))
         self.assertEqual(reader.messages('wxid_friend'), [])
         self.incoming(reader)
         row = reader.messages('wxid_friend')[0]
@@ -139,6 +139,31 @@ class SupplierContract(unittest.TestCase):
         self.assertEqual(row['serverId'], '8047442179716189588')
         self.assertEqual(row['localId'], 1)
         self.assert_no_database_api()
+
+    def test_legacy_client_paths_are_not_opened_or_used_as_missing_media_fallback(self):
+        client = self.root/'wechat-client/db_storage'
+        client.mkdir(parents=True)
+        (client/'message_0.db').write_bytes(b'client-database-must-not-be-opened')
+        legacy = self.root/'state/weflow/WeFlow-config.json'
+        self.write(str(legacy.relative_to(self.root)), {'dbPath': str(client), 'myWxid': self.fake.wxid,
+                                                     'decryptKey': 'fixture-not-a-real-key'})
+        ordinary_open = pathlib.Path.open
+        def guarded_open(file, *args, **kwargs):
+            resolved = file.absolute()
+            if resolved == legacy or resolved.is_relative_to(client):
+                raise AssertionError('Legacy client data must not be opened')
+            return ordinary_open(file, *args, **kwargs)
+        with patch.object(pathlib.Path, 'open', guarded_open):
+            reader = self.reader()
+            self.assertTrue(reader.account.is_relative_to(self.root/'state/hook/accounts'))
+            self.assertEqual(reader.contacts()[0]['displayName'], 'Friend')
+            self.incoming(reader, kind=34, content='<msg><voicemsg voicelength="1000"/></msg>')
+            row = reader.messages('wxid_friend')[0]
+            self.assertEqual(reader.sessions()[0]['username'], 'wxid_friend')
+            with self.assertRaisesRegex(RuntimeError, '^VOICE_CALLBACK_METADATA_REQUIRED$'):
+                reader.voice_blob({**row, 'talker': 'wxid_friend', 'sender': 'wxid_friend'})
+        self.assert_no_database_api()
+        self.assertFalse(any(route == '/api/download_voice' for route, _ in self.fake.calls))
 
     def test_runtime_path_and_copy_integrity_before_network(self):
         calls = []
@@ -163,10 +188,10 @@ class SupplierContract(unittest.TestCase):
         self.assertFalse(listener_address_allowed('192.168.1.2', SUPPLIER_WILDCARD_SHA256))
 
     def test_unbound_reader_reports_binding_required_before_contacting_hook(self):
-        (self.root/'state/weflow/WeFlow-config.json').unlink()
-        with patch.object(supplier_reader, 'SupplierApi') as api_constructor:
-            with self.assertRaisesRegex(RuntimeError, '^HOOK_ACCOUNT_BIND_REQUIRED$'):
-                supplier_reader.create_reader(reader_module.Reader)(self.root)
+        (self.root/'state/hook/connection.json').unlink()
+        with patch.object(reader_module, 'SupplierApi') as api_constructor:
+            with self.assertRaisesRegex(RuntimeError, '^HOOK_CONNECTION_REQUIRED$'):
+                reader_module.HookReceiver(self.root)
             api_constructor.assert_not_called()
 
     def test_unselected_callbacks_are_not_stored_or_sent_to_ai(self):
@@ -280,7 +305,7 @@ class SupplierContract(unittest.TestCase):
         self.incoming(reader, kind=34, content='<msg><voicemsg voicelength="1000" length="99"/></msg>')
         row = reader.messages('wxid_friend')[0]
         record = {**row, 'talker': 'wxid_friend', 'sender': 'wxid_friend'}
-        with patch.object(supplier_reader.time, 'monotonic', side_effect=(0, 0, 11)), patch.object(supplier_reader.time, 'sleep'):
+        with patch.object(reader_module.time, 'monotonic', side_effect=(0, 0, 11)), patch.object(reader_module.time, 'sleep'):
             with self.assertRaisesRegex(RuntimeError, '^VOICE_DOWNLOAD_PENDING$'):
                 reader.voice_blob(record)
         self.assertEqual(sum(route == '/api/download_voice' for route, _ in self.fake.calls), 1)
@@ -510,7 +535,7 @@ class SupplierContract(unittest.TestCase):
                                  {'ret': -1, 'submitted': False, 'confirmed': False})
 
     def test_nontext_generic_ack_preserves_existing_media_submission_behavior(self):
-        for route in ('/SendImageMsg', '/SendFileMsg', '/SendStickerMsg', '/SendVoiceMsg'):
+        for route in ('/SendVoiceMsg',):
             for result in ({'code': 1, 'data': []},
                            {'errCode': 1, 'baseResponse': {'ret': -2}, 'endFlag': 1},
                            {'code': 1, 'data': {'baseResponse': {'ret': -1}}}):
@@ -525,6 +550,31 @@ class SupplierContract(unittest.TestCase):
                     else:
                         self.assertEqual(normalize_send_response(route, result),
                                          {'ret': -1, 'submitted': False, 'confirmed': False})
+
+    def test_media_receipts_require_matching_target_and_string_server_id(self):
+        native = {'baseResponse': {'ret': 0}, 'toUserName': 'wxid_friend', 'newMsgId': '8047442179716189588'}
+        for route in ('/SendImageMsg', '/SendFileMsg', '/SendStickerMsg'):
+            for response in (native, {'code': 1, 'data': native}, {'errCode': 1, **native}):
+                with self.subTest(route=route, response=response):
+                    self.assertEqual(normalize_send_response(route, response, target='wxid_friend'),
+                                     {'ret': 0, 'submitted': True, 'confirmed': True,
+                                      'serverId': native['newMsgId'], 'target': 'wxid_friend',
+                                      'receipt': 'wechat-message-response'})
+            for changes in ({'toUserName': 'other'}, {'newMsgId': 8047442179716189588},
+                            {'newMsgId': '0'}, {'newMsgId': ''}, {'newMsgId': '1'*21}):
+                with self.subTest(route=route, changes=changes):
+                    result = normalize_send_response(route, {**native, **changes}, target='wxid_friend')
+                    self.assertEqual(result, {'ret': 0, 'submitted': True, 'confirmed': False})
+            for response in ({'code': 1}, {'baseResponse': {'ret': 0}}, {'errCode': 1, 'data': {}}):
+                self.assertEqual(normalize_send_response(route, response, target='wxid_friend'),
+                                 {'ret': 0, 'submitted': True, 'confirmed': False})
+            incomplete = {'baseResponse': {'ret': 0}, 'newMsgId': native['newMsgId']}
+            self.assertFalse(normalize_send_response(route, incomplete)['confirmed'])
+            self.assertFalse(normalize_send_response(route, {'code': 1, 'data': incomplete})['confirmed'])
+            for response in ({**native, 'baseResponse': {'ret': -1}},
+                             {'code': 1, 'data': {**native, 'baseResponse': {'ret': -1}}}):
+                self.assertEqual(normalize_send_response(route, response, target='wxid_friend'),
+                                 {'ret': -1, 'submitted': False, 'confirmed': False})
 
     def test_malformed_send_envelope_types_remain_unknown(self):
         for result in ({'code': 1, 'errCode': True}, {'code': '1', 'errCode': 1},

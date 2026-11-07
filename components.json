@@ -13,14 +13,15 @@
       "notes": "Default WeChat social modules  only; see component README."
     },
     {
-      "name": "NT database reader subset",
-      "directory": "components/weflow-cli",
+      "name": "Retained media helpers and sticker decoding conventions",
+      "files": ["scripts/wechat_media.py", "scripts/wechat_sticker.py"],
       "upstream": "https://github.com/zhuobichen/weflow-cli",
       "version": "1.8.2",
       "commit": "3d56da9b91ab46f610ca811029e5782c528a58ec",
       "license": "MIT",
       "modified": true,
-      "notes": "Retained database API bodies copied; unused discovery, scanning, CLI and all native resources omitted."
+      "licenseFile": "docs/licenses/weflow-cli-MIT.txt",
+      "notes": "Only pure media helpers and AES-CBC decoding conventions remain. Database reader, key capture, client directory scanning and native resources have been removed."
     },
     {
       "name": "DSH Social Plugin",
@@ -37,12 +38,12 @@
   ],
   "externalComponents": [
     {
-      "name": "WeChat-Hook",
-      "upstream": "https://github.com/aixed/WeChat-Hook",
-      "commit": "e905d07ade50d2c6472e4eb3bd4f3fe19cf662c6",
-      "targetWeChat": "4.1.10.27",
+      "name": "Supplied WeChat 4.1.8.27 Hook",
+      "directory": "components/supplier-hook/4.1.8.27",
+      "targetWeChat": "4.1.8.27",
       "distributed": false,
-      "license": "Overall license not confirmed"
+      "license": "Supplier authorization; separate from the project MIT license",
+      "notes": "Binary payload is provided in the matching release attachment and Windows installer, excluded from Git source. Sole supported WeChat backend."
     },
     {
       "name": "WeFlow Desktop reference",

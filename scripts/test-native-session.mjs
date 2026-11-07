@@ -38,7 +38,7 @@ test('named-song planning uses the configured model and local persona without ch
 });
 
 test('fish notebook uses tool-free persona utilities and discloses only on the third distinct question without a native agent',async t=>{
- const f=await fixture(t),account='b'.repeat(64),viewer='c'.repeat(64),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));const settings={wechat:{whitelist:{private:['123'],groups:[]},fishNotebook:{enabled:true,writeTime:'23:59',chats:{}}}};fs.writeFileSync(file,JSON.stringify(settings));
+ const f=await fixture(t),account='b'.repeat(64),viewer='c'.repeat(64),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account,legacyId:account}));const settings={wechat:{whitelist:{private:['123'],groups:[]},fishNotebook:{enabled:true,writeTime:'23:59',chats:{}}}};fs.writeFileSync(file,JSON.stringify(settings));
  const r=await f.start(),{BlockAssembler}=await import(pathToFileURL(path.join(f.dir,'node_modules/@deepseek-ai/dsh-llm/index.js')).href);BlockAssembler.prototype.push=function(chunk){if(chunk.type==='text-delta')this.text=(this.text??'')+chunk.text;};BlockAssembler.prototype.blocks=function(){return [{type:'text',text:this.text??''}];};Object.defineProperty(BlockAssembler.prototype,'finish',{get:()=>({kind:'stop'})});
  const calls=[];r.ctx.llm.resolveModelInfo=async()=>({reasoning:{efforts:[{id:'off'}]}});r.ctx.llm.stream=async function*(options){calls.push(options);const instruction=options.messages[0].content[0].text;yield {type:'text-delta',text:instruction.includes('写一篇角色日记')?'今天的日记正文，鱼认真地记了一页。':'鱼把小本本抱在怀里，不好意思地摇了摇尾巴。'};};
  const pluginSource='optional-extensions/fish-notebook',installer=new PluginInstaller(f.dir),preview=installer.inspect({name:'fish-notebook.zip',zip:packZip(packageFiles(pluginSource)).toString('base64')});installer.install({ticket:preview.ticket,revision:preview.revision});const definition=JSON.parse(fs.readFileSync(path.join(pluginSource,'plugin.json'),'utf8'));updatePlugin(f.dir,'fish-notebook',{revision:configuration(f.dir).revision,enabled:true,permissions:definition.permissions,chats:[key],settings:{writeTime:'23:59'}});
@@ -71,7 +71,7 @@ test('a native scheduled result keeps its reminder text and leaves the queue onl
  options.assistantMessages=[[{type:'text',text:'RESPOND: 时间到，该喝水了。\n\n[STICKER:S2]'}]];
  r.agents.get(result.task.sessionId).followup({id:'native-timer-fire-1',role:'user',source:{kind:'schedule'},content:[{type:'text',text:'schedule_id_json: '+JSON.stringify(scheduleId)+'\n提醒原文仅为任务资料'}]});
  let notices;for(let i=0;i<200;i++){notices=await r.request('/assistant-task/notifications',{localControl:true});if(notices.notifications.length)break;await new Promise(resolve=>setTimeout(resolve,5));}assert.equal(notices.notifications.length,1);assert.equal(notices.notifications[0].textFormat,'wechat-result-text-v2');assert.equal(notices.notifications[0].kind,'result');
- const adapter=new WechatOneBotAdapter(),sent=[];adapter.stats.connected=true;adapter.selfId='fixture-self';adapter.server.action=async(action,params)=>{sent.push({action,params});return {data:{receipt:'wechat-server-id'}};};
+ const adapter=new WechatOneBotAdapter(),sent=[];adapter.stats.connected=true;adapter.selfId='fixture-self';adapter.server.action=async(action,params)=>{sent.push({action,params});return {data:{receipt:'wechat-message-response',delivered:'server-confirmed',confirmed:true,message_id:'8047442179716189588'}};};
  const plugin=new DshPluginClient({url:r.url,token:'fixture-native-token'}),delivery=createAssistantNoticeDelivery({adapter,plugin,settingsFor:()=>w});t.after(()=>delivery.stop());await delivery.tick();assert.equal(sent.length,1);assert.equal(sent[0].params.message[0].data.text,'时间到，该喝水了。');assert.equal((await r.request('/assistant-task/notifications',{localControl:true})).notifications.length,0);await delivery.tick();assert.equal(sent.length,1);assert.equal(r.calls.model.length,2);
 });
 
@@ -235,8 +235,8 @@ test('a rule-only upgrade retires the old bootstrap without claiming the persona
 
 test('member memory tools use authenticated batch identities and persist a group-scoped JSON profile',async t=>{
   const f=await fixture(t),key='wechat:group:123',member='a'.repeat(64),account='b'.repeat(64);let writes=0;
-  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
-  fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));
+  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});
+  fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account,legacyId:account}));
   fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{groups:['123'],private:[]},memberMemory:{enabled:true}}}));
   const observations=[1,2,3].map(n=>({memberId:member,senderId:'456',name:'测试群友',evidenceId:String(n).padStart(32,'0'),text:'这是该成员的实际群聊发言 '+n,at:Date.now()-1000}));
   const runtime=await f.start({beforeAssistant:async agent=>{
@@ -259,7 +259,7 @@ test('native meme tools return only the current chat resource as authenticated R
     if(url.pathname==='/api/v1/stickers/import'){assert.equal(body.conversationKey,key);selections++;return res.end(JSON.stringify({ready:true,admitted:false,pending:true,id,collection:'review-pending'}));}
     res.end(image);
   });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
-  const port=server.address().port;fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:'+port,reader_token:'fixture'}));
+  const port=server.address().port;fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:'+port,receiver_token:'fixture'}));
   const runtime=await f.start({assistantMessages:[[{type:'text',text:'RESPOND: [STICKER:'+id+']'}]],beforeAssistant:async agent=>{
     const found=JSON.parse((await agent.registeredTools.get('wechat_meme_search').execute({query:'挥手'})).content);const selected=await agent.registeredTools.get('wechat_meme_select').execute({candidateId:found.candidates[0].candidateId});assert.equal(selected.isError,false);
   }});runtime.ctx.webServer={port};
@@ -273,13 +273,13 @@ test('voice input routes the installed API plugin through bound audio without cr
   fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});
   const config={wechat:{whitelist:{private:['123'],groups:[]},assistant:{administrators:['wxid_voice_admin']}}};
   const configFile=path.join(f.dir,'config/wechatagent.json');fs.writeFileSync(configFile,JSON.stringify(config));
-  fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account}));
+  fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account}));
   const bytes=Buffer.from('synthetic-silk'),sha256=crypto.createHash('sha256').update(bytes).digest('hex');let reads=0,uploads=0;
   const reader=http.createServer((req,res)=>{reads++;assert.equal(req.headers.authorization,'Bearer reader-fixture');const url=new URL(req.url,'http://localhost');assert.equal(url.searchParams.get('conversationKey'),key);assert.equal(url.searchParams.get('pluginId'),'speech-recognition');res.setHeader('content-type','application/json');res.end(JSON.stringify({id,conversationKey:key,b64:bytes.toString('base64'),sha256,mime:'audio/silk',filename:'voice.silk',durationSeconds:2,sampleRate:0}));});
   const provider=http.createServer(async(req,res)=>{uploads++;for await(const _chunk of req){}res.end('{"text":"本机模拟服务转写"}');});
   await new Promise(resolve=>reader.listen(0,'127.0.0.1',resolve));await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));
   t.after(()=>{reader.closeAllConnections();reader.close();provider.closeAllConnections();provider.close();});
-  fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:'+reader.address().port,reader_token:'reader-fixture'}));
+  fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:'+reader.address().port,receiver_token:'reader-fixture'}));
   const source=path.resolve('optional-extensions/speech-recognition');fs.cpSync(source,path.join(f.dir,'plugins/speech-recognition'),{recursive:true});
   const settings=JSON.parse(fs.readFileSync(path.join(source,'plugin.json'))).settings;settings.endpoint='http://127.0.0.1:'+provider.address().port+'/custom';settings.audioFormat='silk';
   fs.writeFileSync(path.join(f.dir,'config/plugins.json'),JSON.stringify({version:1,plugins:{'speech-recognition':{enabled:true,permissions:['audio_read'],chats:[key],settings,generation:'voice-fixture'}}}));
@@ -298,7 +298,7 @@ async function fixture(t) {
   const pluginDir=path.join(dir,'packages/dsh-social-bridge-plugin');fs.mkdirSync(pluginDir,{recursive:true});
   fs.copyFileSync('packages/dsh-social-bridge-plugin/native-context.mjs',path.join(pluginDir,'native-context.mjs'));
   fs.mkdirSync(path.join(dir,'scripts'),{recursive:true});
-  fs.copyFileSync('scripts/reader-account-state.mjs',path.join(dir,'scripts/reader-account-state.mjs'));
+  fs.copyFileSync('scripts/hook-connection-state.mjs',path.join(dir,'scripts/hook-connection-state.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
@@ -465,7 +465,7 @@ test('authenticated configuration reload preserves sessions, isolates accounts a
   await r.request('/reload-config',{},202);let current=await poll(original);assert.equal(current.model,'changed-model');
   saved.dsh.model='fixture-model';fs.writeFileSync(file,JSON.stringify(saved));await r.request('/reload-config',{},202);current=await poll(current);
   const continued=await r.request('/followup',{...info,message:'CONTINUED'});assert.equal(continued.sessionId,first.sessionId);assert(r.calls.model.at(-1).includes('HOT_RELOAD_HISTORY'));
-  const accountFile=path.join(f.dir,'state/weflow/active-account.json');fs.mkdirSync(path.dirname(accountFile),{recursive:true});fs.writeFileSync(accountFile,JSON.stringify({id:'b'.repeat(64)}));
+  const accountFile=path.join(f.dir,'state/hook/active-connection.json');fs.mkdirSync(path.dirname(accountFile),{recursive:true});fs.writeFileSync(accountFile,JSON.stringify({id:'b'.repeat(64)}));
   await r.request('/followup',{...info,message:'wrong account'},409);
   await r.request('/reload-config',{},202);current=await poll(current);assert.equal(current.accountScope,'b'.repeat(64));
   const other=await r.request('/followup',{...info,message:'OTHER_ACCOUNT'});assert.notEqual(other.sessionId,first.sessionId);assert(!r.calls.model.at(-1).includes('HOT_RELOAD_HISTORY'));
@@ -642,7 +642,7 @@ test('delivery collects only the final assistant message, excluding reasoning an
 });
 
 test('account changes block the old DSH plugin and keep identical chat IDs in separate sessions', async t => {
-  const f = await fixture(t), identity = path.join(f.dir, 'state/weflow/active-account.json');
+  const f = await fixture(t), identity = path.join(f.dir, 'state/hook/active-connection.json');
   fs.mkdirSync(path.dirname(identity), { recursive: true });
   const a = 'a'.repeat(64), b = 'b'.repeat(64);
   const select = id => fs.writeFileSync(identity, JSON.stringify({ id, legacyId: '' }));
@@ -670,7 +670,7 @@ test('a missing incoming sticker still completes a native turn and the following
   const f=await fixture(t),r=await f.start({assistantMessages:[[{type:'text',text:'RESPOND: 还在'}]]});
   const reader=http.createServer((_req,res)=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error:'IMAGE_STICKER_LOCAL_COPY_UNAVAILABLE'}));});
   await new Promise(resolve=>reader.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>reader.close(resolve)));
-  fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${reader.address().port}`,reader_token:'fixture-token'}));
+  fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${reader.address().port}`,receiver_token:'fixture-token'}));
   const output=await r.request('/followup',{...info,message:'[表情包]',images:[{id:'a'.repeat(64),kind:'sticker'}]});
   assert.equal(output.text,'RESPOND: 还在');assert.equal((await r.request('/health')).pendingTurns,0);
   const imageMessage=f.store.get(output.sessionId).snapshotEvents().find(event=>event.data.source?.socialImageIds);
@@ -1038,9 +1038,9 @@ test('native singing source failures preserve the model persona reply in deliver
 
 test('a native model can update its own persona through a bound scoped tool without approval',async t=>{
   const f=await fixture(t),account='e'.repeat(64);
-  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
+  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});
   fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},assistant:{administrators:['wxid_admin']}}}));
-  fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));
+  fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account,legacyId:account}));
   let visible;
   const r=await f.start({beforeAssistant:async agent=>{visible=[...agent.ctx[Symbol.for('wechatagent.persona-proposals.v1')].names()];}});
   const result=await r.request('/followup',{...info,message:'你可以根据聊天为自己设定人格，先让管理员同意'});
@@ -1050,9 +1050,9 @@ test('a native model can update its own persona through a bound scoped tool with
 
 test('completed inbox turns feed automatic persona review once per effective batch outside the chat model',async t=>{
   const f=await fixture(t),account='e'.repeat(64),requests=[];
-  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
+  fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});
   fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},assistant:{administrators:['wxid_admin']}}}));
-  fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));
+  fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account,legacyId:account}));
   const consoleServer=http.createServer(async(req,res)=>{
     res.setHeader('Content-Type','application/json');
     if(req.url==='/api/info'){res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'fixture-console'}));return;}
@@ -1158,8 +1158,8 @@ test('public built-in layout count refreshes stable rules once and survives rest
 });
 
 test('member evidence has one reusable turn slot and is removed after a turn while tool instructions stay stable',async t=>{
-  const f=await fixture(t),group='wechat:group:123',account='b'.repeat(64),member='a'.repeat(64);fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});
-  fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account,legacyId:account}));
+  const f=await fixture(t),group='wechat:group:123',account='b'.repeat(64),member='a'.repeat(64);fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});
+  fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:account,legacyId:account}));
   fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{groups:['123'],private:[]},memberMemory:{enabled:true}}}));
   const r=await f.start({steps:3});let response;
   for(let n=1;n<=3;n++){
@@ -1270,7 +1270,7 @@ test('image completion offloads after the native append publisher returns and ne
   const f=await fixture(t),r=await f.start(),id='b'.repeat(64),bytes=Buffer.from('fixture image');
   const server=http.createServer((req,res)=>{assert.equal(req.headers.authorization,'Bearer fixture-reader');res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({imageId:id,conversationKey:key,b64:bytes.toString('base64'),mime:'image/jpeg',sha256:crypto.createHash('sha256').update(bytes).digest('hex')}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
-  fs.mkdirSync(path.join(f.dir,'state'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${server.address().port}`,reader_token:'fixture-reader'}));
+  fs.mkdirSync(path.join(f.dir,'state'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${server.address().port}`,receiver_token:'fixture-reader'}));
   const result=await r.request('/followup',{...info,message:'请看测试图片',images:[{id}]});
   const session=f.store.get(result.sessionId),events=session.snapshotEvents();
   const imageEvent=events.find(e=>e.type==='user/message' && e.data.source?.socialImageIds);
@@ -1285,7 +1285,7 @@ test('a failed vision request offloads the bad image and the same session accept
   let failed=true;const f=await fixture(t),r=await f.start({turnReason:()=>failed?'failed':'completed'}),id='a'.repeat(64),bytes=Buffer.from('fixture bad-for-provider image');
   const server=http.createServer((_req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({imageId:id,conversationKey:key,b64:bytes.toString('base64'),mime:'image/png',sha256:crypto.createHash('sha256').update(bytes).digest('hex')}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
-  fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:`http://127.0.0.1:${server.address().port}`,reader_token:'fixture'}));
+  fs.writeFileSync(path.join(f.dir,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:`http://127.0.0.1:${server.address().port}`,receiver_token:'fixture'}));
   const failure=await r.request('/followup',{...info,message:'图片请求',images:[{id}]},502);assert.equal(failure.error,'turn_failed');
   const session=f.store.get(failure.sessionId),image=session.snapshotEvents().find(e=>e.data.source?.socialImageIds);
   assert.equal(session.deriveEventMessage(image).content.find(b=>b.type==='image').offloaded,true);
@@ -1462,7 +1462,7 @@ test('persistent prefix failures cannot loop registrations or bypass the guard; 
  await r.request('/configure',info);const bounded=(await r.request('/sessions')).sessions[0];assert.equal(bounded.prefixRepairAvailable,false);assert.equal(bounded.prefixRecovery,null);
  assert.equal((await r.request('/repair-context',body,503)).detail,'HISTORY_REPAIR_UNAVAILABLE');
  settings.wechat.history.mode='window';fs.writeFileSync(settingsFile,JSON.stringify(settings));await r.request('/configure',info);
- fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:'d'.repeat(64)}));
+ fs.mkdirSync(path.join(f.dir,'state/hook'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/hook/active-connection.json'),JSON.stringify({id:'d'.repeat(64)}));
  assert.equal((await r.request('/repair-context',body,409)).detail,'ACCOUNT_SWITCH_REQUIRES_DSH_RESTART');
 });
 

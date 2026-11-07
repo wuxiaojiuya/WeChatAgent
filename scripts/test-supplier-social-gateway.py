@@ -226,7 +226,7 @@ class SupplierSocialGatewayTests(unittest.TestCase):
         folder = self.root/'state/drawing/jobs'/JOB_ID
         folder.mkdir(parents=True, exist_ok=True)
         (folder/'image.png').write_bytes(self.reader.image_bytes)
-        write_json(self.root/'state/weflow/active-account.json', {'id': 'cached-scope'})
+        write_json(self.root/'state/hook/active-connection.json', {'id': 'cached-scope'})
         write_json(folder/'job.json', {'id': JOB_ID, 'state': 'success', 'conversationKey': PRIVATE_KEY,
                                      'accountScope': 'cached-scope', **changes})
 

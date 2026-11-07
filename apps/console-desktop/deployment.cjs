@@ -4,15 +4,16 @@ const fs = process.versions.electron ? require('original-fs') : require('node:fs
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {retireSoulx} = require('./retired-audio.cjs');
+const {assertHookOnlyFiles,retireLegacyHook} = require('./hook-only-policy.cjs');
 
 async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {}, options = {}) {
   const template = path.join(resourcesPath, 'project');
   const manifestFile = path.join(template, 'deployment.json');
   if (!fs.existsSync(manifestFile)) return null;
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-  const wechatVersion=manifest.wechatVersion??'4.1.10.27';
-  const supplier=manifest.hookBackend==='supplier-http';
-  if(!['4.1.8.27','4.1.10.27','4.1.15.13'].includes(wechatVersion)||(wechatVersion==='4.1.8.27')!==supplier)throw new Error('发行包微信版本无效。');
+  const wechatVersion=manifest.wechatVersion;
+  if(wechatVersion!=='4.1.8.27'||manifest.hookBackend!=='supplier-http')throw new Error('Only the WeChat 4.1.8.27 Hook deployment is supported.');
+  assertHookOnlyFiles(manifest.files);
   const dshBundled = manifest.dshBundled !== false;
   const workspace = path.join(dataHome, 'workspace');
   const previousDistribution=path.join(workspace,'config/distribution.json');
@@ -22,6 +23,7 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
   fs.mkdirSync(workspace, { recursive: true });
   progress('正在清理已停用的旧演唱组件…');
   retireSoulx(workspace);
+  retireLegacyHook(workspace);
   for (const relative of manifest.files) {
     if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..') || relative.startsWith('state/') || relative === 'config/wechatagent.json') throw new Error('发行包文件清单无效。');
     const source = path.join(template, relative), target = path.join(workspace, relative);
@@ -55,46 +57,6 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
   // Keep an existing legacy executable/data binding; new installations choose
   // an independently installed DSH through the setup page.
   const dsh = dshBundled ? path.join(versionRuntime,'dsh','DeepSeek Harness.exe') : previousSettings.dsh || '';
-  const client = path.join(workspace, 'state', 'hook', 'wechat-'+wechatVersion);
-  if (!supplier && !fs.existsSync(path.join(client, 'Weixin.exe'))) {
-    progress('正在准备独立匹配微信…');
-    fs.mkdirSync(path.dirname(client), { recursive: true }); await fs.promises.cp(path.join(resourcesPath, 'vendor', 'wechat'), client, { recursive: true });
-  }
-  if(!supplier){
-  const nativeDir = path.join(workspace, 'state', 'hook', 'native');
-  fs.mkdirSync(nativeDir, { recursive: true });
-  const previousBuild = path.join(nativeDir,'build.json');
-  if (fs.existsSync(previousBuild) && fs.existsSync(path.join(nativeDir,'version.dll'))) {
-    const installedHash=crypto.createHash('sha256').update(fs.readFileSync(path.join(nativeDir,'version.dll'))).digest('hex');
-    const nextHash=crypto.createHash('sha256').update(fs.readFileSync(path.join(resourcesPath,'vendor/hook/version.dll'))).digest('hex');
-    if (installedHash !== nextHash) {
-      const previous=JSON.parse(fs.readFileSync(previousBuild,'utf8').replace(/^\uFEFF/,''));
-      if (previous.sha256 === installedHash) fs.copyFileSync(previousBuild,path.join(nativeDir,'build.previous.json'));
-    }
-  }
-  for (const file of ['version.dll', 'build.json']) {
-    const source = path.join(resourcesPath, 'vendor', 'hook', file), target = path.join(nativeDir, file);
-    const bytes = fs.readFileSync(source);
-    if (!fs.existsSync(target) || crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== crypto.createHash('sha256').update(bytes).digest('hex')) fs.writeFileSync(target,bytes);
-  }
-  if(wechatVersion==='4.1.15.13'){
-    const sourceDir=path.join(resourcesPath,'vendor','hook-current');
-    const currentBuild=JSON.parse(fs.readFileSync(path.join(sourceDir,'build.json'),'utf8').replace(/^\uFEFF/,''));
-    if(currentBuild.targetVersion!==wechatVersion||currentBuild.integration!=='WeChatAgent-1'||currentBuild.profile!=='4.1.15.13-media-mentions-v2')throw new Error('发行包新版微信组件版本无效。');
-    const payloads=[['wechatagent-text-4.1.15.13.dll',currentBuild.sha256],['wechatagent-text-loader.exe',currentBuild.loaderSha256]].map(([file,expected])=>{
-      const bytes=fs.readFileSync(path.join(sourceDir,file));
-      if(crypto.createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error('发行包新版微信组件校验失败。');
-      return [file,bytes];
-    });
-    payloads.push(['build.json',fs.readFileSync(path.join(sourceDir,'build.json'))]);
-    const destination=path.join(workspace,'state','hook','native-'+wechatVersion);
-    fs.mkdirSync(destination,{recursive:true});
-    for(const [file,bytes] of payloads){
-      const target=path.join(destination,file);
-      if(!fs.existsSync(target)||!fs.readFileSync(target).equals(bytes))fs.writeFileSync(target,bytes);
-    }
-  }
-  }
   const configFile = path.join(workspace, 'config', 'wechatagent.json');
   if (!fs.existsSync(configFile)) {
     const config = JSON.parse(fs.readFileSync(path.join(workspace, 'config', 'wechatagent.example.json'), 'utf8'));
@@ -102,7 +64,8 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
     config.runtime.dshDesktop = dshBundled ? dsh : '';
     config.hook??={};
     config.hook.expectedVersion=wechatVersion;
-    config.hook.wechatExecutable='state/hook/wechat-'+wechatVersion+'/Weixin.exe';
+    config.hook.backend='supplier-http';
+    config.hook.wechatExecutable='';
     fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
   }
   const distributionFile = path.join(workspace, 'config', 'distribution.json');
@@ -115,10 +78,11 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
     if (manifest.buildId && previous.buildId !== manifest.buildId) {
       const pendingFile = path.join(workspace, 'state', 'console-state.json');
       let pending = {}; try { pending = JSON.parse(fs.readFileSync(pendingFile,'utf8')); } catch {}
-      fs.writeFileSync(pendingFile,JSON.stringify({...pending,pendingApply:true,dshRestartRequired:true},null,2));
+      delete pending.dshRestartRequired;
+      fs.writeFileSync(pendingFile,JSON.stringify({...pending,pendingApply:true,dshReloadRequired:true},null,2));
     }
   }
-  fs.writeFileSync(distributionFile, JSON.stringify({ version: manifest.version, buildId:manifest.buildId, runtimeRevision:manifest.runtimeRevision, wechatVersion, bundledWechatExecutable:client, installed: true, dataHome, python, node, dshBundled, dsh, dshHome, externalDshHome, assets: resourcesPath }, null, 2));
+  fs.writeFileSync(distributionFile, JSON.stringify({ version: manifest.version, buildId:manifest.buildId, runtimeRevision:manifest.runtimeRevision, wechatVersion, hookBackend:'supplier-http', installed: true, dataHome, python, node, dshBundled, dsh, dshHome, externalDshHome, assets: resourcesPath }, null, 2));
   progress('本机运行环境已准备，正在打开控制台…');
   return { root: workspace, node, python, dataHome, version: manifest.version };
 }

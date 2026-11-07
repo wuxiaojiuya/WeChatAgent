@@ -68,7 +68,7 @@ npm run sessions:configure
 npm run sessions:status
 ```
 
-这些命令需要 NT 读取器和新版本 DSH 插件已启动。它们只管理 WeChatAgent 的关联会话，不修改 DSH 的其他工作会话。
+这些命令需要 Hook 接收服务和当前 DSH 插件已启动。它们只管理 WeChatAgent 的关联会话，不修改 DSH 的其他工作会话，也不查询微信历史数据库。
 
 ## 使用原生压缩
 

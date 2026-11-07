@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {HistoryStore} from '../packages/dsh-social-bridge-plugin/history-store.mjs';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 
 export function usageReport(rows,{invoice=null}={}){
   const total={calls:rows.length,U:0,R:0,W:0,O:0,missingUsage:0},purposes={};
@@ -29,7 +29,7 @@ export function compareReports(before,after){
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
   const args=Object.fromEntries(process.argv.slice(2).reduce((pairs,arg,index,all)=>arg.startsWith('--')?[...pairs,[arg.slice(2),all[index+1]]]:pairs,[]));
   if(!args.chat)throw Error('Usage: node scripts/history-cost.mjs --chat wechat:private:ID [--since ISO] [--until ISO] [--invoice invoice.json] [--compare baseline.json] [--out report.json]');
-  const root=path.resolve(args.root??path.join(import.meta.dirname,'..')),account=activeReaderAccount(root),store=new HistoryStore(root,account.id||account.legacyId);
+  const root=path.resolve(args.root??path.join(import.meta.dirname,'..')),account=activeConnection(root),store=new HistoryStore(root,account.id||account.legacyId);
   try{
     const since=args.since?Date.parse(args.since):0,until=args.until?Date.parse(args.until):Date.now();if(!Number.isFinite(since)||!Number.isFinite(until)||since>until)throw Error('COST_WINDOW_INVALID');
     const report=usageReport(store.usageRows(args.chat).filter(row=>row.at>=since&&row.at<=until),{invoice:args.invoice?JSON.parse(fs.readFileSync(args.invoice,'utf8')):null});

@@ -16,7 +16,7 @@ const publicJob=job=>({id:job.id,name:job.name,size:job.size,state:job.state,...
 export class FileTransfers {
   constructor(root){this.root=path.resolve(root);this.directory=path.join(this.root,'state/files');this.jobs=path.join(this.directory,'deliveries');this.outgoing=path.join(this.directory,'outgoing');}
   settings(){return read(path.join(this.root,'config/wechatagent.json'));}
-  account(){const file=path.join(this.root,'state/weflow/active-account.json'),value=fs.existsSync(file)?read(file):{};if([value.id,value.legacyId].some(id=>id&&!fileId(id)))throw fault('FILE_ACCOUNT_INVALID');return value.id||value.legacyId||'legacy';}
+  account(){const file=path.join(this.root,'state/hook/active-connection.json'),value=fs.existsSync(file)?read(file):{};if([value.id,value.legacyId].some(id=>id&&!fileId(id)))throw fault('FILE_ACCOUNT_INVALID');return value.id||value.legacyId||'legacy';}
   allowed(key,sender){try{return filesAllowed(this.settings().wechat,key,sender);}catch{return false;}}
   assert(key,sender){if(!this.allowed(key,sender))throw fault('FILE_TRANSFER_NOT_ALLOWED');}
   read(id){if(!fileId(id))throw fault('FILE_REFERENCE_INVALID');const file=path.join(this.jobs,id+'.json');noLinks(this.root,file);if(fs.statSync(file).size>16384)throw fault('FILE_JOB_INVALID');const job=read(file);if(job.version!==1||job.id!==id||!safeFileName(job.name)||!Number.isSafeInteger(job.size)||job.size<0||job.size>FILE_LIMIT||!fileId(job.sha256)||!/^[a-f0-9]{32}$/.test(job.md5??'')||!['queued','submitting','submitted','confirmed','failed','unconfirmed','cancelled','expired'].includes(job.state)||!Number.isSafeInteger(job.createdAt)||!Number.isSafeInteger(job.deadlineAt)||job.deadlineAt-job.createdAt>600000||job.deadlineAt<job.createdAt)throw fault('FILE_JOB_INVALID');return job;}
@@ -41,9 +41,9 @@ export class FileTransfers {
   }
   status(id,key,sender){this.assert(key,sender);const job=this.read(id);if(job.key!==key||job.accountScope!==this.account()||job.sender!==sender&&!assistantAdministrator(this.settings().wechat,sender))throw fault('FILE_REFERENCE_NOT_ALLOWED');return publicJob(job);}
   async receive({id,key,sender,cwd,signal,fetchImpl=fetch}){
-    this.assert(key,sender);if(!fileId(id))throw fault('FILE_REFERENCE_INVALID');const io=read(path.join(this.root,'state/wechat-io-config.json')),base=new URL(io.reader_base_url);
+    this.assert(key,sender);if(!fileId(id))throw fault('FILE_REFERENCE_INVALID');const io=read(path.join(this.root,'state/wechat-io-config.json')),base=new URL(io.receiver_base_url);
     if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw fault('FILE_READER_LOOPBACK_REQUIRED');
-    const response=await fetchImpl(base.origin+'/api/v1/files/'+id+'?conversationKey='+encodeURIComponent(key)+'&senderWxid='+encodeURIComponent(sender),{headers:{Authorization:'Bearer '+io.reader_token},redirect:'error',signal});
+    const response=await fetchImpl(base.origin+'/api/v1/files/'+id+'?conversationKey='+encodeURIComponent(key)+'&senderWxid='+encodeURIComponent(sender),{headers:{Authorization:'Bearer '+io.receiver_token},redirect:'error',signal});
     if(!response.ok)throw fault('FILE_READER_UNAVAILABLE');const data=await response.json();if(data.status!=='ready')return {status:data.status,message:String(data.message??'文件尚未准备好。').slice(0,300)};
     if(data.id!==id||data.conversationKey!==key||data.senderWxid!==sender||!safeFileName(data.name)||!fileId(data.sha256)||!/^[a-f0-9]{32}$/.test(data.md5??'')||!Number.isSafeInteger(data.size)||data.size<0||data.size>FILE_LIMIT)throw fault('FILE_BINDING_INVALID');
     const accountScope=this.account(),accountRoot=fs.realpathSync(data.accountRoot),source=fs.realpathSync(data.path);noLinks(accountRoot,data.path);

@@ -22,9 +22,9 @@ export function createStickerPoolReviewer({ctx,root,provider,model,createUserMes
     running=true;
     try {
       const signal=AbortSignal.timeout(60000),io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,''));
-      const base=new URL(io.reader_base_url);
+      const base=new URL(io.receiver_base_url);
       if(base.protocol!=='http:'||base.hostname!=='127.0.0.1'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw Error('STICKER_REVIEW_READER_INVALID');
-      const response=await fetchImpl(base.origin+'/api/v1/stickers/pool-review/'+ticket,{headers:{Authorization:'Bearer '+io.reader_token},redirect:'error',signal});
+      const response=await fetchImpl(base.origin+'/api/v1/stickers/pool-review/'+ticket,{headers:{Authorization:'Bearer '+io.receiver_token},redirect:'error',signal});
       if(!response.ok)throw Error('STICKER_REVIEW_SOURCE_UNAVAILABLE');
       const raw=await response.text();if(raw.length>1600000)throw Error('STICKER_REVIEW_PACKET_TOO_LARGE');
       const packet=JSON.parse(raw);

@@ -162,12 +162,13 @@ export class WechatOneBotAdapter extends BaseAdapter {
       return {accepted:false,attempted:true,confirmed:false,delivered:'unconfirmed',deliveryId};
     }
     // Supplier text may complete on its documented API success acknowledgement.
-    // Keep that source distinct from a database/server receipt.
+    // Keep API acceptance distinct from a final server receipt.
     const apiAcknowledged=result.data?.receipt==='supplier-api'&&result.data?.delivered==='api-acknowledged'&&/^api-text:[a-f0-9]{64}$/.test(result.data?.message_id??'');
-    if (result.data?.receipt !== 'wechat-server-id'&&!apiAcknowledged) throw new Error('WeChat send response has no verified receipt');
+    const serverConfirmed=result.data?.receipt==='wechat-message-response'&&result.data.delivered==='server-confirmed'&&result.data.confirmed===true&&typeof result.data.message_id==='string'&&/^[1-9]\d{0,19}$/.test(result.data.message_id);
+    if (!serverConfirmed&&!apiAcknowledged) throw new Error('WeChat send response has no verified receipt');
     this.#prune(Date.now());
     this.recentOutgoing.set(this.#fingerprint(kind, id, content), Date.now() + this.antiLoopTtlMs);
-    this.stats.sends++; return { accepted: true, confirmed: true, response: result, delivered: apiAcknowledged?'api-acknowledged':'database-confirmed',...(apiAcknowledged?{apiAcknowledged:true}:{}) };
+    this.stats.sends++; return { accepted: true, confirmed: true, serverConfirmed, response: result, delivered: apiAcknowledged?'api-acknowledged':'server-confirmed',...(apiAcknowledged?{apiAcknowledged:true}:{}) };
   }
   async stickerChoices({kind,target,query}){
     const result=await this.server.action('get_sticker_list',{kind,target:String(target),...(typeof query==='string'&&query.trim()?{query:query.slice(0,500)}:{})});
@@ -184,7 +185,7 @@ export class WechatOneBotAdapter extends BaseAdapter {
       return {accepted:false,attempted:true,delivered:'unconfirmed',deliveryId};
     }
     if(abandon&&result.data?.released===true)return result.data;
-    if(result.data?.receipt!=='wechat-server-id'||result.data?.media_type!=='wechat-sticker')throw new Error('Sticker send has no server receipt');
+    if(result.data?.receipt!=='wechat-message-response'||result.data?.media_type!=='wechat-sticker'||result.data.confirmed!==true||typeof result.data.message_id!=='string'||!/^[1-9]\d{0,19}$/.test(result.data.message_id))throw new Error('Sticker send has no server receipt');
     this.stats.sends++;return result;
   }
   async stickerLabels({kind,target,ids}){return (await this.server.action('get_sticker_labels',{kind,target:String(target),ids})).data?.labels??[];}

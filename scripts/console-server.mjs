@@ -34,18 +34,16 @@ import {chatContactNames} from './chat-contact-names.mjs';
 import { runConsoleCommand, taskFailureMessage, windowsPowerShellEnvironment, windowsPowerShellExecutable } from './console-process.mjs';
 import { personaError,personaReferences } from '../public/console/persona-files.mjs';
 import {applyChatSettings} from '../public/console/conversation-settings.mjs';
-import { runReaderSetup, readerSetupMessage } from './reader-setup.mjs';
 import { dshConfigurationMatches,sameProjectPath } from './dsh-configuration.mjs';
 import {refreshDsh} from './dsh-refresh.mjs';
 import {personaEvolutionStatus} from '../packages/dsh-social-bridge-plugin/persona-evolution.mjs';
 import { createProcessRecovery,startupConflictPorts } from './process-recovery.mjs';
-import { readerAccountId, cachedReaderAccount, applyReaderAccount,activeReaderAccount } from './reader-account-state.mjs';
-import {verifyWeChatAccount} from './wechat-account-check.mjs';
+import {connectionScope,activeConnection,connectionChatSettings,ensureConnectionMigration} from './hook-connection-state.mjs';
+import {isDeepStrictEqual} from 'node:util';
 
 const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const fault = (message, status = 400) => Object.assign(new Error(message), { status });
-const setupCode = value => typeof value==='string'&&/^(?:READER|WECHAT|HOOK|REVIEWED)_[A-Z0-9_]{1,65}$/.test(value)?value:'';
 const atomic = (file, value) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;
@@ -53,6 +51,15 @@ const atomic = (file, value) => {
   fs.renameSync(temp, file);
 };
 const optionalJson = (file, fallback = {}) => fs.existsSync(file) ? readJson(file) : fallback;
+// Explicit Hook startup may restore the selected connection's chat settings.
+// Other settings must still remain unchanged while a startup job is running.
+const withoutAccountChats = config => {
+  const value=structuredClone(config),features=Object.keys(connectionChatSettings(config).featureChats);
+  for(const key of ['assistant','whitelist','workModes','modeSettings','chatModes','dshAccess'])delete value.wechat[key];
+  delete value.persona.chats;
+  for(const feature of features)if(value.wechat[feature])delete value.wechat[feature].chats;
+  return value;
+};
 const roleName = name => typeof name === 'string' && /^[^\\/\0.][^\\/\0]{0,60}$/.test(name) && !name.includes('..') && !/[<>:"|?*\r\n]/.test(name) && !/[. ]$/.test(name) && !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(name);
 const portOpen = port => new Promise(resolve => {
   const socket = net.connect({ host: '127.0.0.1', port });
@@ -105,7 +112,8 @@ export function validateConsoleConfig(config, root) {
 
 import {allowedConversation,validateConversationSettings,conversationWorkMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {createNativeVoiceDelivery} from './native-voice-delivery.mjs';
-export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions, capabilityExecution } = {}) {
+export function createConsole({ root = projectRoot, port = 3210, runner, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop, speechCapabilities, audioInstallerOptions, capabilityExecution } = {}) {
+  ensureConnectionMigration(root);
   const updates=createUpdateChecker({root,fetchImpl});
   const publicDir = path.join(projectRoot, 'public', 'console');
   const pluginInstaller=new PluginInstaller(root);
@@ -118,8 +126,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const audioCapabilities=createAudioCapabilities({root,execution:generation,modelExists:id=>!!rvcModels.get(id),nativeStatus:()=>voiceTransport,voices:voiceProfiles});
   const musicCapabilities=createMusicCapabilities({root,execution:generation,settings:()=>audioCapabilities.singingSettings(),models:rvcModels,
     planPerformance:async({signal,...body})=>(await plugin('/singing-performance',body,{signal})).performance});
-  const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,reader});
-  const nativeImage=createNativeImageDelivery({root,fetchImpl,config:()=>snapshot().config,enabledFor:key=>drawingCapability.allowed(key),reader});
+  const nativeVoice=createNativeVoiceDelivery({root,fetchImpl,settings:()=>audioCapabilities.snapshot().settings,config:()=>snapshot().config,receiver});
+  const nativeImage=createNativeImageDelivery({root,fetchImpl,config:()=>snapshot().config,enabledFor:key=>drawingCapability.allowed(key),receiver});
   const drawingCapability=createDrawingCapability({root,execution:generation,config:()=>snapshot().config,delivery:nativeImage});
   const voiceRequests=new Map(),musicDeliveries=new Map();
   async function musicJobStatus(job){
@@ -136,11 +144,15 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const configFile = path.join(root, 'config', 'wechatagent.json');
   const preferenceFile = path.join(root, 'state', 'console-state.json');
   const deletedPersonaFile = name => path.join(root,'state','deleted-personas',hash(name.toLocaleLowerCase())+'.json');
-  const readerFile = path.join(root, 'state', 'weflow', 'WeFlow-config.json');
-  const readerRevision = () => hash(JSON.stringify(optionalJson(readerFile)));
-  const readerVerified = () => optionalJson(preferenceFile).readerVerifiedRevision === readerRevision();
+  const connectionFile = path.join(root, 'state/hook/connection.json');
+  const connectionRevision = () => hash(JSON.stringify(optionalJson(connectionFile)));
+  const connectionSnapshot = () => {
+    const value=optionalJson(connectionFile),prepared=value.version===1&&value.backend==='supplier-http'&&value.wechatVersion==='4.1.8.27'&&typeof value.ownWxid==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value.ownWxid);
+    return {version:1,backend:'supplier-http',wechatVersion:'4.1.8.27',ownWxid:prepared?value.ownWxid:'',prepared,revision:connectionRevision()};
+  };
+  const connectionPrepared = () => connectionSnapshot().prepared;
   const csrf = crypto.randomBytes(32).toString('hex');
-  const jobs = new Map(); let activeJob = null; let latestJob = null; let protectingCredential = false;
+  const jobs = new Map(); let activeJob = null; let latestJob = null;
   let processRecoveryBusy=false;
   let shutdownPromise=null,shuttingDown=false;
   const processRecovery=createProcessRecovery({root,probe:processProbe,stop:processStop});
@@ -159,8 +171,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if (fs.existsSync(file)) { const secret = fs.readFileSync(file, 'utf8').trim(); if (secret) text = text.split(secret).join('[已隐藏]'); }
     }
     let io = {}; try { io = optionalJson(path.join(root, 'state', 'wechat-io-config.json')); } catch {}
-    if (io.reader_token) text = text.split(io.reader_token).join('[已隐藏]');
-    return text.replace(/(Bearer\s+)[^\s"']+/gi, '$1[已隐藏]').replace(/((?:decryptKey|access_token|api[_-]?key|password|reader_token)\s*[":=]+\s*")[^"]*/gi, '$1[已隐藏]').replace(/userdpapi:[A-Za-z0-9+/=]+/g, '[已隐藏凭据]').replace(/\b[0-9a-f]{64}\b/gi, '[已隐藏凭据]');
+    if (io.receiver_token) text = text.split(io.receiver_token).join('[已隐藏]');
+    return text.replace(/(Bearer\s+)[^\s"']+/gi, '$1[已隐藏]').replace(/((?:decryptKey|access_token|api[_-]?key|password|receiver_token|reader_token)\s*[":=]+\s*")[^"]*/gi, '$1[已隐藏]').replace(/userdpapi:[A-Za-z0-9+/=]+/g, '[已隐藏凭据]').replace(/\b[0-9a-f]{64}\b/gi, '[已隐藏凭据]');
   };
   const backup = file => {
     if (!fs.existsSync(file)) return;
@@ -170,14 +182,14 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   };
   const markPending = (dsh = false) => {
     const previous = optionalJson(preferenceFile);
-    atomic(preferenceFile, { ...previous, pendingApply: true, dshRestartRequired: previous.dshRestartRequired || dsh });
+    atomic(preferenceFile, { ...previous, pendingApply: true, dshReloadRequired: previous.dshReloadRequired || dsh });
     statusTime = 0;
   };
-  const assertIdle = () => { if(shuttingDown)throw fault('正在退出并停止后台服务，请等待操作完成。',409);if (activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy()) throw fault('有操作正在进行，请等它完成后再保存或执行其他操作。', 409); };
+  const assertIdle = () => { if(shuttingDown)throw fault('正在退出并停止后台服务，请等待操作完成。',409);if (activeJob || processRecoveryBusy || audioInstaller.isBusy()) throw fault('有操作正在进行，请等它完成后再保存或执行其他操作。', 409); };
   const personaApprovals=createPersonaApprovals({root,configFor:()=>snapshot().config,saveConfig:config=>{validateConsoleConfig(config,root);backup(configFile);atomic(configFile,config);statusTime=0;}});
   const chatAdministrator=async(key,config)=>{
     if(!/^wechat:private:[1-9]\d{0,15}$/.test(key??''))return null;
-    const data=await reader('/api/v1/contacts?kind=private&conversationId='+encodeURIComponent(key.split(':')[2])+'&refresh=1');
+    const data=await receiver('/api/v1/contacts?kind=private&conversationId='+encodeURIComponent(key.split(':')[2])+'&refresh=1');
     return administratorForChat(config.wechat,key,data.contacts??[],optionalJson(path.join(root,'state/wechat-io-config.json')).self_wxid);
   };
   function shutdown() {
@@ -198,16 +210,16 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     if (data.success === false) throw fault('读取服务返回错误，请查看运行日志。', 503);
     return data;
   }
-  async function reader(route) {
+  async function receiver(route) {
     const { config } = snapshot(); const io = optionalJson(path.join(root, 'state', 'wechat-io-config.json'));
-    if (!io.reader_token) throw fault('读取连接尚未准备，请先启动服务。', 503);
-    return remote(`http://127.0.0.1:${config.ports.weflow}${route}`, io.reader_token, 5000);
+    if (!io.receiver_token) throw fault('微信消息接收连接尚未准备，请先启动助手。', 503);
+    return remote(`http://127.0.0.1:${config.ports.receiver}${route}`, io.receiver_token, 5000);
   }
   async function stickerManager(route,body) {
     const {config}=snapshot(),io=optionalJson(path.join(root,'state','wechat-io-config.json'));
-    if(!io.reader_token)throw fault('请先连接微信并启动读取服务，再管理表情包。',503);
+    if(!io.receiver_token)throw fault('请先登录微信并启动助手，再管理表情包。',503);
     let response;
-    try{response=await fetchImpl(`http://127.0.0.1:${config.ports.weflow}/api/v1/stickers/manage${route}`,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+io.reader_token,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});}
+    try{response=await fetchImpl(`http://127.0.0.1:${config.ports.receiver}/api/v1/stickers/manage${route}`,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+io.receiver_token,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});}
     catch{throw fault('表情池暂时无法连接，请确认读取服务已启动。',503);}
     const data=await response.json();
     if(!response.ok){
@@ -233,7 +245,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   function buffered() {
     const buffer = optionalJson(path.join(root, 'state', 'social-messages.json'), { chats: {} });
     let member={chats:{}};
-    try{const account=activeReaderAccount(root);member=optionalJson(path.join(root,'state/accounts',account.id||account.legacyId||'legacy','assistant-group-chat.json'),member);}catch{}
+    try{const account=activeConnection(root);member=optionalJson(path.join(root,'state/accounts',account.id||account.legacyId||'legacy','assistant-group-chat.json'),member);}catch{}
     const rows = [buffer,member].flatMap(item=>Object.entries(item.chats??{}).flatMap(([key,messages])=>messages.map(m=>({...m,key}))));
     return { buffer, rows,chatCount:new Set([...Object.keys(buffer.chats??{}),...Object.keys(member.chats??{})]).size };
   }
@@ -246,28 +258,28 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       const tokenFile = path.join(root, 'state', 'social-dsh-token.txt');
       const token = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '';
       const results = await Promise.allSettled([
-        io.reader_token ? remote(`http://127.0.0.1:${config.ports.weflow}/api/v1/reader/status`, io.reader_token) : Promise.reject(),
-        io.reader_token ? remote(`http://127.0.0.1:${config.ports.weflow}/api/v1/sessions?limit=1`, io.reader_token) : Promise.reject(),
+        io.receiver_token ? remote(`http://127.0.0.1:${config.ports.receiver}/api/v1/receiver/status`, io.receiver_token) : Promise.reject(),
+        io.receiver_token ? remote(`http://127.0.0.1:${config.ports.receiver}/api/v1/sessions?limit=1`, io.receiver_token) : Promise.reject(),
         remote(`http://127.0.0.1:${config.ports.adapter}/status`),
         token ? remote(`http://127.0.0.1:${config.ports.dshPlugin}/health`, token) : Promise.reject(),
         portOpen(config.ports.onebot),
       ]);
       const value = index => results[index].status === 'fulfilled' ? results[index].value : null;
-      const readerState = value(0), adapter = value(2), health = value(3);
+      const receiverState = value(0), adapter = value(2), health = value(3);
       const matchesDsh=dshConfigurationMatches(root,snapshot().config,health);
-      if(optionalJson(preferenceFile).dshRestartRequired && matchesDsh)atomic(preferenceFile,{...optionalJson(preferenceFile),dshRestartRequired:false});
+      if(optionalJson(preferenceFile).dshReloadRequired && matchesDsh)atomic(preferenceFile,{...optionalJson(preferenceFile),dshReloadRequired:false});
       const dshReady = matchesDsh && health.contextMode === 'native-session-v1' && health.behaviorPolicy === 'local-config-only-v1' && health.imageInput === 'native-attachment-v1';
-      const readerReady = !!readerState && !!value(1) && !readerState.lastError;
+      const receiverReady = !!receiverState && !!value(1) && !receiverState.lastError;
       const bridgeReady = !!value(4) && adapter?.ob_connected === true;
-      const hookReady = adapter?.hook_connected === true && (adapter?.hook_ready === true || adapter?.hook_account_verified === true) && adapter?.version === config.hook.expectedVersion;
-      const ready = readerReady && bridgeReady && hookReady && dshReady && adapter?.reader_connected === true;
+      const hookReady = adapter?.hook_connected === true && adapter?.hook_ready === true && adapter?.version === config.hook.expectedVersion;
+      const ready = receiverReady && bridgeReady && hookReady && dshReady && adapter?.receiver_connected === true;
       const { rows } = buffered();
       const services = [
-        { id: 'reader', label: '微信读取', ready: readerReady, detail: readerReady ? config.hook.backend==='supplier-http'?'Hook 推送接收器就绪，不访问微信数据库':'数据库可读，消息同步正常' : readerFailureDetail(readerState?.lastError), port: config.ports.weflow },
-        { id: 'bridge', label: '消息桥接', ready: bridgeReady && hookReady && adapter?.reader_connected === true, detail: bridgeReady && hookReady && adapter?.reader_connected ? config.hook.backend==='supplier-http'?'收发接口已连接，单账号模式':'收发连接正常，账号已核验' : !hookReady ? '等待匹配微信登录与发送连接' : '等待消息桥接连接', port: config.ports.adapter },
+        { id: 'receiver', label: '消息接收', ready: receiverReady, detail: receiverReady ? 'Hook 推送接收器就绪' : receiverFailureDetail(receiverState?.lastError), port: config.ports.receiver },
+        { id: 'bridge', label: '消息桥接', ready: bridgeReady && hookReady && adapter?.receiver_connected === true, detail: bridgeReady && hookReady && adapter?.receiver_connected ? '收发接口已连接，单账号模式' : !hookReady ? '等待匹配微信登录与发送连接' : '等待消息桥接连接', port: config.ports.adapter },
         { id: 'dsh', label: '模型连接', ready: dshReady, detail: dshReady ? 'DSH 插件已连接' : '打开 DSH 并启用本项目插件', port: config.ports.dshPlugin },
       ];
-      const running = !!readerState || !!adapter || !!value(4);
+      const running = !!receiverState || !!adapter || !!value(4);
       return { ready, running, services, lastError: safeText(adapter?.last_error ?? ''),
         stats: { received: rows.filter(m => !m.outgoing).length, sent: rows.filter(m => m.outgoing).length, pending: rows.filter(m => !m.outgoing && !m.processed).length, chats: buffered().chatCount },
         recent: rows.sort((a, b) => b.timestamp - a.timestamp).slice(0, 6).map(m => ({ key: m.key, name: m.conversation_name, text: m.text?.slice(0, 100), outgoing: m.outgoing, timestamp: m.timestamp })),
@@ -283,16 +295,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     if (action === 'setup') return ps(fs.existsSync(path.join(root, 'config', 'distribution.json')) ? 'check-runtime.ps1' : 'setup.ps1');
     if (action === 'dsh-open') return ps('launch-dsh.ps1');
     if (action === 'wechat-open') return ps('launch-hook-wechat.ps1', ...(fs.existsSync(path.join(root,'state/hook/native/build.previous.json')) ? ['-UpdateHook'] : []));
-    if(action==='reader-connect'&&snapshot().config.hook.backend==='supplier-http'){
-      if(body.revision!==readerRevision())throw fault('账号配置已变化，请刷新后再连接。',409);
-      return node('supplier-connect.mjs',body.revision);
-    }
-    if(action==='hook-build'&&snapshot().config.hook.backend==='supplier-http')return ps('launch-supplier-hook.ps1','-PrepareOnly');
-    if (action === 'hook-build') return ps('build-hook.ps1');
-    if (action === 'hook-pin') return ps('pin-hook-client.ps1');
-    if (action === 'hook-unpin') return ps('pin-hook-client.ps1', '-Unlock');
+    if(action==='hook-build')return ps('launch-supplier-hook.ps1','-PrepareOnly');
     if (action === 'hook-check') return node('hook-onebot.mjs', '--check');
-    if (action === 'reader-check') return { exe: snapshot().config.runtime.python, args: ['-B', path.join(root, 'scripts', 'reader-api.py'), '--check'] };
     if (['sessions-configure', 'sessions-compact'].includes(action)) {
       const key = body.conversationKey;
       const config = snapshot().config;
@@ -303,44 +307,22 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     throw fault('不支持此操作。');
   }
   const execute = runner ?? ((spec, onOutput) => runConsoleCommand(spec, onOutput, { cwd: root, timeoutMs: spec.timeoutMs }));
-  function readerFailureDetail(readerError) {
-    if(readerError)return readerError==='HOOK_MESSAGE_DATABASE_UNREADABLE'?taskFailureMessage(readerError,1):'读取异常，请重新连接并验证';
-    if(snapshot().config.hook.backend==='supplier-http'&&optionalJson(readerFile).backend!=='supplier-http')return '请在连接设置打开微信 4.1.8.27，登录后连接并验证账号';
-    const file = path.join(root, 'state', 'logs', 'reader.stderr.log');
-    if (!fs.existsSync(file)) return '请在首次配置中连接并验证微信';
+  function receiverFailureDetail(receiverError) {
+    if(receiverError)return taskFailureMessage(receiverError,1);
+    if(!connectionPrepared())return '请在设置中打开微信 4.1.8.27 并登录，再到概览启动助手；连接将自动准备。';
+    const file = path.join(root, 'state', 'logs', 'receiver.stderr.log');
+    if (!fs.existsSync(file)) return '登录微信后，到概览启动助手。';
     const output = fs.readFileSync(file, 'utf8').slice(-8000);
-    return output.trim() ? taskFailureMessage(output, 1) : '等待读取服务启动';
-  }
-  function readerRequest(body) {
-    if (body.revision !== readerRevision()) throw fault('读取配置已变化，请重新载入后再连接。', 409);
-    const settings = optionalJson(readerFile);
-    for (const key of ['dbPath', 'myWxid', 'decryptKey']) {
-      if (typeof body[key] !== 'string' || body[key].length > 4096 || /[\0\r\n]/.test(body[key])) throw fault('读取设置包含无效字符。');
-    }
-    if (typeof body.autoKey !== 'boolean') throw fault('请选择自动连接或手动验证。');
-    const dbPath = body.dbPath.trim(), myWxid = body.myWxid.trim();
-    if(!dbPath||!myWxid)throw fault('请先识别账号目录，并明确选择当前登录的微信账号。');
-    const selectedId = readerAccountId(root, { dbPath, myWxid });
-    const currentId = readerAccountId(root, settings);
-    const cached = selectedId ? cachedReaderAccount(root, selectedId) : null;
-    const request = { operation: 'connect', dbPath, myWxid,
-      decryptKey: body.decryptKey.trim() || (selectedId === currentId ? settings.decryptKey : cached?.reader?.decryptKey) || '',
-      autoKey: body.autoKey, wechatExecutable: snapshot().config.hook.wechatExecutable };
-    if (!request.dbPath || !request.myWxid) throw fault('请先自动查找账号或选择微信账号文件夹。');
-    return request;
+    return output.trim() ? taskFailureMessage(output, 1) : '等待微信消息接收服务启动';
   }
   function startJob(body) {
     assertIdle();
-    if(['start','restart','reader-check','hook-check'].includes(body.action)&&snapshot().config.hook.backend==='supplier-http'){
-      const binding=optionalJson(readerFile);
-      if(binding.backend!=='supplier-http'||!binding.myWxid||!binding.dbPath)throw fault('尚未绑定新 Hook 的微信账号。请到“设置 → 连接设置”，打开微信 4.1.8.27 并登录，再点击“连接并验证”，成功后启动服务。',409);
-    }
-    const connectRequest = body.action === 'reader-connect'&&snapshot().config.hook.backend!=='supplier-http' ? readerRequest(body) : null;
-    const checkRevision = readerRevision();
-    const previousReaderId = readerAccountId(root, optionalJson(readerFile));
-    const initialConfigRevision = snapshot().revision;
-    const spec = connectRequest ? {} : command(body.action, body);
-    spec.timeoutMs = ['setup', 'hook-build', 'hook-test'].includes(body.action) ? 1200000 : ['start', 'restart'].includes(body.action) ? 180000 : 150000;
+    if(['reader-connect','reader-check'].includes(body.action))throw fault('旧连接操作已移除。请在设置中打开微信并登录，再到概览启动助手。',410);
+    if(body.action==='hook-check'&&!connectionPrepared())throw fault('请先在设置中打开微信 4.1.8.27 并登录，再到概览启动助手。',409);
+    const previousConnectionId = connectionScope(root, optionalJson(connectionFile));
+    const initialSnapshot = snapshot(),initialConfigRevision = initialSnapshot.revision;
+    const spec = command(body.action, body);
+    spec.timeoutMs = ['setup', 'hook-build'].includes(body.action) ? 1200000 : ['start', 'restart'].includes(body.action) ? 180000 : 150000;
     const id = crypto.randomUUID();
     const job = { id, action: body.action, state: 'running', startedAt: Date.now(), output: '', exitCode: null };
     jobs.set(id, job); activeJob = id; latestJob = id;
@@ -358,66 +340,29 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(body.restartServices??preferences.applyRestartServices)return execute({...command('restart'),timeoutMs:180000},output);
         return 0;
       }
-      if (!connectRequest) return execute(spec, output);
-      job.phase='checking-wechat';
-      await accountVerifier({root,config:snapshot().config,settings:connectRequest,fetchImpl,wait:false,requireReady:false});
-      job.phase='validating-database';
-      const result = await readerSetup({ root, python: snapshot().config.runtime.python, request: connectRequest, onProgress: message => output(message + '\n') });
-      if (!result.ok) { job.message = readerSetupMessage(result.code);if(setupCode(result.code)){job.code=setupCode(result.code);output('['+job.code+'] ');}output(job.message + '\n'); return 1; }
-      if (checkRevision !== readerRevision()) throw fault('读取配置已在其他程序中变化。请刷新后重试，当前配置未覆盖。', 409);
-      if (!/^userdpapi:[A-Za-z0-9+/=]+$/.test(result.protectedKey ?? '') || !result.dbPath || !result.myWxid) throw fault('凭据保护或数据库验证未完成，原配置已保留。');
-      if (initialConfigRevision !== snapshot().revision) throw fault('其他设置已在验证期间变化。请刷新后重试，原账号配置已保留。', 409);
-      const previousReader = optionalJson(readerFile);
-      const settings = { ...previousReader, dbPath: result.dbPath, myWxid: result.myWxid, decryptKey: result.protectedKey };
-      if(readerAccountId(root,settings)!==readerAccountId(root,connectRequest))throw new Error('READER_ACCOUNT_RESULT_MISMATCH');
-      job.phase='confirming-wechat-account';
-      output('数据库已验证，正在确认微信实时账号；尚未保存切换结果…\n');
-      await accountVerifier({root,config:snapshot().config,settings,fetchImpl,onProgress:message=>output(message+'\n')});
-      if(checkRevision!==readerRevision()||initialConfigRevision!==snapshot().revision)throw fault('配置已在账号核对期间变化。请刷新后重试，原账号配置未覆盖。',409);
-      const previousId = readerAccountId(root, previousReader), nextId = readerAccountId(root, settings);
-      if (previousId && previousId !== nextId) {
-        job.phase='stopping-services';
-        output('新账号已验证，正在停止旧账号的读取与消息服务…\n');
-        const stopped = await execute(command('stop'), output);
-        if (stopped !== 0) throw fault('旧账号服务未能停止，原账号配置已保留。请先停止服务后再切换。');
-        const ports = snapshot().config.ports;
-        if ((await Promise.all([ports.weflow, ports.onebot, ports.adapter].map(portOpen))).some(Boolean)) throw fault('旧账号服务端口仍在使用，原账号配置已保留。请退出占用服务后再切换。');
-        if (checkRevision !== readerRevision() || initialConfigRevision !== snapshot().revision) throw fault('配置已在停止服务期间变化。请刷新后重试，原账号配置未覆盖。', 409);
-      }
-      job.phase='switching-account';
-      await accountVerifier({root,config:snapshot().config,settings,fetchImpl,wait:false});
-      if(checkRevision!==readerRevision()||initialConfigRevision!==snapshot().revision)throw fault('配置已在保存账号前变化。请刷新后重试，原账号配置未覆盖。',409);
-      backup(readerFile); backup(configFile);
-      const applied = applyReaderAccount(root, previousReader, settings, snapshot().config);
-      markPending(applied.needsDshRestart);
-      atomic(preferenceFile, { ...optionalJson(preferenceFile), readerVerifiedRevision: readerRevision() });
-      job.readerConfigured = true; job.accountSwitched = applied.changed;
-      job.dshRestartRequired = applied.needsDshRestart;
-      job.phase='complete';
-      output(applied.changed ? '已切换并保存账号。聊天范围按账号保存；请完整重开 DSH，再启动助手服务。\n' : applied.needsDshRestart ? '微信数据库已验证并保存。如果 DSH 已打开，请完整重开 DSH，再启动助手服务。\n' : '微信数据库已验证并保存。可以继续启动服务。\n');
-      return 0;
+      return execute(spec, output);
     }).then(async code => {
       job.exitCode = code; job.state = code === 0 ? 'succeeded' : 'failed';
-      if(code===0&&body.action==='reader-connect'&&snapshot().config.hook.backend==='supplier-http'){
-        job.readerConfigured=true;job.accountSwitched=!!previousReaderId&&previousReaderId!==readerAccountId(root,optionalJson(readerFile));job.dshRestartRequired=optionalJson(preferenceFile).dshRestartRequired===true;markPending(job.dshRestartRequired);
-      }
-      if (code !== 0 && ['start', 'restart'].includes(body.action) && /reader exited/.test(job.output)) {
-        const file = path.join(root, 'state', 'logs', 'reader.stderr.log');
-        if (fs.existsSync(file)) output('\n读取器错误：\n' + fs.readFileSync(file, 'utf8').slice(-8000));
+      if (code !== 0 && ['start', 'restart'].includes(body.action) && /receiver exited/.test(job.output)) {
+        const file = path.join(root, 'state', 'logs', 'receiver.stderr.log');
+        if (fs.existsSync(file)) output('\n微信消息接收服务错误：\n' + fs.readFileSync(file, 'utf8').slice(-8000));
       }
       if (code !== 0 && !job.message) job.message = taskFailureMessage(job.output, code);
-      if (code === 0 && body.action === 'reader-check' && checkRevision === readerRevision()) {
-        atomic(preferenceFile, { ...optionalJson(preferenceFile), readerVerifiedRevision: checkRevision }); job.readerConfigured = true;
-      }
       if (code === 0 && ['start', 'restart','apply-settings'].includes(body.action)) {
-        if(initialConfigRevision!==snapshot().revision)throw fault('设置在启动期间发生变化，请重新应用。',409);
-        if(body.action!=='apply-settings'&&optionalJson(preferenceFile).dshRestartRequired){
+        const current=snapshot();
+        const startupConnectionChanged=['start','restart'].includes(body.action)&&initialSnapshot.config.hook.backend==='supplier-http'&&previousConnectionId&&previousConnectionId!==connectionScope(root,optionalJson(connectionFile))&&connectionPrepared();
+        if(initialConfigRevision!==current.revision&&!(startupConnectionChanged&&isDeepStrictEqual(withoutAccountChats(initialSnapshot.config),withoutAccountChats(current.config))))throw fault('设置在启动期间发生变化，请重新应用。',409);
+        if(body.action!=='apply-settings'&&optionalJson(preferenceFile).dshReloadRequired){
           const health=await remote('http://127.0.0.1:'+snapshot().config.ports.dshPlugin+'/health',fs.readFileSync(path.join(root,'state/social-dsh-token.txt'),'utf8').trim());
           if(!dshConfigurationMatches(root,snapshot().config,health))throw fault('DSH 仍未加载当前模型或插件配置。请准备配置，从托盘完整退出并重开 DSH，然后重试。',409);
         }
-        atomic(preferenceFile, { ...optionalJson(preferenceFile), pendingApply: false, dshRestartRequired:false,applyRestartServices:false,previousDshPort:snapshot().config.ports.dshPlugin });
+        atomic(preferenceFile, { ...optionalJson(preferenceFile), pendingApply: false, dshReloadRequired:false,applyRestartServices:false,previousDshPort:snapshot().config.ports.dshPlugin });
+        if(['start','restart'].includes(body.action)&&current.config.hook.backend==='supplier-http'){
+          job.connectionPrepared=connectionPrepared();
+          job.accountSwitched=!!previousConnectionId&&previousConnectionId!==connectionScope(root,optionalJson(connectionFile));
+        }
       }
-    }).catch(error => { job.state = 'failed'; job.exitCode = 1; job.message = error.status ? error.message : connectRequest ? readerSetupMessage(error.message) : taskFailureMessage(job.output, 1);if(connectRequest&&setupCode(error.code??error.message)){job.code=setupCode(error.code??error.message);output('['+job.code+'] ');}output(job.message); }).finally(() => {
+    }).catch(error => { job.state = 'failed'; job.exitCode = 1; job.message = error.status ? error.message : taskFailureMessage(job.output, 1);output(job.message); }).finally(() => {
       job.finishedAt = Date.now(); activeJob = null; statusTime = 0;
     });
     return job;
@@ -427,15 +372,15 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     for await (const chunk of req) { size += chunk.length; if (size > limit) throw fault('提交内容过大。', 413); chunks.push(chunk); }
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw fault('表单内容无效。'); }
   }
-  async function nativeHelper(kind, input) {
-    if (process.platform !== 'win32') throw fault('文件选择与凭据保护需要 Windows。');
+  async function nativeHelper(kind) {
+    if (process.platform !== 'win32') throw fault('文件选择需要 Windows。');
     return new Promise((resolve, reject) => {
       const child = spawn(windowsPowerShellExecutable(), ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', path.join(projectRoot, 'scripts', 'console-native.ps1'), kind], { windowsHide: true, shell: false, env: windowsPowerShellEnvironment() });
       let output = ''; let error = '';
       child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { error += b.toString(); });
       child.once('error', () => reject(fault('无法打开 Windows 选择窗口。')));
-      child.once('close', code => code === 0 ? resolve(output.trim()) : reject(fault(kind === 'protect' ? '无法保护读取凭据。原有设置未修改。' : '文件选择失败，请手动填写路径。')));
-      child.stdin.end(input ?? '');
+      child.once('close', code => code === 0 ? resolve(output.trim()) : reject(fault('文件选择失败，请手动填写路径。')));
+      child.stdin.end();
     });
   }
   const server = http.createServer(async (req, res) => {
@@ -490,6 +435,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method === 'GET' && route === '/api/info') return reply(200, { project: 'WeChatAgent Console', root, version: 1, token: csrf });
       if (req.headers['x-console-token'] !== csrf) throw fault('控制台连接已更新，请刷新页面。', 401);
+      if(['/api/reader-config','/api/reader-accounts'].includes(route))throw fault('旧连接接口已移除。请在设置中打开微信并登录，再到概览启动助手。',410);
       if(req.method==='GET'&&route==='/api/audio-runtime/status')return reply(200,audioInstaller.status());
       if(req.method==='GET'&&route==='/api/updates')return reply(200,await updates.check());
       if(req.method==='GET'&&route==='/api/assistant-feedback')return reply(200,feedbackSnapshot(root));
@@ -500,7 +446,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if (req.method === 'GET' && route === '/api/config') return reply(200, { ...snapshot(), ...optionalJson(preferenceFile) });
       if(req.method==='GET'&&route==='/api/chat-administrator')return reply(200,{administrator:await chatAdministrator(url.searchParams.get('key'),snapshot().config)});
       if(req.method==='GET'&&route==='/api/persona-proposals'){
-        const evolution=personaEvolutionStatus(root,activeReaderAccount(root).id),wechat=snapshot().config.wechat;
+        const evolution=personaEvolutionStatus(root,activeConnection(root).id),wechat=snapshot().config.wechat;
         evolution.chats=evolution.chats.filter(row=>allowedConversation(wechat,row.conversationKey));
         return reply(200,{proposals:personaApprovals.list(),evolution});
       }
@@ -519,7 +465,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if(req.method==='GET'&&route===musicBase+'/latest'){
         const key=url.searchParams.get('conversationKey'),singing=audioCapabilities.snapshot().settings.singing;
         if(!allowedConversation(snapshot().config.wechat,key)||!singing.enabled||!singing.chats.includes(key))throw fault('当前聊天的唱歌能力未开启。',403);
-        const job=musicCapabilities.latestForConversation(key,activeReaderAccount(root).id);
+        const job=musicCapabilities.latestForConversation(key,activeConnection(root).id);
         return reply(200,job?await musicJobStatus(job):{state:'none',sent:false,message:'当前账号的这个聊天没有可恢复的翻唱任务。'});
       }
       if(req.method==='GET'&&route===musicBase+'/models')return reply(200,{models:rvcModels.publicList()});
@@ -532,7 +478,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const options={kind:url.searchParams.get('kind'),name:url.searchParams.get('name')};
         return reply(200,options.kind==='reference'&&route.includes('/voice/')?await voiceProfiles.upload(req,options):await rvcModels.upload(req,options));
       }
-      if(req.method==='GET'&&route==='/api/sticker-pool')return reply(200,await reader('/api/v1/stickers/pool-status'));
+      if(req.method==='GET'&&route==='/api/sticker-pool')return reply(200,await receiver('/api/v1/stickers/pool-status'));
       if(req.method==='GET'&&route==='/api/sticker-manager')return reply(200,await stickerManager(''));
       if(req.method==='GET'&&route==='/api/sticker-manager/image'){
         const id=url.searchParams.get('id'),scope=url.searchParams.get('scope');
@@ -553,8 +499,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method === 'GET' && route === '/api/deployment') {
         const distribution = optionalJson(path.join(root, 'config', 'distribution.json'));
-        const readerSettings = optionalJson(path.join(root, 'state', 'weflow', 'WeFlow-config.json'));
-        return reply(200, { installed: !!distribution.installed, version: distribution.version ?? '0.4.1', configured: !!readerSettings.dbPath && !!readerSettings.myWxid && (snapshot().config.hook.backend==='supplier-http'?readerSettings.backend==='supplier-http':!!readerSettings.decryptKey) && readerVerified(), pluginPath: path.join(root, 'packages', 'dsh-social-bridge-plugin') });
+        return reply(200, { installed: !!distribution.installed, version: distribution.version ?? '0.4.1', configured: connectionPrepared(), pluginPath: path.join(root, 'packages', 'dsh-social-bridge-plugin') });
       }
       if (req.method === 'GET' && route === '/api/status') return reply(200, await getStatus());
       if(req.method==='GET' && route==='/api/process-recovery'){
@@ -562,7 +507,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(url.searchParams.get('purpose')==='hook-repair')return reply(200,{...await processRecovery.scan(config.config,config.revision,{includeMatchingWeChat:true,matchingWeChatOnly:true}),purpose:'hook-repair'});
         const status=await getStatus();
         const healthyPorts=[];
-        if(status.services.find(service=>service.id==='reader')?.ready)healthyPorts.push(config.config.ports.weflow);
+        if(status.services.find(service=>service.id==='receiver')?.ready)healthyPorts.push(config.config.ports.receiver);
         if(status.services.find(service=>service.id==='bridge')?.ready)healthyPorts.push(config.config.ports.onebot,config.config.ports.adapter,Number(new URL(config.config.hook.baseUrl).port||80));
         if(status.services.find(service=>service.id==='dsh')?.ready)healthyPorts.push(config.config.ports.dshPlugin);
         const conflictPorts=startupConflictPorts(jobs.get(latestJob)?.output,Object.values(config.config.ports));
@@ -578,7 +523,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const kind = url.searchParams.get('kind') === 'groups' ? 'groups' : 'private';
         const keyword = (url.searchParams.get('keyword') ?? '').slice(0, 100).trim();
         // Sessions contain selected chats only; discovery must use the contact catalog.
-        const data = await reader(`/api/v1/contacts?kind=${kind}&keyword=${encodeURIComponent(keyword)}&limit=100&refresh=1`);
+        const data = await receiver(`/api/v1/contacts?kind=${kind}&keyword=${encodeURIComponent(keyword)}&limit=100&refresh=1`);
         const io = optionalJson(path.join(root, 'state', 'wechat-io-config.json'));
         const rows = data.contacts ?? [];
         const contacts = rows.filter(c => c.username && c.username !== io.self_wxid && (c.username.includes('@chatroom') ? 'groups' : 'private') === kind && (kind==='groups'||c.isFriend===true))
@@ -590,11 +535,11 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method === 'GET' && route === '/api/chats') {
         const { buffer } = buffered();
-        const account=activeReaderAccount(root).id,cacheFile=account?path.join(root,'state/accounts',account,'contact-names.json'):null;
+        const account=activeConnection(root).id,cacheFile=account?path.join(root,'state/accounts',account,'contact-names.json'):null;
         const cached=cacheFile?optionalJson(cacheFile):{};
         let contacts=[],fresh=false;
-        try{const data=await reader('/api/v1/contacts?selected=1&refresh=1');contacts=data.contacts??[];fresh=true;}catch{}
-        if(activeReaderAccount(root).id!==account)throw fault('微信账号已变化，请刷新聊天列表。',409);
+        try{const data=await receiver('/api/v1/contacts?selected=1&refresh=1');contacts=data.contacts??[];fresh=true;}catch{}
+        if(activeConnection(root).id!==account)throw fault('微信账号已变化，请刷新聊天列表。',409);
         const chats=chatContactNames(snapshot().config.wechat,contacts,buffer,cached);
         if(fresh&&cacheFile)try{atomic(cacheFile,Object.fromEntries(chats.filter(c=>c.name).map(c=>[c.key,c.name])));}catch{}
         return reply(200, { chats });
@@ -621,10 +566,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if (name) { const file = path.join(dir, name); const fd = fs.openSync(file, 'r'); try { const size = fs.fstatSync(fd).size; const bytes = Buffer.alloc(Math.min(size, 120000)); fs.readSync(fd, bytes, 0, bytes.length, Math.max(0, size - bytes.length)); content = safeText(bytes.toString('utf8')); } finally { fs.closeSync(fd); } }
         return reply(200, { files, file: name ?? '', content });
       }
-      if (req.method === 'GET' && route === '/api/reader-config') {
-        const settings = optionalJson(path.join(root, 'state', 'weflow', 'WeFlow-config.json'));
-        return reply(200, { backend:settings.backend??'weflow-cli-nt',dbPath: /^(userdpapi:|safe:)/.test(settings.dbPath ?? '') ? '' : settings.dbPath ?? '', myWxid: /^(userdpapi:|safe:)/.test(settings.myWxid ?? '') ? '' : settings.myWxid ?? '', hasKey: !!settings.decryptKey, hasPath: !!settings.dbPath, hasAccount: !!settings.myWxid, verified: readerVerified()&&(snapshot().config.hook.backend!=='supplier-http'||settings.backend==='supplier-http'), revision: hash(JSON.stringify(settings)) });
-      }
+      if (req.method === 'GET' && route === '/api/hook/connection') return reply(200,connectionSnapshot());
       if (req.method !== 'POST') throw fault('接口不存在。', 404);
       if (!req.headers['content-type']?.startsWith('application/json')) throw fault('请使用控制台表单。', 415);
       const body = await readBody(req,['/api/sticker-manager/import','/api/plugins/inspect'].includes(route)?11300000:128*1024);
@@ -639,7 +581,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         return reply(202,await audioInstaller.start(body));
       }
       if(route==='/api/persona-proposals/propose')return reply(200,personaApprovals.propose(body));
-      if(route==='/api/persona/default/generate')return reply(200,await plugin('/persona-generate',{accountScope:activeReaderAccount(root).id}));
+      if(route==='/api/persona/default/generate')return reply(200,await plugin('/persona-generate',{accountScope:activeConnection(root).id}));
       if(route==='/api/persona/default/apply')return reply(200,personaApprovals.applyDefault(body));
       if(route==='/api/persona-proposals/review-context')return reply(200,personaApprovals.reviewContext(body));
       if(route==='/api/persona-proposals/decide')return reply(200,personaApprovals.decide(body.message,body.accountScope));
@@ -755,7 +697,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(body.revision!==config.revision)throw fault('配置已变化，请刷新后重新关联群聊。',409);
         if(!config.config.wechat.whitelist.groups.map(String).includes(String(body.id))||typeof body.groupRef!=='string'||!/^[A-Za-z0-9_.-]{1,200}@chatroom$/.test(body.groupRef))throw fault('请选择已保存的原会话和当前微信中的群聊。');
         const io=readJson(path.join(root,'state/wechat-io-config.json'));
-        const response=await fetchImpl('http://127.0.0.1:'+config.config.ports.weflow+'/api/v1/group-bindings',{method:'POST',headers:{Authorization:'Bearer '+io.reader_token,'Content-Type':'application/json'},body:JSON.stringify({username:body.groupRef,conversationId:String(body.id)}),signal:AbortSignal.timeout(8000)});
+        const response=await fetchImpl('http://127.0.0.1:'+config.config.ports.receiver+'/api/v1/group-bindings',{method:'POST',headers:{Authorization:'Bearer '+io.receiver_token,'Content-Type':'application/json'},body:JSON.stringify({username:body.groupRef,conversationId:String(body.id)}),signal:AbortSignal.timeout(8000)});
         const value=await response.json();
         if(!response.ok){const text=value.error==='GROUP_BINDING_ALREADY_ASSIGNED'?'原会话已绑定另一个真实群，请勿把不同群的历史合并。':value.error==='GROUP_BINDING_ALREADY_SELECTED'?'该群已添加到其他聊天，请先核对聊天范围中的重复项。':'群资料尚未准备好，请在匹配微信中打开该群，再刷新搜索。';throw fault(text,409);}
         statusTime=0;return reply(200,{ok:true,id:String(body.id),name:value.displayName});
@@ -803,16 +745,6 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         backup(configFile);atomic(configFile,config);
         return reply(200,{...snapshot(),...optionalJson(preferenceFile)});
       }
-      if (route === '/api/reader-accounts') {
-        if (typeof body.dbPath !== 'string' || body.dbPath.length > 4096 || /[\0\r\n]/.test(body.dbPath)) throw fault('目录包含无效字符。');
-        protectingCredential = true;
-        try {
-          const result = await readerSetup({ root, python: snapshot().config.runtime.python, request: { operation: 'discover', dbPath: body.dbPath.trim() } });
-          if (!result.ok) throw fault(readerSetupMessage(result.code));
-          return reply(200, { accounts: result.accounts });
-        } catch (error) { throw error.status ? error : fault(readerSetupMessage(error.message)); }
-        finally { protectingCredential = false; }
-      }
       if (route === '/api/quit') {
         if(drawingCapability.isBusy())throw fault('图片仍在生成，请等待完成后再退出。',409);
         reply(200, { ok: true });
@@ -826,7 +758,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if (Object.values(config.ports).includes(boundPort) || Number(new URL(config.hook.baseUrl).port || 80) === boundPort) throw fault('服务端口不能与当前控制台端口重复。');
         const transport=value=>JSON.stringify({runtime:value.runtime,ports:value.ports,hook:value.hook,media:value.wechat.media});
         const transportChanged=transport(previous.config)!==transport(config),modelChanged=JSON.stringify(previous.config.dsh)!==JSON.stringify(config.dsh);
-        const preferences=optionalJson(preferenceFile),needsApply=transportChanged||modelChanged||preferences.pendingApply||preferences.dshRestartRequired;
+        const preferences=optionalJson(preferenceFile),needsApply=transportChanged||modelChanged||preferences.pendingApply||preferences.dshReloadRequired;
         const wasRunning=needsApply?(await getStatus()).running:false;
         backup(configFile); atomic(configFile, config);statusTime=0;
         let applyJob;
@@ -879,7 +811,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if (route === '/api/dsh-reopened') {
         const health=await plugin('/health');
         if(!dshConfigurationMatches(root,snapshot().config,health))throw fault('DSH 尚未加载当前模型或插件版本，请准备配置并完整重开 DSH。',409);
-        atomic(preferenceFile, { ...optionalJson(preferenceFile), dshRestartRequired: false }); statusTime = 0;
+        atomic(preferenceFile, { ...optionalJson(preferenceFile), dshReloadRequired: false }); statusTime = 0;
         return reply(200, { ok: true });
       }
       if(route==='/api/process-recovery/prepare')return reply(200,await processRecovery.prepare(body.scanId,body.ids,snapshot().revision));
@@ -887,28 +819,6 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         processRecoveryBusy=true;
         try{return reply(200,await processRecovery.stop(body.confirmation,body.confirmed,snapshot().revision));}
         finally{processRecoveryBusy=false;statusTime=0;}
-      }
-      if (route === '/api/reader-config') {
-        const file = path.join(root, 'state', 'weflow', 'WeFlow-config.json');
-        const settings = optionalJson(file);
-        if (body.revision !== hash(JSON.stringify(settings))) throw fault('读取配置已变化，请重新载入后保存。', 409);
-        for (const key of ['dbPath', 'myWxid', 'decryptKey']) {
-          if (typeof body[key] !== 'string' || body[key].length > 4096 || /[\0\r\n]/.test(body[key])) throw fault('读取设置包含无效字符。');
-        }
-        if ((!body.dbPath.trim() && !settings.dbPath) || (!body.myWxid.trim() && !settings.myWxid) || (!body.decryptKey.trim() && !settings.decryptKey)) throw fault('首次配置需要数据库目录、账号标识和读取凭据。');
-        const proposed = { ...settings, dbPath: body.dbPath.trim() || settings.dbPath, myWxid: body.myWxid.trim() || settings.myWxid };
-        if (readerAccountId(root, proposed) !== readerAccountId(root, settings)) throw fault('切换账号请使用“连接并验证微信”，验证通过后会安全停止旧服务并切换。', 409);
-        if (body.dbPath.trim()) settings.dbPath = body.dbPath.trim();
-        if (body.myWxid.trim()) settings.myWxid = body.myWxid.trim();
-        if (body.decryptKey.trim()) {
-          protectingCredential = true;
-          try {
-            settings.decryptKey = await nativeHelper('protect', body.decryptKey.trim());
-            if (!/^userdpapi:[A-Za-z0-9+/=]+$/.test(settings.decryptKey)) throw fault('凭据保护失败，原有配置未修改。');
-          } finally { protectingCredential = false; }
-        }
-        if (body.revision !== hash(JSON.stringify(optionalJson(file)))) throw fault('读取配置已变化，请重新载入后保存。', 409);
-        backup(file); atomic(file, settings); markPending(); return reply(200, { ok: true });
       }
       throw fault('接口不存在。', 404);
     } catch (error) {
@@ -938,7 +848,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     listen();
   });
   server.on('close',()=>{const file=path.join(root,'state/console-runtime.json'),record=optionalJson(file);if(record.pid===process.pid&&record.port===registeredPort)fs.rmSync(file,{force:true});drawingCapability.close();nativeImage.close();audioInstaller.close();nativeVoice.close();pluginInstaller.dispose();speechChecks.close();audioCapabilities.close();musicCapabilities.close();voiceProfiles.close();rvcModels.close();});
-  return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || protectingCredential || processRecoveryBusy || audioInstaller.isBusy() || drawingCapability.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
+  return { server, shutdown, isBusy: () => shuttingDown || !!activeJob || processRecoveryBusy || audioInstaller.isBusy() || drawingCapability.isBusy(), close: () => { server.closeAllConnections(); server.close(); }, start };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

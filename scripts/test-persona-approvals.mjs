@@ -19,7 +19,7 @@ function fixture(t){
   const config={persona:{default:'Original',chats:{}},wechat:{whitelist:{private:[privateChatId(admin),privateChatId(other)],groups:[]},assistant:{administrators:[]}}};
   config.wechat.modeSettings={[key]:{social:chatSettingsSnapshot(config,key)}};
   fs.mkdirSync(path.join(root,'roles'));fs.writeFileSync(path.join(root,'roles/Original.md'),'# 原人格\n温和自然。');
-  fs.mkdirSync(path.join(root,'config'));fs.mkdirSync(path.join(root,'state/weflow'),{recursive:true});fs.writeFileSync(path.join(root,'state/weflow/active-account.json'),JSON.stringify({id:account}));
+  fs.mkdirSync(path.join(root,'config'));fs.mkdirSync(path.join(root,'state/hook'),{recursive:true});fs.writeFileSync(path.join(root,'state/hook/active-connection.json'),JSON.stringify({id:account}));
   const sync=()=>fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));sync();
   const make=()=>createPersonaApprovals({root,configFor:()=>structuredClone(config),saveConfig:next=>{saves++;Object.assign(config,next);sync();},now:()=>clock,accountFor:()=>scope});
   const api=make(),context=()=>api.reviewContext({conversationKey:key,accountScope:scope});
@@ -105,7 +105,7 @@ test('console API applies scoped persona updates, preserves configuration backup
   const f=fixture(t),config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url),'utf8'));
   config.persona=f.config.persona;config.wechat.whitelist=f.config.wechat.whitelist;config.wechat.assistant={administrators:[]};
   fs.writeFileSync(path.join(f.root,'config/wechatagent.json'),JSON.stringify(config));
-  fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),JSON.stringify({self_wxid:'wxid_self',reader_token:'fixture'}));
+  fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),JSON.stringify({self_wxid:'wxid_self',receiver_token:'fixture'}));
   const app=createConsole({root:f.root,port:0,runner:async()=>0,fetchImpl:async()=>{throw Error('Unexpected external request');}});
   const address=await app.start(),base='http://127.0.0.1:'+address.port,info=await fetch(base+'/api/info').then(r=>r.json());t.after(()=>app.close());
   const request=async(route,body)=>{const r=await fetch(base+route,{method:body?'POST':'GET',headers:{'X-Console-Token':info.token,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,value:await r.json()};};

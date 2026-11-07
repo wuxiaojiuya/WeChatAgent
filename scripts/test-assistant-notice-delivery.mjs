@@ -8,7 +8,7 @@ const key='wechat:private:123',sender='wxid_admin',text='RESPOND: 时间到，�
 function fixture(t){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-notice-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const w={whitelist:{private:['123'],groups:['456']},workModes:{[key]:'assistant','wechat:group:456':'assistant'},assistant:{administrators:[sender]}};
- const queue=new AssistantNotifications(path.join(root,'notices.json'),()=>true),adapter=new WechatOneBotAdapter(),sent=[],logs=[],requests=[];adapter.stats.connected=true;adapter.selfId='fixture-self';adapter.server.action=async(action,params)=>{sent.push({action,params});return {data:{receipt:'wechat-server-id'}};};
+ const queue=new AssistantNotifications(path.join(root,'notices.json'),()=>true),adapter=new WechatOneBotAdapter(),sent=[],logs=[],requests=[];adapter.stats.connected=true;adapter.selfId='fixture-self';adapter.server.action=async(action,params)=>{sent.push({action,params});return {data:{receipt:'wechat-message-response',delivered:'server-confirmed',confirmed:true,message_id:'8047442179716189588'}};};
  const plugin={controllerReady:async()=>true,assistantTask:async(_key,action,body)=>{requests.push({action,body});if(action==='notification-ack')queue.ack(body.id);return {ok:true,notifications:queue.list()};}},delivery=createAssistantNoticeDelivery({adapter,plugin,settingsFor:()=>w,log:line=>logs.push(line)});t.after(()=>delivery.stop());
  const add=(extra={})=>queue.queue({id:'schedule-'+Object.keys(queue.messages).length,key,sender,kind:'result',text,...extra});return {root,w,queue,adapter,sent,logs,requests,plugin,delivery,add};
 }
@@ -29,18 +29,18 @@ test('unconfirmed or missing server receipts never acknowledge a scheduled notic
 
 test('legacy queued notices keep their original immutable payload when completing an already confirmed generic delivery',async t=>{
  const f=fixture(t),id=f.add();delete f.queue.messages[id].textFormat;f.queue.persist();let submissions=0;
- const existing=new Map([[id,fallback]]);f.adapter.server.action=async(_action,params)=>{const deliveryId=params.wechatagent_delivery_id,body=params.message[0].data.text;if(existing.has(deliveryId)){assert.equal(body,existing.get(deliveryId),'must not replace a previously submitted notification with a late reminder');}else{existing.set(deliveryId,body);submissions++;}return {data:{receipt:'wechat-server-id'}};};
+ const existing=new Map([[id,fallback]]);f.adapter.server.action=async(_action,params)=>{const deliveryId=params.wechatagent_delivery_id,body=params.message[0].data.text;if(existing.has(deliveryId)){assert.equal(body,existing.get(deliveryId),'must not replace a previously submitted notification with a late reminder');}else{existing.set(deliveryId,body);submissions++;}return {data:{receipt:'wechat-message-response',delivered:'server-confirmed',confirmed:true,message_id:'8047442179716189588'}};};
  await f.delivery.tick();assert.equal(submissions,0);assert.equal(f.queue.messages[id].state,'delivered');assert.equal(f.queue.messages[id].text,text);
 });
 
 test('a failed notice cannot starve later reminders in the same poll',async t=>{
- const f=fixture(t),bad=f.add({text:'RESPOND: first notice'}),good=f.add({text:'RESPOND: second notice'});f.adapter.server.action=async(action,params)=>{const body=params.message[0].data.text;f.sent.push(body);if(body==='first notice')throw Object.assign(Error('fixture rejection'),{code:'NATIVE_SEND_REJECTED'});return {data:{receipt:'wechat-server-id'}};};await f.delivery.tick();assert.deepEqual(f.sent,['first notice','second notice']);assert.equal(f.queue.messages[bad].state,'queued');assert.equal(f.queue.messages[good].state,'delivered');
+ const f=fixture(t),bad=f.add({text:'RESPOND: first notice'}),good=f.add({text:'RESPOND: second notice'});f.adapter.server.action=async(action,params)=>{const body=params.message[0].data.text;f.sent.push(body);if(body==='first notice')throw Object.assign(Error('fixture rejection'),{code:'NATIVE_SEND_REJECTED'});return {data:{receipt:'wechat-message-response',delivered:'server-confirmed',confirmed:true,message_id:'8047442179716189588'}};};await f.delivery.tick();assert.deepEqual(f.sent,['first notice','second notice']);assert.equal(f.queue.messages[bad].state,'queued');assert.equal(f.queue.messages[good].state,'delivered');
 });
 
 test('an acknowledgement failure retries the same delivery ID and body without another native submission',async t=>{
  const f=fixture(t),id=f.add(),cache=new Map();let submissions=0,ackFailed=false;const original=f.plugin.assistantTask;
  f.plugin.assistantTask=async(key,action,body)=>{if(action==='notification-ack'&&!ackFailed){ackFailed=true;throw Error('fixture acknowledgement disconnect');}return original(key,action,body);};
- f.adapter.server.action=async(_action,params)=>{const deliveryId=params.wechatagent_delivery_id,body=params.message[0].data.text;if(cache.has(deliveryId))assert.equal(cache.get(deliveryId),body);else{cache.set(deliveryId,body);submissions++;}return {data:{receipt:'wechat-server-id'}};};
+ f.adapter.server.action=async(_action,params)=>{const deliveryId=params.wechatagent_delivery_id,body=params.message[0].data.text;if(cache.has(deliveryId))assert.equal(cache.get(deliveryId),body);else{cache.set(deliveryId,body);submissions++;}return {data:{receipt:'wechat-message-response',delivered:'server-confirmed',confirmed:true,message_id:'8047442179716189588'}};};
  await f.delivery.tick();assert.equal(f.queue.messages[id].state,'queued');await f.delivery.tick();assert.equal(f.queue.messages[id].state,'delivered');assert.equal(submissions,1);
 });
 

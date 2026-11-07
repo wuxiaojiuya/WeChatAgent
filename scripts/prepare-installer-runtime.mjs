@@ -24,8 +24,10 @@ function unpack(file, target) {
 const archive = path.join(cache, 'python-3.13.16-embed-amd64.zip');
 await download('https://www.python.org/ftp/python/3.13.16/python-3.13.16-embed-amd64.zip', archive, '97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297');
 unpack(archive, runtime);
-const packages = [['sqlcipher3','0.6.2'],['cryptography','50.0.2'],['zstandard','0.25.0'],['pycryptodome','3.23.0'],['Pillow','12.3.0'],['imageio-ffmpeg','0.6.0'],['cffi','2.0.0'],['pycparser','2.23'],['yt-dlp','2026.10.26']];
+const packages = [['pycryptodome','3.23.0'],['Pillow','12.3.0'],['imageio-ffmpeg','0.6.0'],['yt-dlp','2026.10.26']];
 const site = path.join(runtime, 'Lib', 'site-packages'); fs.mkdirSync(site, { recursive: true });
+// Rebuild the stage from the Hook/media dependencies, removing old build packages.
+for(const entry of fs.readdirSync(site)){const target=path.resolve(site,entry);if(!target.startsWith(path.resolve(site)+path.sep))throw Error('Invalid runtime stage');fs.rmSync(target,{recursive:true,force:true});}
 const locked = [];
 for (const [name, version] of packages) {
   const response=spawnSync('curl.exe',['-fLsS','--connect-timeout','20','--max-time','45',`https://pypi.org/pypi/${name}/${version}/json`],{windowsHide:true,encoding:'utf8',timeout:60000,maxBuffer:8*1024*1024});
@@ -40,7 +42,7 @@ for (const [name, version] of packages) {
 }
 fs.writeFileSync(path.join(runtime, 'python313._pth'), 'python313.zip\n.\nLib/site-packages\nimport site\n');
 fs.writeFileSync(path.join(runtime, 'DEPENDENCIES.json'), JSON.stringify(locked, null, 2));
-const probe = spawnSync(path.join(runtime, 'python.exe'), ['-c', 'import sys,sqlcipher3,cryptography,zstandard,Crypto,PIL,imageio_ffmpeg,yt_dlp,subprocess; from sqlcipher3 import dbapi2; db=dbapi2.connect(":memory:"); db.execute("select 1").fetchone(); subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("READER_RUNTIME_OK",sys.version.split()[0])'], { windowsHide: true, encoding: 'utf8', timeout: 30000 });
+const probe = spawnSync(path.join(runtime, 'python.exe'), ['-c', 'import sys,Crypto,PIL,imageio_ffmpeg,yt_dlp,subprocess; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("HOOK_RUNTIME_OK",sys.version.split()[0])'], { windowsHide: true, encoding: 'utf8', timeout: 30000 });
 if (probe.status !== 0) throw new Error(probe.stderr || 'Bundled Python runtime failed');
 console.log(probe.stdout.trim());
 const nodeLicense=spawnSync('curl.exe',['-fLsS','--connect-timeout','15','--max-time','45','-o',path.join(runtime,'..','NODE-LICENSE.txt'),'https://raw.githubusercontent.com/nodejs/node/'+process.version+'/LICENSE'],{windowsHide:true,encoding:'utf8',timeout:60000});

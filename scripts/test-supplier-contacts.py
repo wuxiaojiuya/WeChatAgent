@@ -44,6 +44,47 @@ class ContactContracts(unittest.TestCase):
         self.assertEqual(error, '')
         self.assertEqual(api.calls, ['/api/get_frien_lists'])
 
+    def test_supplier_contact_list_envelope_uses_relationships_not_friend_count(self):
+        # Anonymized shape returned by the supplied 4.1.8.27 Hook. The count
+        # describes its catalog, not proof that every entry is a private friend.
+        response = {'contact_list': [
+            contact('wxid_friend', 'Nickname', remark={'String': 'My friend'}),
+            contact('wxid_other_friend', 'Another friend', bitVal=3),
+            contact('wxid_self', 'Self'), contact('filehelper', 'File helper'),
+            contact('wxid_stranger', 'Stranger', bitVal=2),
+            contact('wxid_deleted', 'Deleted', delete_flag=1),
+            contact('gh_official', 'Official', verifyFlag=24),
+        ], 'friend_count': 7}
+        for envelope in (response, {'code': 1, 'data': response}):
+            with self.subTest(nested='data' in envelope):
+                api = FakeApi(envelope)
+                names, friends, error = load_contacts(api, 'wxid_self')
+                self.assertEqual(names['wxid_friend'], 'My friend')
+                self.assertEqual(len(names), 7)
+                self.assertEqual(set(friends), {'wxid_friend', 'wxid_other_friend'})
+                self.assertEqual(error, '')
+                self.assertEqual(api.calls, ['/api/get_frien_lists'])
+
+    def test_contact_list_envelope_preserves_validation_and_rejects_ambiguous_results(self):
+        self.assertEqual(load_contacts(FakeApi({'contact_list': [], 'friend_count': 0}), 'wxid_self'), ({}, {}, ''))
+        conflicting = contact('wxid_friend')
+        conflicting['username'] = 'wxid_someone_else'
+        for response in ({'friend_count': 7}, {'contact_list': {}, 'friend_count': 0},
+                         {'code': 0, 'contact_list': []},
+                         {'baseResponse': {'ret': -1}, 'contact_list': []},
+                         {'data': [], 'contact_list': []}, {'contact_list': [conflicting]}):
+            with self.subTest(response=response), self.assertRaisesRegex(RuntimeError, '^HOOK_CONTACTS_RESPONSE_INVALID$'):
+                load_contacts(FakeApi(response), 'wxid_self')
+        unproven = contact('wxid_unproven', 'Known person')
+        del unproven['contact']['bitVal']
+        names, friends, error = load_contacts(FakeApi({'contact_list': [unproven], 'friend_count': 1}), 'wxid_self')
+        self.assertEqual(names, {'wxid_unproven': 'Known person'})
+        self.assertEqual(friends, {})
+        self.assertEqual(error, RELATIONSHIP_ERROR)
+        failed = contact('wxid_unavailable')
+        failed['ret'] = -1
+        self.assertEqual(load_contacts(FakeApi({'contact_list': [failed], 'friend_count': 1}), 'wxid_self'), ({}, {}, ''))
+
     def test_picker_excludes_strangers_deleted_system_verified_group_and_self(self):
         rows = [contact('wxid_friend', 'Friend'), contact('wxid_self'), contact('filehelper'),
                 contact('weixin'), contact('gh_official'), contact('room@chatroom'),

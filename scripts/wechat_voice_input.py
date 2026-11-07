@@ -5,7 +5,6 @@ import json
 import pathlib
 import re
 import threading
-import time
 import xml.etree.ElementTree as ET
 
 ID = re.compile(r'^[a-f0-9]{64}$')
@@ -83,37 +82,7 @@ class VoiceCatalog:
         return item
 
 
-def load_voice_blob(account, record, nt):
-    """Query only this chat/local ID; reject conflicting payloads across shards."""
-    folder = pathlib.Path(account)/'db_storage/message'
-    shards = sorted(p for p in folder.glob('media_*.db') if re.fullmatch(r'media_\d+\.db', p.name))
-    if len(shards) > 64:
-        raise RuntimeError('VOICE_SHARD_LIMIT')
-    blobs, deadline = {}, time.monotonic()+5
-    for shard in shards:
-        if time.monotonic() >= deadline:
-            raise RuntimeError('VOICE_DATABASE_TIMEOUT')
-        if shard.is_symlink() or getattr(shard.lstat(), 'st_file_attributes', 0) & 0x400:
-            raise PermissionError('VOICE_DATABASE_LINK_REJECTED')
-        connection = None
-        try:
-            key, salt = nt.derive_database_key(str(shard), '', '', record['passphrase'])
-            connection, cursor = nt.connect_nt_db(str(shard), key, salt)
-            connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-            cursor.execute('PRAGMA query_only=ON')
-            cursor.execute('PRAGMA busy_timeout=1000')
-            rows = cursor.execute('SELECT v.voice_data FROM VoiceInfo v JOIN Name2Id n ON n.rowid=v.chat_name_id WHERE n.user_name=? AND v.local_id=? AND length(v.voice_data) BETWEEN 1 AND ? LIMIT 2', (record['talker'], record['localId'], MAX_SILK_BYTES)).fetchall()
-            for (blob,) in rows:
-                blob = bytes(blob)
-                if not (blob.startswith(b'#!SILK_V3') or blob.startswith(b'\x02#!SILK_V3')):
-                    raise RuntimeError('VOICE_FORMAT_UNSUPPORTED')
-                blobs[hashlib.sha256(blob).hexdigest()] = blob
-        finally:
-            if connection is not None:
-                connection.close()
-    if len(blobs) != 1:
-        raise RuntimeError('VOICE_AUDIO_NOT_AVAILABLE' if not blobs else 'VOICE_AUDIO_AMBIGUOUS')
-    return next(iter(blobs.values()))
+
 
 
 def audio_result(voice_id, key, data, format, duration, sample_rate=0):

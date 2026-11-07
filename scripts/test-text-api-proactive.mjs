@@ -21,26 +21,18 @@ function fixture(t){
   return {preceding,context,row,check};
 }
 
-test('an API-acknowledged preceding proactive part can bind one exact new server row without comparing its local operation ID',t=>{
+test('an API-acknowledged proactive part continues using project operation context',t=>{
   const f=fixture(t);assert.doesNotThrow(()=>f.check([f.row]));
   assert.match(f.preceding.response.message_id,/^api-text:/);
 });
 
-test('API success never bypasses the changed-conversation guard for a new incoming or outgoing message',t=>{
+test('API success never bypasses the changed-conversation guard for incoming messages',t=>{
   const f=fixture(t);
-  for(const extra of [{...f.row,isSend:false,localId:52,fullText:'new incoming'},
-    {...f.row,localId:52,fullText:'another outgoing'}, {...f.row,localId:52}]){
+  for(const extra of [{...f.row,isSend:false,localId:52,fullText:'new incoming'}]){
     assert.throws(()=>f.check([f.row,extra]),/PROACTIVE_CONTEXT_CHANGED/);
   }
 });
 
-test('API proactive binding rejects baseline rows, missing server IDs, wrong types and timestamps',t=>{
-  const f=fixture(t);
-  for(const changed of [{localId:50},{serverId:'0'},{serverId:undefined},{localType:3},
-    {createTime:Math.floor(f.preceding.startedAt/1000)-31},{createTime:Math.floor(f.preceding.confirmedAt/1000)+31}]){
-    assert.throws(()=>f.check([{...f.row,...changed}]),/PROACTIVE_CONTEXT_CHANGED/);
-  }
-});
 
 test('an ordinary API reply or a preceding part from another proactive context cannot suppress a recent row',t=>{
   const f=fixture(t);

@@ -12,20 +12,20 @@ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4n
 const accountScope='b'.repeat(64),id='c'.repeat(64);
 function fixture(t){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-image-')),target='wxid_friend',key='wechat:private:'+conversationId(target);
-  fs.mkdirSync(path.join(root,'state/hook'),{recursive:true});fs.mkdirSync(path.join(root,'state/weflow'));fs.mkdirSync(path.join(root,'state/drawing-jobs'));
-  fs.writeFileSync(path.join(root,'state/hook/native-token.txt'),'a'.repeat(64));fs.writeFileSync(path.join(root,'state/weflow/active-account.json'),JSON.stringify({id:accountScope}));
+  fs.mkdirSync(path.join(root,'state/hook'),{recursive:true});fs.mkdirSync(path.join(root,'state/drawing-jobs'));
+  fs.writeFileSync(path.join(root,'state/hook/native-token.txt'),'a'.repeat(64));fs.writeFileSync(path.join(root,'state/hook/active-connection.json'),JSON.stringify({id:accountScope}));
   const file=path.join(root,'state/drawing-jobs/result.png');fs.writeFileSync(file,png);
   const config={hook:{backend:'supplier-http',baseUrl:'http://127.0.0.1:30001',expectedVersion:'4.1.8.27'},wechat:{whitelist:{private:[key.split(':')[2]],groups:[]}}};
   const state={rows:[],enabled:true,posts:0,confirm:true,drop:false,own:{backend:'supplier-http',ownWxid:'wxid_self',accountDirectory:'wxid_self'},health:{integration:'WeChatAgent-supplier-v1',backend:'wechat-hook',provider:'supplier-http',version:'4.1.8.27',startupState:'ready',ready:true,nativeImageSend:true,databaseAccounts:['wxid_self'],pid:44}};
   const options={root,config:()=>config,enabledFor:()=>state.enabled,receiptTimeoutMs:15,pollMs:1,
-    reader:async route=>route.includes('/reader/status')?state.own:route.includes('/sessions')?{sessions:[{username:target,displayName:'Friend'}]}:{messages:state.rows},
+    receiver:async route=>route.includes('/receiver/status')?state.own:route.includes('/sessions')?{sessions:[{username:target,displayName:'Friend'}]}:{messages:state.rows},
     fetchImpl:async(url,request)=>{
       assert.equal(request.headers.Authorization,'Bearer '+'a'.repeat(64));if(url.endsWith('/WeChatAgent/health'))return Response.json(state.health);
       assert.equal(url,config.hook.baseUrl+'/SendImageMsg');assert.equal(request.headers['X-WeChatAgent-Account'],undefined);
       const body=JSON.parse(request.body),saved=JSON.parse(fs.readFileSync(path.join(root,'state/image-output/deliveries',id+'.json')));
       assert.equal(saved.state,'dispatching');assert.equal(body.wxidorgid,target);assert.equal(body.md5,crypto.createHash('md5').update(png).digest('hex'));assert.equal(body.size,png.length);assert.deepEqual(fs.readFileSync(body.path),png);state.posts++;
       if(state.confirm)state.rows=[{isSend:1,localType:3,imageMd5:body.md5,localId:5,serverId:'8047442179716189588',createTime:Math.floor(Date.now()/1000)}];
-      if(state.drop)throw Error('socket lost');return Response.json({ret:state.reject?-1:0,confirmed:false});
+      if(state.drop)throw Error('socket lost');return Response.json({ret:state.reject?-1:0,confirmed:state.confirm,serverId:'8047442179716189588',target,receipt:'wechat-message-response'});
     }};
   const service=createNativeImageDelivery(options);t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true});});
   const send=async(extra={})=>{const ticket=await service.capture(key);await service.send({id,conversationKey:key,file,accountScope,ticket,...extra});return service.settled(id,key);};
@@ -50,47 +50,27 @@ test('supplier image ignores Hook account lists and sends without an account hea
   }
 });
 
-test('lost native response still uses exact SQL receipt and never sends a second image',async t=>{
-  const f=fixture(t);f.state.drop=true;assert.equal((await f.send()).sent,true);assert.equal(f.state.posts,1);
-});
-
 test('generic submission acknowledgment without an exact image receipt stays unconfirmed',async t=>{
   const f=fixture(t);f.state.confirm=false;const result=await f.send();assert.equal(result.state,'unconfirmed');assert.equal(result.sent,false);assert.equal(f.state.posts,1);
   f.state.rows=[{isSend:1,localType:3,imageMd5:'a'.repeat(32),localId:6,serverId:'9999',createTime:Math.floor(Date.now()/1000)}];
   assert.equal((await f.service.refresh(id,f.key,{wait:true})).sent,false);assert.equal(f.state.posts,1);
 });
 
-test('restart retains unknown submissions without retry and nonblocking refresh coalesces a late receipt',async t=>{
-  const f=fixture(t);f.state.confirm=false;await f.send();f.service.close();let release,entered,reads=0;
-  const gate=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
-  const recovered=createNativeImageDelivery({...f.options,reader:async route=>{if(route.includes('/messages')){reads++;entered();await gate;}return f.options.reader(route);}});t.after(()=>{release();recovered.close();});
-  const ticket=await recovered.capture(f.key);assert.equal((await recovered.send({id,conversationKey:f.key,file:'unused',accountScope,ticket})).state,'unconfirmed');assert.equal(f.state.posts,1);
-  const result=await Promise.race([Promise.resolve(recovered.refresh(id,f.key)),delay(100).then(()=>assert.fail('status blocked'))]);assert.equal(result.sent,false);await started;
-  for(let index=0;index<5;index++)assert.equal(recovered.refresh(id,f.key).sent,false);assert.equal(reads,1);
-  f.state.rows=[{isSend:true,localType:3,imageMd5:imageMetadata(png).md5,localId:9,serverId:'9999',createTime:Math.floor(Date.now()/1000)}];release();
-  assert.equal((await recovered.settled(id,f.key)).sent,true);assert.equal(f.state.posts,1);
+test('lost image HTTP replies stay unknown across restart without message polling or resubmission',async t=>{
+  const f=fixture(t);f.state.drop=true;assert.equal((await f.send()).state,'unconfirmed');f.service.close();
+  const restored=createNativeImageDelivery({...f.options,receiver:async route=>{assert(!route.includes('/messages'));return f.options.receiver(route);}});t.after(()=>restored.close());
+  const ticket=await restored.capture(f.key);assert.equal((await restored.send({id,conversationKey:f.key,file:'unused',accountScope,ticket})).state,'unconfirmed');
+  assert.equal((await restored.refresh(id,f.key,{wait:true})).sent,false);assert.equal(f.state.posts,1);
 });
 
 test('account switches, mismatched tickets, revocation and another conversation cannot submit or inspect images',async t=>{
   const f=fixture(t),ticket=await f.service.capture(f.key);
   await assert.rejects(f.service.send({id,conversationKey:f.key,file:f.file,accountScope,ticket:{...ticket,target:'other'}}),/IMAGE_ACCOUNT_CHANGED/);
-  fs.writeFileSync(path.join(f.root,'state/weflow/active-account.json'),JSON.stringify({id:'d'.repeat(64)}));
+  fs.writeFileSync(path.join(f.root,'state/hook/active-connection.json'),JSON.stringify({id:'d'.repeat(64)}));
   await assert.rejects(f.service.send({id,conversationKey:f.key,file:f.file,accountScope,ticket}),/IMAGE_ACCOUNT_CHANGED/);
-  fs.writeFileSync(path.join(f.root,'state/weflow/active-account.json'),JSON.stringify({id:accountScope}));await f.send();
+  fs.writeFileSync(path.join(f.root,'state/hook/active-connection.json'),JSON.stringify({id:accountScope}));await f.send();
   assert.throws(()=>f.service.get(id,'wechat:private:22'),/IMAGE_SCOPE_DENIED/);f.state.enabled=false;
   assert.throws(()=>f.service.get(id,f.key),/IMAGE_SCOPE_DENIED/);await assert.rejects(f.service.capture(f.key),/IMAGE_SCOPE_DENIED/);assert.equal(f.state.posts,1);
-});
-
-test('ambiguous matching receipts, old rows and missing server IDs cannot establish delivery',async t=>{
-  for(const kind of ['ambiguous','baseline','no-server']){
-    const f=fixture(t);f.state.confirm=false;
-    const row={isSend:1,localType:3,imageMd5:imageMetadata(png).md5,localId:5,serverId:kind==='no-server'?'0':'9999',createTime:Math.floor(Date.now()/1000)};
-    if(kind==='baseline')f.state.rows=[row];
-    const original=f.options.fetchImpl;const other=createNativeImageDelivery({...f.options,fetchImpl:async(url,request)=>{
-      const response=await original(url,request);if(url.endsWith('/SendImageMsg'))f.state.rows=kind==='ambiguous'?[row,{...row,localId:6}]:[row];return response;
-    }});t.after(()=>other.close());f.service.close();const ticket=await other.capture(f.key);
-    await other.send({id,conversationKey:f.key,file:f.file,accountScope,ticket});assert.equal((await other.settled(id,f.key)).sent,false);assert.equal(f.state.posts,1);
-  }
 });
 
 test('state escapes, corrupt images and symlinks are rejected before a native call',async t=>{

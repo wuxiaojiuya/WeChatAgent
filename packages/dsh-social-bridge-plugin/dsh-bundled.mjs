@@ -1,6 +1,6 @@
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
 import {safeFetch} from '../../components/qq-bridge/src/safe-fetch.js';
-import {activeReaderAccount} from '../../scripts/reader-account-state.mjs';
+import {activeConnection} from '../../scripts/hook-connection-state.mjs';
 import {setup} from '../../extensions/skills/meme-search/index.js';
 /** Project-shipped capability registered in DSH, using the same native tool pipeline as other plugins. */
 export function registerDshBundled(ctx,root,{settings={},keyFor=()=>undefined,isAllowed=()=>true,fetchText=safeFetch}={}){
@@ -8,8 +8,8 @@ export function registerDshBundled(ctx,root,{settings={},keyFor=()=>undefined,is
   const defaults={provider:'auto',maxResults:3,cacheMinutes:120,cooldownSeconds:20,...settings};let def;setup({registerTool:tool=>{def=tool;}});
   const disposers=[tools.register({name:'meme-search__search',description:def.description,parameters:def.parameters,output:{schema:{type:'object',properties:{content:{type:'string'},isError:{type:'boolean'}},required:['content','isError'],additionalProperties:false},render:(_args,value)=>[{type:'text',text:value.content}]},async execute(args,exec){
     if(!isAllowed()||!exec?.agent?.session)throw Error('DSH_PLUGIN_CONTEXT_UNAVAILABLE');
-    const account=activeReaderAccount(root).id||'legacy',key=keyFor(String(exec.agent.session.id))??'dsh:'+String(exec.agent.session.id);
-    const check=()=>{if(!isAllowed()||exec.signal?.aborted||(activeReaderAccount(root).id||'legacy')!==account)throw Error('DSH_PLUGIN_CANCELLED');};
+    const account=activeConnection(root).id||'legacy',key=keyFor(String(exec.agent.session.id))??'dsh:'+String(exec.agent.session.id);
+    const check=()=>{if(!isAllowed()||exec.signal?.aborted||(activeConnection(root).id||'legacy')!==account)throw Error('DSH_PLUGIN_CANCELLED');};
     const file=path.join(root,'state/accounts',account,'dsh-plugin-storage/meme-search',crypto.createHash('sha256').update(key).digest('hex')+'.json');
     const read=()=>{check();if(!fs.existsSync(file))return {};const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>262144)throw Error('DSH_PLUGIN_STORAGE_INVALID');return JSON.parse(fs.readFileSync(file,'utf8'));};
     const storage={get:name=>read()[name],set:(name,value)=>{const data=read();data[name]=value;const text=JSON.stringify(data);if(Buffer.byteLength(text)>262144)throw Error('DSH_PLUGIN_STORAGE_LIMIT');fs.mkdirSync(path.dirname(file),{recursive:true});check();const temporary=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(temporary,text);fs.renameSync(temporary,file);}};

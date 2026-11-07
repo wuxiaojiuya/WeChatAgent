@@ -34,11 +34,10 @@ function rebasePath(value,mappings){
  return value;
 }
 const pathKey=/^(?:path|file|filename|filePath|sourcePath|targetPath|cachePath|imagePath|directory|root|projectRoot|project_root|cwd|python|node|dsh|dshDesktop|wechatExecutable|statePath|stateFile|dataHome|tokenFile|outgoingPath)$/i;
-function rebaseJson(value,mappings,key='',databaseBase=mappings[0][0]){
- if(key==='dbPath'&&typeof value==='string'&&value&&!path.isAbsolute(value)&&!/^(?:safe:|userdpapi:)/.test(value))return path.resolve(databaseBase,value);
+function rebaseJson(value,mappings,key=''){
  if(typeof value==='string')return pathKey.test(key)?rebasePath(value,mappings):value;
- if(Array.isArray(value))return value.map(item=>rebaseJson(item,mappings,key,databaseBase));
- if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,rebaseJson(v,mappings,k,databaseBase)]));
+ if(Array.isArray(value))return value.map(item=>rebaseJson(item,mappings,key));
+ if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,rebaseJson(v,mappings,k)]));
  return value;
 }
 async function hashFile(file){const hash=crypto.createHash('sha256');for await(const data of fs.createReadStream(file))hash.update(data);return hash.digest('hex');}
@@ -65,13 +64,13 @@ async function copyVerified(source,target,{filter=()=>true,records=[],relative='
  }else throw Error('旧数据包含不支持的文件类型，原数据保留。');
  return records;
 }
-async function rewriteTree(directory,mappings,{yaml=false,databaseBase=mappings[0][0]}={}){
+async function rewriteTree(directory,mappings,{yaml=false}={}){
  if(!fs.existsSync(directory))return;
  for(const entry of await fs.promises.readdir(directory,{withFileTypes:true})){
   const file=path.join(directory,entry.name);
-  if(entry.isDirectory())await rewriteTree(file,mappings,{yaml,databaseBase});
+  if(entry.isDirectory())await rewriteTree(file,mappings,{yaml});
   else if(entry.name.endsWith('.json')){
-   const before=json(file),after=rebaseJson(before,mappings,'',databaseBase);if(JSON.stringify(before)!==JSON.stringify(after))atomic(file,after);
+   const before=json(file),after=rebaseJson(before,mappings);if(JSON.stringify(before)!==JSON.stringify(after))atomic(file,after);
   }else if(yaml&&/\.ya?ml$/.test(entry.name)){
    let text=fs.readFileSync(file,'utf8');for(const [from,to]of mappings)for(const [a,b]of [[from,to],[from.replaceAll('\\','/'),to.replaceAll('\\','/')],[JSON.stringify(from).slice(1,-1),JSON.stringify(to).slice(1,-1)],[pathToFileURL(from).href,pathToFileURL(to).href]])text=text.split(a).join(b);
    await fs.promises.writeFile(file,text);
@@ -143,7 +142,7 @@ async function prepareDataHome(plan,{checkIdle=assertMigrationIdle,progress=()=>
   const mappings=[[sourceRoot,path.join(home,'workspace')],[plan.source,home]];
   if(!plan.migrateDsh)mappings.unshift([plan.oldDshHome,plan.oldDshHome]);
   if(plan.migrateDsh)mappings.push([plan.oldDshHome,path.join(home,'dsh')]);
-  await rewriteTree(target,mappings,{databaseBase:sourceRoot});
+  await rewriteTree(target,mappings);
   if(plan.migrateDsh)await rewriteTree(path.join(stage,'dsh/profiles'),mappings,{yaml:true});
   const backupLinkFile=backupLinks.length?'backups/migration-link-references-'+path.basename(stage).slice('.migration-'.length)+'.json':undefined;
   if(backupLinkFile)atomic(path.join(stage,backupLinkFile),{version:1,policy:'reference-only',links:backupLinks});

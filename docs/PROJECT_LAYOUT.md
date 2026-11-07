@@ -9,9 +9,7 @@
 | apps/console-desktop/ | 当前桌面外壳、窗口、托盘、部署与数据位置管理 | 保留，属于当前产品源码。 |
 | public/console/ | 控制台页面、交互与样式 | 保留，直接影响界面。 |
 | components/qq-bridge/ | 当前消息桥接、微信协议适配、发送与回执链路 | 当前运行入口位于 src/social-bridge.js。 |
-| components/weflow-cli/ | NT 数据库读取与相关原生资源 | 按组件自己的维护规范处理，不当作缓存清理。 |
-| components/WeChat-Hook/ | 原生发送组件的上游源码 | 按组件来源及许可边界维护。 |
-| components/WeFlowComplete/ | 上游参考及开发版使用的 Electron / 打包依赖 | 不因“不是日常启动入口”就删除，构建脚本仍会引用。 |
+| components/supplier-hook/4.1.8.27/ | 唯一支持的微信 Hook、加载器与摘要清单 | 安装包内置；Git 源码不包含闭源二进制，须补齐匹配 Release 的组件附件。 |
 | packages/dsh-social-bridge-plugin/ | DSH 会话、工具授权、历史及助手模式接入 | 当前桥接宿主。 |
 | packages/plugin-api/ | WeChatAgent API v2、ZIP 安装及插件子进程 | 当前本机插件接口。 |
 | packages/extension-runtime/ | 旧接口兼容及共享 Schema / 配置校验 | 新插件接口仍复用部分校验，不能直接删除。 |
@@ -20,14 +18,14 @@
 | examples/plugins/ | 可公开的 API v2 示例 | 示例 ZIP 和开发规范依赖此处。 |
 | optional-extensions/ | 可选扩展源码；鱼的记事本等第一方插件也可在公开版提供 | 按需打包安装，不能按临时文件清理。 |
 | optional-extensions/packages/ | 随源码分发、经过内容校验的第一方插件 ZIP | 仅精确白名单包进入 Git；用户自行安装的 plugins/ 仍为私有目录。 |
-| scripts/ | 读取器、生命周期、配置、构建、维护与测试脚本 | 测试脚本也是源码。 |
+| scripts/ | Hook 回调接收、生命周期、配置、构建、维护与测试脚本 | `hook-receiver.py` 为唯一接收入口；测试脚本也是源码。 |
 | docs/ | 使用说明、接口规范和架构记录 | 专题报告放 docs/reports/，版本说明放 docs/releases/。 |
 | roles/ | 人格卡 | 保留个人卡；公开前核对授权与隐私。 |
 | config/*.example.json | 空白配置模板 | 可公开，不包含本机账号信息。 |
 | components.json | 组件来源与历史固定版本记录 | 不是程序当前版本号；程序版本看 package.json。 |
 | package-lock.json | 根项目依赖锁定 | 保留，不能当作缓存删除。 |
 
-当前仓库不存在 `apps/bridge/`、`apps/weflow/`；它们是历史资料中的目录名。当前主链路使用 `components/qq-bridge/` 的微信桥接子集和独立 NT 读取器，新增改动应落在当前入口，不要按历史资料重建旧目录。
+当前主链路为：微信 4.1.8.27 Hook 回调 → `scripts/hook-receiver.py` → 项目消息缓存 → Hook OneBot → Bridge / DSH。好友、群成员与媒体通过 Hook 专用 API 获取，不查询微信数据库。原 NT 读取器和旧 Hook 实现已移除，不按历史资料重建或回退。
 
 ## 私有数据放在哪里
 
@@ -38,17 +36,17 @@
 | config/wechatagent.json | 本机配置、允许的聊天、模型和运行环境设置。 |
 | config/plugins.json / config/extensions.json | 本机插件权限、聊天范围和可能包含密钥的设置。 |
 | plugins/ | 用户安装的 API v2 插件代码；第一方示例放 examples/plugins/。 |
-| state/accounts/、state/weflow/ | 账号作用域、读取连接及受保护凭据。 |
+| state/accounts/ | 项目资源作用域和历史迁移数据；不是微信客户端数据库。 |
 | state/chat-history/、state/social-messages.json | 聊天历史、消息缓冲和处理状态。 |
 | state/media/、state/stickers/、state/files/ | 已收录的图片、表情及文件资源。 |
 | state/member-memory/、state/fish-notebook/、state/plugins/、state/plugin-documents/、state/plugin-schedules/ | 群友记忆、日记、插件文档和每日计划回执。 |
 | state/assistant-tasks/、state/text-deliveries/ | 任务及发送回执状态，不能当作旧测试结果。 |
 | state/group-bindings/、state/proactive/、state/search/ | 群绑定、主动聊天及搜索状态。 |
-| state/hook/ | 匹配微信、Hook 构建产物及连接资源。 |
+| state/hook/ | Hook 连接状态及 `accounts/<连接标识>/events.json` 项目消息缓存。 |
 | state/desktop/、state/logs/ | 窗口、外观、桌面运行记录及排障日志。 |
 | state/backups/、state/console-backups/、state/migrations/ | 既有备份与迁移恢复记录。 |
 
-`state/` 中已有的日期目录可能保存修复证据、源码快照和截图。日期早不等于无用；其中的 `VERIFICATION.json`、报告、截图和回滚副本继续保留。账号数据和原始微信数据库也不能因为安装了新版就删除。
+`state/` 中已有的日期目录可能保存修复证据、源码快照和截图。日期早不等于无用；其中的 `VERIFICATION.json`、报告、截图和回滚副本继续保留。旧版私有连接备份也不应按文件名自动删除；新版不读取其中的数据库配置。项目的清理范围不包括微信客户端的任何数据。
 
 ## 发布产物与构建缓存
 

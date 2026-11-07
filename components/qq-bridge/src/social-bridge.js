@@ -23,7 +23,7 @@ import {ProactiveEngine} from './core/proactive-engine.js';
 import { ContextMaintenance } from './core/context-maintenance.js';
 import {HistoryStore} from '../../../packages/dsh-social-bridge-plugin/history-store.mjs';
 import {scopeHistory} from '../../../packages/dsh-social-bridge-plugin/work-modes.mjs';
-import {activeReaderAccount} from '../../../scripts/reader-account-state.mjs';
+import {activeConnection} from '../../../scripts/hook-connection-state.mjs';
 import {applyLiveChatSettings} from './core/live-settings.js';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -40,11 +40,11 @@ if (sendPrivateTest && (allowedGroups.size !== 0 || allowedPrivate.size !== 1)) 
 if (allowedGroups.size + allowedPrivate.size === 0) console.warn('[Social] WeChat whitelist is empty; all messages will be denied');
 const log = (line) => console.log(new Date().toISOString(), line);
 const historyRoot=path.resolve(config.project_root??(config.search_policy_file?path.dirname(path.dirname(config.search_policy_file)):path.resolve(root,'../..')));
-const historyAccount=activeReaderAccount(historyRoot);
+const historyAccount=activeConnection(historyRoot);
 const baseHistoryStore=new HistoryStore(historyRoot,historyAccount.id||historyAccount.legacyId);
 const historyStore=scopeHistory(baseHistoryStore,(_key,row)=>row?.work_mode??'social');
 const historyArchive={backfill:(...args)=>historyStore.backfill(...args),append:(...args)=>{
-  if(activeReaderAccount(historyRoot).id!==historyAccount.id)throw Error('ACCOUNT_SWITCH_REQUIRES_BRIDGE_RESTART');
+  if(activeConnection(historyRoot).id!==historyAccount.id)throw Error('ACCOUNT_SWITCH_REQUIRES_BRIDGE_RESTART');
   return historyStore.append(...args);
 }};
 const buffer = new MessageBuffer(path.resolve(root, config.message_buffer?.path ?? 'state/social-messages.json'),
@@ -90,7 +90,7 @@ const engine = new SocialEngine({ buffer,connection, roleFor: key => personaFor(
 const memberSettings=()=>config.search_policy_file?JSON.parse(fs.readFileSync(config.search_policy_file,'utf8').replace(/^\uFEFF/,'' )).wechat:wechat;
 const memberHistory=scopeHistory(baseHistoryStore,()=> 'assistant-chat',{fixedMode:'assistant-chat'});
 const memberArchive={backfill:(...args)=>memberHistory.backfill(...args),append:(...args)=>{
-  if(activeReaderAccount(historyRoot).id!==historyAccount.id)throw Error('ACCOUNT_SWITCH_REQUIRES_BRIDGE_RESTART');
+  if(activeConnection(historyRoot).id!==historyAccount.id)throw Error('ACCOUNT_SWITCH_REQUIRES_BRIDGE_RESTART');
   return memberHistory.append(...args);
 }};
 const memberBuffer=new MessageBuffer(path.join(historyRoot,'state/accounts',historyAccount.id||historyAccount.legacyId||'legacy','assistant-group-chat.json'),{maxPerChat:buffer.maxPerChat,archive:memberArchive});
@@ -109,15 +109,15 @@ const contextMaintenance = new ContextMaintenance({ buffer, social: engine,
   isReady: () => connection.ready && adapter.stats.connected && !!adapter.selfId, log });
 
 const voiceIngress=new VoiceIngress({
-  prepareMedia:createVideoIngress({root:historyRoot,canRead:async message=>activeReaderAccount(historyRoot).id===historyAccount.id&&await connection.check({force:true})&&!connection.skips(message)&&(engine.workModeFor(buildConversationKey(message.platform,message.kind,message.conversation_id))!=='assistant'||engine.assistantAllowed(buildConversationKey(message.platform,message.kind,message.conversation_id),message))}),
+  prepareMedia:createVideoIngress({root:historyRoot,canRead:async message=>activeConnection(historyRoot).id===historyAccount.id&&await connection.check({force:true})&&!connection.skips(message)&&(engine.workModeFor(buildConversationKey(message.platform,message.kind,message.conversation_id))!=='assistant'||engine.assistantAllowed(buildConversationKey(message.platform,message.kind,message.conversation_id),message))}),
   generationFor:()=>pluginConfiguration(historyRoot).config.plugins['speech-recognition']?.generation??'',
   onResult:(_message,result,generation)=>writeVoiceAttempt(historyRoot,result,generation),
   recognize:(message,options)=>plugin.recognizeVoice(buildConversationKey(message.platform,message.kind,message.conversation_id),message.voice,verifiedAssistantSender(message),options),
-  canRecognize:async message=>{const key=buildConversationKey(message.platform,message.kind,message.conversation_id);return activeReaderAccount(historyRoot).id===historyAccount.id&&pluginEnabled(historyRoot,'speech-recognition',key)&&await connection.check({force:true})&&!connection.skips(message)&&(engine.workModeFor(key)!=='assistant'||engine.assistantAllowed(key,message));},
+  canRecognize:async message=>{const key=buildConversationKey(message.platform,message.kind,message.conversation_id);return activeConnection(historyRoot).id===historyAccount.id&&pluginEnabled(historyRoot,'speech-recognition',key)&&await connection.check({force:true})&&!connection.skips(message)&&(engine.workModeFor(key)!=='assistant'||engine.assistantAllowed(key,message));},
   deliver:routeIncoming,log,
 });
 adapter.onMessage(message=>{void voiceIngress.push(message).catch(()=>log('[Voice] inbound_failed'));});
-const personaApproval=createPersonaApprovalDelivery({root:historyRoot,adapter,settingsFor:memberSettings,accountScope:historyAccount.id,isReady:()=>activeReaderAccount(historyRoot).id===historyAccount.id,log});
+const personaApproval=createPersonaApprovalDelivery({root:historyRoot,adapter,settingsFor:memberSettings,accountScope:historyAccount.id,isReady:()=>activeConnection(historyRoot).id===historyAccount.id,log});
 async function routeIncoming(message) {
   try {
     refreshChatSettings();

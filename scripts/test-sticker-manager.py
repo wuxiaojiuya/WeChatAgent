@@ -91,8 +91,8 @@ class ManagerTests(unittest.TestCase):
     def test_metadata_and_native_bound_paths_work_in_reader_candidates(self):
         import importlib.util
         from wechat_sticker_labels import StickerLabels
-        spec=importlib.util.spec_from_file_location('managed_reader',pathlib.Path(__file__).with_name('reader-api.py'));api=importlib.util.module_from_spec(spec);spec.loader.exec_module(api)
-        self.manager.import_image(self.body());reader=api.Reader.__new__(api.Reader)
+        spec=importlib.util.spec_from_file_location('managed_reader',pathlib.Path(__file__).with_name('hook_receiver_core.py'));api=importlib.util.module_from_spec(spec);spec.loader.exec_module(api)
+        self.manager.import_image(self.body());reader=api.HookReceiver.__new__(api.HookReceiver)
         reader.root=self.root;reader.account=self.root/'account';reader.sticker_collection=self.pool;reader.sticker_labels=StickerLabels(self.root/'labels.json')
         reader.image_index={};reader.pump_sticker_collection=lambda:None
         choices=reader.sticker_candidates('wechat:group:123','开心')
@@ -101,11 +101,11 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(native['path']).parent,self.root/'state/stickers/outgoing')
     def test_real_reader_http_manager_requires_token_and_checks_account_scope(self):
         import importlib.util
-        spec=importlib.util.spec_from_file_location('http_managed_reader',pathlib.Path(__file__).with_name('reader-api.py'));api=importlib.util.module_from_spec(spec);spec.loader.exec_module(api)
+        spec=importlib.util.spec_from_file_location('http_managed_reader',pathlib.Path(__file__).with_name('hook_receiver_core.py'));api=importlib.util.module_from_spec(spec);spec.loader.exec_module(api)
         ready=threading.Event();servers=[]
         def factory(port,handler):
             server=api.ThreadingHTTPServer(('127.0.0.1',0),handler);servers.append(server);ready.set();return server
-        reader=SimpleNamespace(sticker_collection=self.pool,poll=lambda:None,stop=threading.Event(),sticker_executor=SimpleNamespace(shutdown=lambda **_:None),sticker_review_executor=SimpleNamespace(shutdown=lambda **_:None))
+        reader=SimpleNamespace(start_native_gateway=lambda:None,sticker_collection=self.pool,poll=lambda:None,stop=threading.Event(),sticker_executor=SimpleNamespace(shutdown=lambda **_:None),sticker_review_executor=SimpleNamespace(shutdown=lambda **_:None))
         with patch.object(api,'create_reader_server',factory):
             thread=threading.Thread(target=api.serve,args=(reader,0,'fixture-token'),daemon=True);thread.start();self.assertTrue(ready.wait(5))
             base='http://127.0.0.1:'+str(servers[0].server_port)

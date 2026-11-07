@@ -96,7 +96,7 @@ const { pathToFileURL } = require('node:url');
     let readerConversationKey=key;
     reader = http.createServer((_req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({imageId,conversationKey:readerConversationKey,b64:image.toString('base64'),mime:'image/png',sha256:imageId}));});
     await new Promise(resolve=>reader.listen(0,'127.0.0.1',resolve));
-    fs.writeFileSync(path.join(fixture,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:'+reader.address().port,reader_token:token}));
+    fs.writeFileSync(path.join(fixture,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:'+reader.address().port,receiver_token:token}));
     const identity = {conversationKey:key,conversationName:'离线兼容验收',personaName:'测试人格',persona};
     async function rpc(route, body, allowFailure=false) {
       const response=await fetch('http://127.0.0.1:'+port+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(20000)});

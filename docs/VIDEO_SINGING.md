@@ -22,7 +22,7 @@ AI 先调用 `wechat_analyze_singing`，再调用 `wechat_sing_video` 提交方�
 
 支持 v.douyin.com 分享短链、www.douyin.com/video/ 视频链接及官方 iesdouyin 分享链接。仅识别官方域名，不接收任意下载地址。
 
-v0.2.0 安装包已内置固定版本的 yt-dlp 和 FFmpeg，支持抖音链接解析及视频音轨处理，无需另装 FFmpeg/ffprobe。源码部署需安装 `scripts/reader-requirements.txt` 中的读取器依赖；升级后需重启读取器和 Bridge/DSH 才能加载新代码。
+安装包已内置固定版本的 yt-dlp 和 FFmpeg，支持抖音链接解析及视频音轨处理，无需另装 FFmpeg/ffprobe。源码部署需安装 `scripts/hook-requirements.txt` 中的接收与媒体依赖。微信视频来自 Hook 回调和专用下载 API，不扫描微信目录或查询数据库。更新接收模块后重载项目接收服务；更新 DSH 插件代码后按页面提示重载插件，日常能力设置保存后供后续任务使用。
 
 抖音可能要求新 Cookie、登录或拒绝自动访问。可在本机「能力 → 唱歌 → 抖音访问 Cookie」填写网站访问 Cookie；密码框留空保留，支持单独清除。它仅存在本机 state 配置中，不回显至页面、不交给模型、不放进日志，只加入官方抖音域的 Cookie Jar。不要通过微信聊天发送 Cookie。
 

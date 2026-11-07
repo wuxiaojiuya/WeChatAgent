@@ -8,7 +8,7 @@ const key='wechat:private:123',id='a'.repeat(64),png=Buffer.from('iVBORw0KGgoAAA
 function fixture(t,{pending=false,legacyReader=false,recognitionFailed=false,wrongPreview=false,uploadFailed=false}={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-meme-test-'));t.after(()=>{assert(root.startsWith(os.tmpdir()+path.sep));fs.rmSync(root,{recursive:true,force:true});});fs.mkdirSync(path.join(root,'config'));fs.mkdirSync(path.join(root,'state'));
   const config={wechat:{whitelist:{private:['123'],groups:[]},stickers:{enabled:true},memeLibrary:{enabled:true,allowImport:false},search:{enabled:true}}};
-  const save=()=>fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));save();fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:5031',reader_token:'fixture'}));
+  const save=()=>fs.writeFileSync(path.join(root,'config/wechatagent.json'),JSON.stringify(config));save();fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:5031',receiver_token:'fixture'}));
   const calls=[],fetchImpl=async(input,options={})=>{
     const url=new URL(input),body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(url.pathname==='/dsh-memes-api'&&body?.op==='getMemeRoot')return Response.json({ok:true,packId:'enabled',packs:[{id:'enabled'},{id:'disabled'}],enabledPacks:['enabled']});

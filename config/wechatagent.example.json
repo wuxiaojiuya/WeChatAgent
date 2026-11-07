@@ -3,7 +3,6 @@
   "runtime": {
     "python": "python",
     "dshDesktop": "",
-    "weflowMode": "nt",
     "sender": "wechat-hook"
   },
   "hook": {
@@ -19,7 +18,7 @@
     "voiceBaseUrl": "http://127.0.0.1:30001"
   },
   "ports": {
-    "weflow": 5031,
+    "receiver": 5031,
     "onebot": 11229,
     "adapter": 8766,
     "dshPlugin": 11230

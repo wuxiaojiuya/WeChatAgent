@@ -36,7 +36,7 @@ async function main(){
   const health=await request('/health');if(health.contextMode!=='native-session-v1')throw Object.assign(new Error('DSH 仍在运行旧版插件：请从托盘完整退出 DSH 后重新打开。'),{friendly:true});
   if(action==='status'){const result=await request('/sessions');for(const session of result.sessions)console.log(JSON.stringify(session));}
   else{
-    const response=await fetch(io.reader_base_url+'/api/v1/sessions?limit=500',{headers:{Authorization:'Bearer '+io.reader_token},signal:AbortSignal.timeout(5000)});
+    const response=await fetch(io.receiver_base_url+'/api/v1/sessions?limit=500',{headers:{Authorization:'Bearer '+io.receiver_token},signal:AbortSignal.timeout(5000)});
     if(!response.ok)throw Object.assign(new Error('读取服务未就绪：请先在控制台启动服务并连接微信。'),{friendly:true});
     const contacts=(await response.json()).sessions ?? [];
     const keys=target?[target]:[...config.wechat.whitelist.private.map(id=>'wechat:private:'+id),...config.wechat.whitelist.groups.map(id=>'wechat:group:'+id)];

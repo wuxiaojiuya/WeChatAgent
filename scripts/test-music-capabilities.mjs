@@ -127,7 +127,7 @@ test('live job stages and failures are atomically saved with only public metadat
   let entered,release;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
   const f=fixture(t,{settings:()=>({musicSource:'local',apiKey:'private-fixture-key',endpoint:'https://private.invalid'}),runCover:async()=>{entered();await gate;throw Error('private error with credentials');}});
   const file=path.join(f.root,'test.mp3');fs.writeFileSync(file,'audio');const song=await f.service.importFile({path:file,title:'测试歌曲'});
-  fs.mkdirSync(path.join(f.root,'state/weflow'),{recursive:true});const account='a'.repeat(64),accountFile=path.join(f.root,'state/weflow/active-account.json');fs.writeFileSync(accountFile,JSON.stringify({id:account}));
+  fs.mkdirSync(path.join(f.root,'state/hook'),{recursive:true});const account='a'.repeat(64),accountFile=path.join(f.root,'state/hook/active-connection.json');fs.writeFileSync(accountFile,JSON.stringify({id:account}));
   const job=f.service.start({songId:song.id,seconds:30,conversationKey:'wechat:private:123'}),journal=path.join(f.root,'state/music-jobs',job.id,'job.json');
   assert.equal(JSON.parse(fs.readFileSync(journal,'utf8')).stage,'正在获取歌曲音频');
   try{

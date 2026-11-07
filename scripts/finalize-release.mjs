@@ -20,8 +20,8 @@ const deliveryFiles=['components/qq-bridge/src/core/social-engine.js','scripts/s
 const sharedMemoryAndHookFiles=[
   'scripts/supplier_api.py','scripts/supplier_contacts.py','scripts/supplier_events.py','scripts/supplier_actions.py',
   'scripts/supplier_social_actions.py','scripts/supplier_social_gateway.py','scripts/supplier_social_results.py',
-  'scripts/reader-api.py','scripts/supplier-probe.py','scripts/supplier-connect.mjs','scripts/hook-onebot.mjs',
-  'scripts/text-delivery-store.mjs','scripts/wechat-account-check.mjs','scripts/check-runtime.py',
+  'scripts/hook-receiver.py','scripts/hook_receiver_core.py','scripts/hook-connection-state.mjs','scripts/supplier-probe.py','scripts/supplier-connect.mjs','scripts/hook-onebot.mjs',
+  'scripts/text-delivery-store.mjs','scripts/hook-component-check.mjs','scripts/check-runtime.py',
   'components/qq-bridge/src/adapters/wechat/wechat-onebot-adapter.js',
   'packages/dsh-social-bridge-plugin/history-policy.mjs','packages/dsh-social-bridge-plugin/history-store.mjs',
   'packages/dsh-social-bridge-plugin/history-runtime.mjs','packages/dsh-social-bridge-plugin/prompt-context.mjs',
@@ -74,9 +74,9 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
 }
 const desktop=JSON.parse(fs.readFileSync(path.join(output,'win-unpacked/resources/app/package.json')));
 if(desktop.version!==version)throw Error('DESKTOP_VERSION_MISMATCH');
-for(const relative of ['deployment.cjs','retired-audio.cjs'])if(sha(path.join(output,'win-unpacked/resources/app',relative))!==sha(path.join(root,'apps/console-desktop',relative)))throw Error('UPGRADE_MIGRATION_NOT_PACKAGED');
+for(const relative of ['deployment.cjs','retired-audio.cjs','hook-only-policy.cjs'])if(sha(path.join(output,'win-unpacked/resources/app',relative))!==sha(path.join(root,'apps/console-desktop',relative)))throw Error('UPGRADE_MIGRATION_NOT_PACKAGED');
 const runtimeProbe=spawnSync(path.join(output,'win-unpacked/resources/runtime/python/python.exe'),['-B','-c',
-  'import yt_dlp,imageio_ffmpeg,subprocess,sqlcipher3,PIL; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("PACKAGED_MEDIA_RUNTIME_OK")'],{windowsHide:true,encoding:'utf8',timeout:30000});
+  'import yt_dlp,imageio_ffmpeg,subprocess,Crypto,PIL; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),"-version"],check=True,capture_output=True); print("PACKAGED_MEDIA_RUNTIME_OK")'],{windowsHide:true,encoding:'utf8',timeout:30000});
 if(runtimeProbe.status!==0)throw Error('PACKAGED_MEDIA_RUNTIME_INVALID');
 const installationProbe=spawnSync(process.execPath,[path.join(root,'scripts/verify-supplier-installation.mjs')],{cwd:root,windowsHide:true,encoding:'utf8',timeout:120000});
 if(installationProbe.status!==0)throw Error('INSTALLED_FIRST_RUN_CHECK_FAILED: '+installationProbe.stdout+'\n'+installationProbe.stderr);
@@ -91,7 +91,7 @@ Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevisio
   wechatMessageSource:'hook-push-project-cache',wechatDatabaseAccess:false,autonomousWechatManagement:true,
   singingEngine:'source-vocal-rvc-v1',obsoleteSingingEngineBundled:false,
   assets:assets.filter(name=>name!=='VERIFICATION.json').map(name=>({name,bytes:fs.statSync(path.join(output,name)).size,sha256:sha(path.join(output,name))})),
-  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC source-vocal pipeline checks are separate from packaging; full first-time model downloads require access to official sources.','Packaging checks do not generate singing audio or verify arbitrary third-party links. Real local song/video singing preview evidence is described in the release notes; platform downloads may require valid cookies.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
+  validationLimits:['Packaged source/resource hashes and executable headers verified; the installer has not been installed on another physical computer.','Audio environment installation/repair and local TTS/RVC source-vocal pipeline checks are separate from packaging; full first-time model downloads require access to official sources.','This release validation does not generate singing audio, send real WeChat messages, or verify arbitrary third-party links; platform downloads may require valid cookies.'],packagedMediaRuntimeVerified:true,servicesRestarted:false,realWeChatMessagesSent:false});
 fs.writeFileSync(path.join(output,'VERIFICATION.json'),JSON.stringify(manifest,null,2)+'\n');
 const sums=assets.map(name=>sha(path.join(output,name))+'  '+name).join('\n')+'\n';
 fs.writeFileSync(path.join(output,'SHA256SUMS.txt'),sums);

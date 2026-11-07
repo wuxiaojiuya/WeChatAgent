@@ -44,6 +44,12 @@ test('task controls bind the actual task ID and file scope without running or ca
 test('settings and network sections render only their own controls while drafts and native grants survive',async()=>{
  const f=fixture(),before=JSON.stringify(f.state.draft);f.state.settingsSection='assistant';const assistant=await f.ui.settingsPage();assert.match(assistant,/ADMINSFEEDBACK/);assert(!assistant.includes('PARTICIPATION'));f.state.settingsSection='context';const context=await f.ui.settingsPage();assert.match(context,/CONTEXT/);assert(!context.includes('ADMINS'));const network=f.ui.networkPage();assert.match(network,/SEARCHREADER/);assert(!network.includes('MEDIA'));assert.equal(JSON.stringify(f.state.draft),before);assert.equal(f.state.draft.wechat.dshAccess.chats[key].preset,'standard');assert.deepEqual(f.state.draft.wechat.dshAccess.chats[key].tools,['read']);
 });
+
+test('connection diagnostics use the Hook check and automatic settings apply without database actions',async()=>{
+ const f=fixture({offline:true}),before=JSON.stringify(f.state.draft);f.state.settingsSection='diagnostics';f.state.status={services:[{id:'receiver',label:'消息接收',ready:true}]};
+ const html=await f.ui.settingsPage();assert.match(html,/消息接收：已就绪/);assert.match(html,/data-action="hook-check"/);assert.match(html,/data-action="apply-settings"/);
+ assert.doesNotMatch(html,/reader-check|reader-connect|ack-dsh|数据库|核对当前账号|完整重开 DSH/);assert.deepEqual(f.requests,[{route:'/api/status',body:undefined}]);assert.equal(JSON.stringify(f.state.draft),before);
+});
 test('sticker collection, sources and sending retain separate original settings scopes',async()=>{
  const f=fixture(),before=JSON.stringify(f.state.draft);f.state.stickerSection='sources';const sources=await f.ui.stickersPage();assert.match(sources,/data-extension-details="dsh-meme"/);assert.match(sources,/MEDIA/);f.state.stickerSection='library';assert.match(await f.ui.stickersPage(),/STICKERS/);assert.equal(JSON.stringify(f.state.draft),before);
 });

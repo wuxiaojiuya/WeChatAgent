@@ -109,7 +109,7 @@ class SupplierSocialGateway:
             raise RuntimeError('HOOK_DRAWING_REFERENCE_UNAVAILABLE')
         job = read_json(meta)
         # This is saved project resource ownership, never a live login probe.
-        scope = read_json(self.reader.root/'state/weflow/active-account.json').get('id')
+        scope = read_json(self.reader.root/'state/hook/active-connection.json').get('id')
         if (not scope or job.get('id') != job_id or job.get('state') != 'success'
                 or job.get('conversationKey') != key or job.get('accountScope') != scope):
             raise PermissionError('HOOK_DRAWING_REFERENCE_NOT_ALLOWED')

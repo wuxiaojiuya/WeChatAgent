@@ -137,321 +137,6 @@ class SupplierFiles(FileCatalog):
         return {'status': 'ready', 'id': file_id, 'conversationKey': key, 'senderWxid': sender, 'name': record['name'], 'size': record['size'], 'path': str(file), 'accountRoot': str(self.account), 'md5': md5, 'sha256': sha}
 
 
-def create_reader(Base):
-    class SupplierReader(Base):
-        backend = BACKEND
-
-        def initialize_source(self, settings):
-            if settings.get('backend') != BACKEND:
-                raise RuntimeError('HOOK_ACCOUNT_BIND_REQUIRED')
-            self.api = SupplierApi(self.root)
-            self.own_wxid = settings['myWxid']
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', self.own_wxid):
-                raise RuntimeError('HOOK_ACCOUNT_METADATA_INVALID')
-            self.account = (self.root/'state/hook/accounts'/self.own_wxid).resolve()
-            if pathlib.Path(settings['dbPath']).resolve() != self.account.parent:
-                raise RuntimeError('HOOK_ACCOUNT_METADATA_INVALID')
-            self.account.mkdir(parents=True, exist_ok=True)
-            self.passphrase = ''  # No captured database credentials in this backend.
-            # Connection setup already captured metadata for every downstream
-            # cache. Do not silently switch only the reader's namespace here.
-            self.startup_identity = {'wxid': self.own_wxid, **self.api.component_identity()}
-            callback_file = self.account/'callbacks.json'
-            self.callback_messages = read_json(callback_file) if callback_file.is_file() and callback_file.stat().st_size < 1024*1024 else {}
-            self.callback_lock = threading.Lock()
-            self.events = SupplierEventStore(self.account/'events.json')
-            with self.events.lock:
-                for entry in self.events.entries.values():
-                    row = entry['row']
-                    if row['serverId'] != '0' and isinstance(row.get('callback'), dict):
-                        self.callback_messages[row['serverId']] = row['callback']
-            self.callback_wake = threading.Event()
-            self.member_cache, self.member_lock = {}, threading.Lock()
-
-        def __init__(self, root):
-            super().__init__(root)
-            self.files = SupplierFiles(self)
-            self.quoted_files = SupplierFiles(self, policy=media_file_policy, index_name='quoted.json')
-
-        def start_native_gateway(self):
-            self.gateway = start_gateway(self)
-
-        def active_identity(self):
-            # The supplier Hook has one login. Its connection metadata is used for
-            # message direction/cache keys, not a repeated login-account gate.
-            hook = read_json(self.root/'config/wechatagent.json')['hook']
-            if any(hook.get(key) != self.api.hook.get(key) for key in ('backend', 'baseUrl', 'upstreamUrl', 'expectedVersion', 'wechatExecutable', 'sourceDirectory')):
-                raise RuntimeError('HOOK_SETTINGS_CHANGED')
-            return dict(self.startup_identity)
-
-        def sticker_account_active(self):
-            try:
-                self.active_identity()
-                return True
-            except (RuntimeError, OSError, ValueError, KeyError):
-                return False
-
-        def refresh_names(self, max_age=0):
-            with self.names_lock:
-                if max_age and time.monotonic() - self.names_refreshed_at < max_age:
-                    return
-                self.active_identity()
-                names, friends, catalog_error = load_contacts(self.api, self.own_wxid)
-                session_names = self.group_session_names()
-                names = {**session_names, **names}
-                for u, n in session_names.items():
-                    if names[u] == u:
-                        names[u] = n
-                self.group_bindings.reconcile(names, read_json(self.root/'config/wechatagent.json')['wechat']['whitelist']['groups'], self.legacy_group_hints([]), {u: [n] for u, n in session_names.items() if n != u})
-                self.names, self.names_refreshed_at = names, time.monotonic()
-                self.friend_contacts, self.contact_catalog_error = friends, catalog_error
-
-        def group_session_names(self):
-            return load_groups(self.api)
-
-        def group_members(self, talker):
-            if not talker.endswith('@chatroom') or not self.image_talker_allowed(talker):
-                raise PermissionError('CONVERSATION_NOT_ALLOWED')
-            with self.member_lock:
-                cached = self.member_cache.get(talker)
-                if cached and time.monotonic()-cached[0] < 30:
-                    return [dict(item) for item in cached[1]]
-                members = load_members(self.api, talker)
-                self.member_cache[talker] = (time.monotonic(), members)
-                return [dict(item) for item in members]
-
-        def open_messages(self):
-            # Compatibility with the shared HTTP server. Supplier reception is
-            # callback-only and never opens a WeChat database or asks for handles.
-            return []
-
-        def messages(self, talker, limit=100, from_time=None):
-            if talker not in self.selected_talkers():
-                raise PermissionError('CONVERSATION_NOT_ALLOWED')
-            return self.events.messages(talker, limit=limit, from_time=from_time)
-
-        def exact_message(self, talker, identity):
-            if not talker or not self.image_talker_allowed(talker):
-                raise PermissionError('CONVERSATION_NOT_ALLOWED')
-            row = self.events.exact(talker, identity)
-            if not row:
-                raise RuntimeError('HOOK_MESSAGE_IDENTITY_NOT_FOUND')
-            return row
-
-        def bound_message(self, talker, server_id):
-            if not self.image_talker_allowed(talker):
-                return None
-            return self.events.bound(talker, server_id)
-
-        def quote_reference(self, talker, reply_id):
-            if not isinstance(reply_id, str) or not self.image_talker_allowed(talker):
-                raise PermissionError('HOOK_QUOTE_REFERENCE_NOT_ALLOWED')
-            rows = self.events.messages(talker, limit=0)
-            matches = [row for row in rows if (row['rawid'] == reply_id or row['serverId'] == reply_id) and row['serverId'] != '0']
-            if len(matches) != 1:
-                raise RuntimeError('HOOK_QUOTE_ORIGINAL_NOT_CACHED')
-            row = matches[0]
-            return {'conversationWxid': talker, 'referContent': row['fullText'],
-                    'fromUsr': row['senderUsername'], 'newmsgid': row['serverId'],
-                    'createTime': row['createTime'], 'msgSource': row.get('msgSource', '')}
-
-        def image_row(self, talker, descriptor):
-            row = self.exact_message(talker, descriptor)
-            kind = row['localType']
-            if kind == 3:
-                text = row['fullText']
-            else:
-                text = sticker_image_xml(kind, row['fullText'])
-            if not text or row['senderUsername'] != descriptor.get('sender'):
-                raise RuntimeError('IMAGE_MESSAGE_IDENTITY_NOT_FOUND')
-            return {**row, 'localType': 47 if kind != 3 else 3, 'imageXml': text}
-
-        def make_payload(self, talker, message):
-            payload = super().make_payload(talker, message)
-            if payload:
-                payload['rawid'] = message['rawid']
-                payload['mentions'] = message.get('mentions', [])
-                payload['atUserList'] = message.get('mentions', [])
-                payload['mentionedSelf'] = self.own_wxid in message.get('mentions', [])
-                if message.get('senderName'):
-                    payload['senderName'] = message['senderName']
-            if payload and payload.get('file'):
-                payload['file'].update(talker=talker, localId=message['localId'], serverId=message['serverId'], createTime=message['createTime'])
-            return payload
-
-        def voice_blob(self, record):
-            row = self.exact_message(record['talker'], record)
-            callback = row.get('callback', {})
-            length = callback.get('length')
-            if (row['localType'] != 34 or row['senderUsername'] != record['sender']
-                    or row['localId'] <= 0 or row['serverId'] == '0'
-                    or not isinstance(length, str) or not re.fullmatch(r'[1-9]\d{0,7}', length)
-                    or int(length) > MAX_SILK_BYTES):
-                raise RuntimeError('VOICE_CALLBACK_METADATA_REQUIRED')
-            directory = runtime_directory(self.root)/'incoming-voice'
-            directory.mkdir(parents=True, exist_ok=True)
-            file = directory/(row['rawid']+'.silk')
-            def verified():
-                source_file(file, MAX_SILK_BYTES)
-                raw = file.read_bytes()
-                if len(raw) != int(length):
-                    raise OSError('Voice is still downloading')
-                if not raw.startswith((b'#!SILK_V3', b'\x02#!SILK_V3')):
-                    raise RuntimeError('VOICE_FORMAT_UNSUPPORTED')
-                return raw
-            if file.exists():
-                try:
-                    return verified()
-                except OSError:
-                    pass
-            handle, temporary = tempfile.mkstemp(dir=directory, suffix='.silk.part')
-            os.close(handle)
-            temporary = pathlib.Path(temporary)
-            try:
-                deadline = time.monotonic()+10
-                # Async native download: a transport timeout does not mean it
-                # failed, so wait for this one file rather than submit it twice.
-                try:
-                    self.api.post('/api/download_voice', {'newMsgId': row['serverId'], 'length': length,
-                        'MsgId': str(row['localId']), 'path': str(temporary)}, timeout=3)
-                except RuntimeError:
-                    pass
-                while time.monotonic() < deadline:
-                    try:
-                        source_file(temporary, MAX_SILK_BYTES)
-                        raw = temporary.read_bytes()
-                        if len(raw) == int(length) and raw.startswith((b'#!SILK_V3', b'\x02#!SILK_V3')):
-                            self.verify_voice_message(record)
-                            os.replace(temporary, file)
-                            return raw
-                    except (OSError, ValueError):
-                        pass
-                    time.sleep(.1)
-                raise RuntimeError('VOICE_DOWNLOAD_PENDING')
-            finally:
-                temporary.unlink(missing_ok=True)
-
-        def verify_voice_message(self, record):
-            row = self.exact_message(record['talker'], record)
-            if row['localType'] != 34 or row['senderUsername'] != record['sender']:
-                raise RuntimeError('VOICE_MESSAGE_IDENTITY_NOT_FOUND')
-
-        def accept_callback(self, body):
-            allowed = set(self.selected_talkers())
-            count = 0
-            for talker, row in normalize_callbacks(body, self.own_wxid):
-                if talker not in allowed:
-                    continue
-                if self.events.add(talker, row):
-                    count += 1
-                if row['serverId'] != '0':
-                    original = self.events.bound(talker, row['serverId'])
-                    with self.callback_lock:
-                        self.callback_messages[row['serverId']] = original['callback']
-                        while len(self.callback_messages) > 5000:
-                            self.callback_messages.pop(next(iter(self.callback_messages)))
-            if count:
-                self.callback_wake.set()
-            return count
-
-        def dispatch_pending(self):
-            for talker, row in self.events.pending():
-                if talker not in self.selected_talkers():
-                    self.events.mark_dispatched(row['rawid'])
-                    continue
-                with self.lock:
-                    if not self.clients or any(client.full() for client in self.clients):
-                        return
-                payload = self.make_payload(talker, row)
-                if not payload:
-                    self.events.mark_dispatched(row['rawid'])
-                    continue
-                key = 'wechat:'+('group:' if '@chatroom' in talker else 'private:')+self.conversation_id(talker)
-                if payload.get('file'):
-                    reference = self.files.remember(payload, key)
-                    if not reference:
-                        self.events.mark_dispatched(row['rawid'])
-                        continue
-                    payload['file'] = reference
-                if payload['type'] == 34:
-                    reference = self.voices.remember(talker, payload, key)
-                    if not reference:
-                        self.events.mark_dispatched(row['rawid'])
-                        continue
-                    payload['voice'] = reference
-                if payload['type'] in (3, 47):
-                    image_id = self.register_image(talker, payload)
-                    if not image_id:
-                        self.events.mark_dispatched(row['rawid'])
-                        continue
-                    payload['image'] = {'id': image_id}
-                if payload['type'] == 43:
-                    video = self.videos.remember(talker, row)
-                    if video:
-                        payload['video'] = video
-                try:
-                    self.quote_media(talker, payload)
-                except (RuntimeError, ValueError, OSError, PermissionError):
-                    pass
-                with self.lock:
-                    if not self.clients or any(client.full() for client in self.clients):
-                        return
-                    for client in self.clients:
-                        client.put_nowait(payload)
-                self.events.mark_dispatched(row['rawid'])
-                self.pushed += 1
-
-        def poll(self):
-            # Local durable inbox dispatcher. No upstream history/profile/SQL
-            # requests run on this idle loop.
-            while not self.stop.is_set():
-                self.callback_wake.clear()
-                try:
-                    self.dispatch_pending()
-                    self.pump_sticker_collection()
-                    self.pump_sticker_pool_review()
-                    self.last_poll, self.last_error = time.time(), ''
-                except Exception as error:
-                    code = str(error)
-                    self.last_error = code if re.fullmatch(r'[A-Z][A-Z0-9_]{2,79}', code) else type(error).__name__
-                self.callback_wake.wait(.5)
-
-        def resolve_image(self, image_id):
-            descriptor = self.image_index.get(image_id)
-            if descriptor and descriptor.get('videoId'):
-                return self.resolve_video_frame(image_id, descriptor)
-            # Imported/collected sticker previews use the shared verified image pool.
-            if not descriptor:
-                for store in (getattr(self, 'meme_send_resources', None), getattr(self, 'sticker_collection', None)):
-                    if store:
-                        preview = store.preview(image_id)
-                        if preview:
-                            return preview
-                raise PermissionError('IMAGE_REFERENCE_NOT_ALLOWED')
-            self.active_identity()
-            if descriptor.get('account') != self.account.name or not self.image_talker_allowed(descriptor['talker']):
-                raise PermissionError('IMAGE_REFERENCE_NOT_ALLOWED')
-            row = self.image_row(descriptor['talker'], descriptor)
-            media = read_json(self.root/'config/wechatagent.json').get('wechat', {}).get('media', {})
-            if row['localType'] == 47:
-                result = resolve_sticker(self.account, row['imageXml'], normalize_image, allow_cdn=media.get('allowStickerCdn') is True, allow_cdn_alias=media.get('allowStickerCdnAlias') is True)
-            else:
-                node = xml_root(row['imageXml']).find('img')
-                result = download_image(self, image_id, descriptor, node)
-            self.active_identity()
-            if not self.image_talker_allowed(descriptor['talker']):
-                raise PermissionError('IMAGE_REFERENCE_NOT_ALLOWED')
-            return {**result, 'imageId': image_id, 'conversationKey': 'wechat:'+('group:' if '@chatroom' in descriptor['talker'] else 'private:')+self.conversation_id(descriptor['talker'])}
-
-        def video_source(self, video_id, item, row):
-            return download_video(self, video_id, item, xml_root(row['fullText']).find('videomsg'))
-
-        def pump_sticker_collection(self):
-            # Shared collector resolves registered descriptors via overridden
-            # cache-backed image_row; it has no database scanner.
-            return super().pump_sticker_collection()
-
-    return SupplierReader
 
 
 def start_gateway(reader):
@@ -615,12 +300,14 @@ def normalize_send_response(route, result, account=None, target=None, duration=N
     # Supplied builds use either code or errCode. A text API acknowledgement
     # is distinct from a delivery receipt; other media still require their receipt.
     action_routes = ('/SendAtText', '/SendQuoteMsg', '/SendPatMsg', '/SendMp3VoiceMsg')
+    media_routes = ('/SendImageMsg', '/SendFileMsg', '/SendStickerMsg')
+    receipt_routes = action_routes + media_routes
     codes = [result[key] for key in ('code', 'errCode') if key in result]
     if codes:
         if any(type(code) is not int for code in codes):
             raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
         accepted = all(code == 1 for code in codes)
-        if route == '/SendTextMsg' or route in action_routes:
+        if route == '/SendTextMsg' or route in receipt_routes:
             envelopes = [result]
             if 'data' in result and result['data'] is not None:
                 if not isinstance(result['data'], dict):
@@ -637,22 +324,22 @@ def normalize_send_response(route, result, account=None, target=None, duration=N
         normalized = {'ret': 0 if accepted else -1, 'submitted': accepted, 'confirmed': False}
         if accepted and (route == '/SendTextMsg' or route in action_routes):
             normalized['apiAcknowledged'] = True
-        if accepted and route in action_routes:
+        if accepted and route in receipt_routes:
             native = result.get('data') if isinstance(result.get('data'), dict) else result
-            if (native.get('baseResponse', {}).get('ret') == 0 and native.get('toUserName') == target
+            if (isinstance(target, str) and target and native.get('baseResponse', {}).get('ret') == 0 and native.get('toUserName') == target
                     and isinstance(native.get('newMsgId'), str) and re.fullmatch(r'[1-9]\d{0,19}', native['newMsgId'])):
                 normalized.update(confirmed=True, serverId=native['newMsgId'], target=target, receipt='wechat-message-response')
         return normalized
-    if route in action_routes and isinstance(result.get('baseResponse'), dict):
+    if route in receipt_routes and isinstance(result.get('baseResponse'), dict):
         ret = result['baseResponse'].get('ret')
         if type(ret) is not int:
             raise RuntimeError('HOOK_SEND_RESPONSE_UNKNOWN')
         normalized = {'ret': 0 if ret == 0 else -1, 'submitted': ret == 0, 'confirmed': False}
-        if ret == 0:
+        if ret == 0 and route in action_routes:
             normalized['apiAcknowledged'] = True
-            if (result.get('toUserName') == target and isinstance(result.get('newMsgId'), str)
-                    and re.fullmatch(r'[1-9]\d{0,19}', result['newMsgId'])):
-                normalized.update(confirmed=True, serverId=result['newMsgId'], target=target, receipt='wechat-message-response')
+        if (ret == 0 and isinstance(target, str) and target and result.get('toUserName') == target and isinstance(result.get('newMsgId'), str)
+                and re.fullmatch(r'[1-9]\d{0,19}', result['newMsgId'])):
+            normalized.update(confirmed=True, serverId=result['newMsgId'], target=target, receipt='wechat-message-response')
         return normalized
     if (route == '/SendVoiceMsg' and account and target and result.get('baseResponse', {}).get('ret') == 0
             and result.get('endFlag') == 2 and result.get('cancelFlag') == 0

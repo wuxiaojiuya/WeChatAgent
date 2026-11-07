@@ -93,7 +93,7 @@ test('actual bridge follow-up metadata fetches and attaches the original image b
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));});
   fs.mkdirSync(path.join(f.root,'state'));
-  fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:'+server.address().port,reader_token:'fixture'}));
+  fs.writeFileSync(path.join(f.root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:'+server.address().port,receiver_token:'fixture'}));
   // A previous unrelated video must not become the target of this image question.
   f.buffer.chats.get(key).unshift({...f.old,id:'older-video',video:{id:otherId},images:[]});
   f.engine.receive({...base,message_id:'question',text:'描述一下'});

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {dshConfigurationMatches,dshPluginMatches,sameProjectPath} from './dsh-configuration.mjs';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 
 // Reload only this project's authenticated bridge; never terminate the DSH desktop.
 export async function refreshDsh({root,config,previousPort,waitForIdle=false,fetchImpl=fetch,timeoutMs=90000,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms))}) {
@@ -11,7 +11,7 @@ export async function refreshDsh({root,config,previousPort,waitForIdle=false,fet
   const headers={Authorization:'Bearer '+fs.readFileSync(tokenFile,'utf8').trim()};
   const call=(port,route,method='GET')=>fetchImpl(`http://127.0.0.1:${port}${route}`,{method,headers,signal:AbortSignal.timeout(3000)});
   const health=async port=>{try{const r=await call(port,'/health');return r.ok?await r.json():null;}catch{return null;}};
-  const port=config.ports.dshPlugin,account=activeReaderAccount(root).id;
+  const port=config.ports.dshPlugin,account=activeConnection(root).id;
   const matches=value=>dshConfigurationMatches(root,config,value)&&value.accountScope===account;
   let sourcePort,initial;
   for(const candidate of [...new Set([previousPort,port].filter(Number.isInteger))]){

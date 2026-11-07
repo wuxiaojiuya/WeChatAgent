@@ -76,11 +76,11 @@ test('console apply retains the reopen requirement until the actual new DSH plug
     assert.fail('offline apply job did not settle');
   };
   const failed=await run();assert.equal(failed.state,'failed');assert.match(failed.output,/DSH_RELOAD_UPGRADE_REQUIRED/);assert.match(failed.message,/托盘退出并重开/);
-  let status=await fetch(base+'/api/status',{headers}).then(r=>r.json());assert.equal(status.pendingApply,true);assert.equal(status.dshRestartRequired,true);assert.equal(status.services.find(item=>item.id==='dsh').ready,false);
+  let status=await fetch(base+'/api/status',{headers}).then(r=>r.json());assert.equal(status.pendingApply,true);assert.equal(status.dshReloadRequired,true);assert.equal(status.services.find(item=>item.id==='dsh').ready,false);
   const premature=await fetch(base+'/api/dsh-reopened',{method:'POST',headers,body:'{}'});assert.equal(premature.status,409);
-  const preferences=JSON.parse(fs.readFileSync(path.join(f.root,'state/console-state.json'),'utf8'));assert.equal(preferences.pendingApply,true);assert.equal(preferences.dshRestartRequired,true);
+  const preferences=JSON.parse(fs.readFileSync(path.join(f.root,'state/console-state.json'),'utf8'));assert.equal(preferences.pendingApply,true);assert.equal(preferences.dshReloadRequired,true);
   health=f.health;
   assert.equal((await fetch(base+'/api/dsh-reopened',{method:'POST',headers,body:'{}'})).status,200);
   assert.equal((await run()).state,'succeeded');
-  status=await fetch(base+'/api/status',{headers}).then(r=>r.json());assert.equal(status.pendingApply,false);assert.equal(status.dshRestartRequired,false);assert.equal(status.services.find(item=>item.id==='dsh').ready,true);assert.equal(commands.length,2);
+  status=await fetch(base+'/api/status',{headers}).then(r=>r.json());assert.equal(status.pendingApply,false);assert.equal(status.dshReloadRequired,false);assert.equal(status.services.find(item=>item.id==='dsh').ready,true);assert.equal(commands.length,2);
 });

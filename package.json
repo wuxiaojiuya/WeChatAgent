@@ -1,6 +1,6 @@
 {
   "name": "wechatagent",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "private": true,
   "type": "module",
   "description": "Windows 微信 AI 助手：人格对话、原生语音、RVC 翻唱与多模态理解",
@@ -22,15 +22,12 @@
     "sessions:configure": "node scripts/manage-dsh-sessions.mjs configure",
     "sessions:compact": "node scripts/manage-dsh-sessions.mjs compact",
     "sessions:status": "node scripts/manage-dsh-sessions.mjs status",
-    "hook:build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-hook.ps1",
     "hook:open": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/launch-hook-wechat.ps1",
-    "hook:pin": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/pin-hook-client.ps1",
-    "hook:unpin": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/pin-hook-client.ps1 -Unlock",
     "hook:check": "node scripts/hook-onebot.mjs --check",
     "setup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1",
     "privacy:check": "node scripts/public-source-check.mjs",
     "test:shutdown": "node --test scripts/test-desktop-shutdown.mjs scripts/test-desktop-lifecycle.mjs",
-    "test:hook-startup": "node --test scripts/test-hook-startup.mjs scripts/test-hook-launcher.mjs scripts/test-hook-repair-ui.mjs scripts/test-hook-repair-api.mjs scripts/test-process-recovery.mjs",
+    "test:hook-startup": "node --test scripts/test-hook-startup.mjs scripts/test-hook-repair-ui.mjs scripts/test-hook-repair-api.mjs scripts/test-process-recovery.mjs",
     "test:storage": "node --test scripts/test-installer-directory.mjs scripts/test-data-storage.mjs scripts/test-storage-runtime.mjs",
     "test:startup": "node --test scripts/test-adapter-startup.mjs scripts/test-hook-startup.mjs scripts/test-process-recovery.mjs scripts/test-hook-repair-api.mjs",
     "test:reply-protocol": "node --test scripts/test-reply-protocol.mjs",
@@ -38,8 +35,7 @@
     "test:persona-delete": "node --test scripts/test-persona-delete.mjs",
     "test:persona-approvals": "node --test scripts/test-persona-approvals.mjs scripts/test-assistant-access.mjs scripts/test-request-admission.mjs",
     "test:external-dsh": "node --test scripts/test-external-dsh.mjs",
-    "test:wechat-account": "node --test scripts/test-wechat-account-check.mjs scripts/test-reader-account-state.mjs scripts/test-hook-startup.mjs",
-    "test:supplier-hook": "node --test scripts/test-supplier-hook.mjs scripts/test-supplier-launcher.mjs scripts/test-native-voice-delivery.mjs scripts/test-reader-account-state.mjs",
+    "test:supplier-hook": "node --test scripts/test-supplier-hook.mjs scripts/test-supplier-launcher.mjs scripts/test-native-voice-delivery.mjs scripts/test-hook-connection-state.mjs",
     "test:session-groups": "node --test scripts/test-session-groups.mjs scripts/test-native-session.mjs",
     "test:followup": "node --test scripts/test-followup-dedup.mjs scripts/test-plugin-client.mjs scripts/test-native-session.mjs",
     "test:personas": "node --test scripts/test-persona-categories.mjs scripts/test-persona-delete.mjs",
@@ -70,8 +66,8 @@
     "test:speech-protocol": "node --test scripts/test-speech-protocol.mjs",
     "test:release-version": "node --test scripts/test-release-version.mjs scripts/test-public-update-check.mjs",
     "test:sessions": "node --test scripts/test-dsh-sessions-cli.mjs",
-    "test:hook-41513": "node --test scripts/test-hook-41513.mjs scripts/test-hook-native-apis-41513.mjs",
-    "test:client-pin": "node --test scripts/test-client-pin.mjs"
+    "hook:prepare": "node scripts/supplier-connect.mjs",
+    "test:hook-connection": "node --test scripts/test-hook-connection-state.mjs scripts/test-hook-startup.mjs scripts/test-supplier-auto-start.mjs scripts/test-hook-only-package.mjs"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",
@@ -81,7 +77,7 @@
     "sharp": "0.34.5",
     "resedit": "1.7.2"
   },
-  "releaseVersion": "0.2.14",
+  "releaseVersion": "0.2.15",
   "author": "wuxiaojiuya",
   "repository": {
     "type": "git",

@@ -69,7 +69,7 @@ test('stop during video preparation never admits a partial message',async()=>{
 
 test('video adapter checks response chat binding and retains an honest failure',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-video-test-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'state'));
-  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture'}));
+  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture'}));
   let bound=key;const prepare=createVideoIngress({root,fetchImpl:async()=>Response.json({id,conversationKey:bound,images:[{id}],voice:null,text:'[采样画面]'})});
   const input={...message(),voice:undefined,quoteReply:undefined,video:{id,context:'message'}};
   assert.deepEqual((await prepare(input)).images,[{id}]);bound='wechat:private:456';
@@ -78,7 +78,7 @@ test('video adapter checks response chat binding and retains an honest failure',
 
 test('Douyin sharing text enters the ordered video path and rejects unavailable or cross-chat results',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'douyin-video-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  fs.mkdirSync(path.join(root,'state'));fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture'}));
+  fs.mkdirSync(path.join(root,'state'));fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture'}));
   const text='复制打开抖音 https://v.douyin.com/ABCDE123/ 这段可以唱吗';
   assert.equal(douyinLink({text}).url,'https://v.douyin.com/ABCDE123/');
   assert.equal(douyinLink({text:'不要联网 '+text}),null);assert.equal(douyinLink({text:'https://douyin.com.evil.test/video/123'}),null);
@@ -117,7 +117,7 @@ test('visual helper receives only verified current images, no tools or chat hist
   const server=http.createServer((req,res)=>{assert.equal(req.headers.authorization,'Bearer fixture');res.setHeader('content-type','application/json');res.end(JSON.stringify({imageId:id,conversationKey:key,mime:'image/jpeg',b64:bytes.toString('base64'),sha256:crypto.createHash('sha256').update(bytes).digest('hex'),frameTime:1}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});});
-  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:'+server.address().port,reader_token:'fixture'}));
+  fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:'+server.address().port,receiver_token:'fixture'}));
   const llm={resolveModelInfo:async(_p,m)=>({inputModalities:m==='vision'?['image']:['text']}),listModels:async()=>[{provider:'same',id:'vision',inputModalities:['image']}],stream:async function*(request){calls.push(request);if(fail)throw Error('fixture');yield {type:'text-delta',text:'画面是红色的。'};}};
   class BlockAssembler{constructor(){this.text='';this.finish={kind:'stop'};}push(chunk){this.text+=chunk.text??'';}blocks(){return [{type:'text',text:this.text}];}}
   const services={llm,attachments:{saveImage:async()=>({attachmentId:'synthetic'})}},ctx={get:name=>services[name]},options={createUserMessage:value=>value,BlockAssembler};

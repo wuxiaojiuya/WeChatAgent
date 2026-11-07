@@ -13,7 +13,7 @@ function wave(){
 }
 function fixture(t,options={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'video-singing-'));
-  fs.mkdirSync(path.join(root,'state'));fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({reader_base_url:'http://127.0.0.1:1',reader_token:'fixture-reader-token'}));
+  fs.mkdirSync(path.join(root,'state'));fs.writeFileSync(path.join(root,'state/wechat-io-config.json'),JSON.stringify({receiver_base_url:'http://127.0.0.1:1',receiver_token:'fixture-reader-token'}));
   const bytes=wave(),packet={videoId,conversationKey,startSeconds:0,seconds:1,mime:'audio/wav',b64:bytes.toString('base64'),sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
   const runReference=async({input,output,seconds})=>fs.writeFileSync(path.join(output,'reference.json'),JSON.stringify({schema:'singing-reference-v1',source_sha256:crypto.createHash('sha256').update(fs.readFileSync(input)).digest('hex'),seconds,analysis:{phrases:[{start:0,end:seconds}]}}));
   const service=createMusicCapabilities({root,execution:createSingingExecutor({root}),runReference,runCover:async()=>{throw Error('unexpected processing');},fetchImpl:async()=>Response.json(packet),...options});

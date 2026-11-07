@@ -1,7 +1,7 @@
 """Message-bound sticker decoding. No process access or arbitrary URL input.
 
 Cache layout and AES-CBC key=IV convention follow weflow-cli 3d56da9 (MIT).
-Original license: components/weflow-cli/LICENSE. Credentials stay in memory.
+Original license: docs/licenses/weflow-cli-MIT.txt. Credentials stay in memory.
 """
 import hashlib
 import base64
@@ -225,21 +225,6 @@ def resolve_sticker_bytes(account, content, allow_cdn=False, allow_cdn_alias=Fal
                 continue
             return candidate
         return None
-    bases = [account / 'business' / 'emoticon' / n for n in ('Persist', 'Thumb', 'Temp')]
-    cache = account / 'cache'
-    if cache.is_dir():
-        bases.extend(p / 'Emoticon' for p in sorted(cache.iterdir(), reverse=True) if re.fullmatch(r'\d{4}-\d{2}', p.name))
-    for base in bases:
-        for digest in hashes:
-            for folder in (base/digest[:2],base):
-                for suffix in ('','.gif','.png','.webp','.dat'):
-                    file=folder/(digest+suffix)
-                    try:
-                        if file.resolve().is_relative_to(account) and file.is_file() and file.stat().st_size<=MAX_BYTES:
-                            result=decode(file.read_bytes())
-                            if result:return result
-                    except OSError:
-                        continue
     if not allow_cdn:
         failure = RuntimeError('IMAGE_STICKER_LOCAL_COPY_UNAVAILABLE')
         failure.reason = 'STICKER_CDN_DISABLED'
@@ -262,3 +247,13 @@ def resolve_sticker_bytes(account, content, allow_cdn=False, allow_cdn_alias=Fal
 def resolve_sticker(account, content, normalize, allow_cdn=False, allow_cdn_alias=False):
     raw=resolve_sticker_bytes(account,content,allow_cdn=allow_cdn,allow_cdn_alias=allow_cdn_alias)
     return normalize(decode_wxgf(raw),animated=True)
+
+
+def sticker_failure_payload(error):
+    code = str(error)
+    if not re.fullmatch(r'IMAGE_[A-Z_]{3,80}', code):
+        code = 'IMAGE_RESOLUTION_FAILED'
+    result = {'success': False, 'error': code}
+    if code == 'IMAGE_STICKER_LOCAL_COPY_UNAVAILABLE' and getattr(error, 'reason', '') == 'STICKER_CDN_DISABLED':
+        result.update(reason='STICKER_CDN_DISABLED', setting='wechat.media.allowStickerCdn')
+    return result

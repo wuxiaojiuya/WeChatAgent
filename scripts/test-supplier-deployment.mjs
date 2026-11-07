@@ -19,6 +19,7 @@ test('supplier installation starts with clean config and deploys packaged compon
   await deployment.bootstrapDeployment(resources,home);
   const cfg=JSON.parse(fs.readFileSync(path.join(home,'workspace/config/wechatagent.json')));
   assert.equal(cfg.hook.backend,'supplier-http');assert.equal(cfg.hook.expectedVersion,'4.1.8.27');
+  assert.equal(cfg.hook.wechatExecutable,'');
   assert.deepEqual(cfg.wechat.whitelist,{groups:[],private:[]});assert.equal(cfg.persona.default,'示例助手');
   assert(fs.existsSync(path.join(home,'workspace',files[2])));
   assert(!fs.existsSync(path.join(home,'workspace/state/hook/native')));
@@ -26,4 +27,17 @@ test('supplier installation starts with clean config and deploys packaged compon
   cfg.wechat.whitelist.private=['123'];fs.writeFileSync(path.join(home,'workspace/config/wechatagent.json'),JSON.stringify(cfg));
   await deployment.bootstrapDeployment(resources,home);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home,'workspace/config/wechatagent.json'))).wechat.whitelist.private,['123']);
+});
+
+test('deployment refuses old backends and database programs before creating a workspace',async t=>{
+  const base=fs.mkdtempSync(path.join(os.tmpdir(),'supplier-only-deploy-'));
+  t.after(()=>fs.rmSync(base,{recursive:true,force:true}));
+  const resources=path.join(base,'resources'),home=path.join(base,'data');
+  fs.mkdirSync(path.join(resources,'project'),{recursive:true});
+  const manifest={version:'test',wechatVersion:'4.1.8.27',hookBackend:'supplier-http',files:[]};
+  for(const change of [{wechatVersion:'4.1.15.13'},{hookBackend:'project-native'},{files:['scripts/reader-api.py']},{files:['components/weflow-cli/scripts/nt_decrypt.py']}]){
+    fs.writeFileSync(path.join(resources,'project/deployment.json'),JSON.stringify({...manifest,...change}));
+    await assert.rejects(()=>deployment.bootstrapDeployment(resources,home),/4\.1\.8\.27|Retired WeChat/);
+    assert(!fs.existsSync(path.join(home,'workspace')));
+  }
 });

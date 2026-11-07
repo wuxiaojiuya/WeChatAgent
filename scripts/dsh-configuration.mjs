@@ -16,7 +16,7 @@ export function dshPluginMatches(root, health) {
 export function dshConfigurationMatches(root, config, health) {
   if (!health?.ok || health.project !== 'WeChatAgent' || !sameProjectPath(health.projectRoot,root)) return false;
   if (health.provider !== config.dsh.provider || health.model !== config.dsh.model || !dshPluginMatches(root,health)) return false;
-  const accountFile = path.join(root, 'state/weflow/active-account.json');
+  const accountFile = path.join(root, 'state/hook/active-connection.json');
   if (fs.existsSync(accountFile)) {
     const account = JSON.parse(fs.readFileSync(accountFile, 'utf8').replace(/^\uFEFF/, ''));
     if (account.id && health.accountScope !== account.id) return false;

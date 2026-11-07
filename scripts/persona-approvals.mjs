@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 import {allowedConversation,conversationWorkMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {personaError} from '../public/console/persona-files.mjs';
 import {selectRoleText} from '../components/qq-bridge/src/role-card.js';
@@ -13,7 +13,7 @@ const read=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
 const write=(file,value)=>{fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(tmp,typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',{mode:0o600});fs.renameSync(tmp,file);};
 
 // All mutations run synchronously in the console process, alongside config saves.
-export function createPersonaApprovals({root,configFor,saveConfig,now=Date.now,accountFor=()=>activeReaderAccount(root).id}) {
+export function createPersonaApprovals({root,configFor,saveConfig,now=Date.now,accountFor=()=>activeConnection(root).id}) {
   const directory=path.join(root,'state/persona-approvals');
   const fileFor=id=>{if(!/^[a-f0-9]{12}$/.test(id))fail('人格审批编号无效。',400);return path.join(directory,id+'.json');};
   const save=p=>write(fileFor(p.id),p);

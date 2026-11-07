@@ -1,7 +1,6 @@
-"""Read-only verification of the packaged reader dependencies."""
+"""Offline verification of the Hook-only runtime; never inspect a WeChat database."""
 import sys
 import hashlib
-import importlib.util
 import pathlib
 import subprocess
 import json
@@ -11,12 +10,8 @@ def verify_hook_components(root):
     config_file = root / 'config/wechatagent.json'
     config = json.loads(config_file.read_text(encoding='utf-8-sig'))
     hook = config.get('hook', {})
-    if hook.get('backend') != 'supplier-http':
-        if not (root / 'components/weflow-cli/resources/key/win32/x64/wx_key.dll').is_file():
-            raise RuntimeError('Reader key component missing')
-        return
-    if hook.get('expectedVersion') != '4.1.8.27':
-        raise RuntimeError('Bundled Hook version unsupported')
+    if hook.get('backend') != 'supplier-http' or hook.get('expectedVersion') != '4.1.8.27':
+        raise RuntimeError('Only the bundled WeChat 4.1.8.27 Hook is supported')
     directory = root / 'components/supplier-hook/4.1.8.27'
     manifest_file = directory / 'files.sha256.json'
     if not manifest_file.is_file():
@@ -34,25 +29,14 @@ def verify_hook_components(root):
 
 
 def main():
-    import sqlcipher3
-    import cryptography
-    import zstandard
     import Crypto
     import PIL
     import imageio_ffmpeg
-    from sqlcipher3 import dbapi2
-
-    connection = dbapi2.connect(':memory:')
-    assert connection.execute('select 1').fetchone() == (1,)
-    connection.close()
     root = pathlib.Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(root / 'scripts'))
     for name in ('wechat_media', 'wechat_forwarded', 'wechat_quote', 'wechat_sticker_send', 'wechat_sticker', 'wechat_sticker_labels', 'supplier_images', 'supplier_videos', 'supplier_api', 'supplier_reader', 'supplier_contacts', 'supplier_events', 'supplier_actions', 'supplier_social_actions', 'supplier_social_results', 'supplier_social_gateway'):
         if not (root / 'scripts' / (name + '.py')).is_file():
-            raise RuntimeError('Reader module missing: ' + name)
-    spec = importlib.util.spec_from_file_location('reader_runtime_probe', root / 'scripts/reader-api.py')
-    reader = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(reader)
+            raise RuntimeError('Hook module missing: ' + name)
     verify_hook_components(root)
     config = json.loads((root / 'config/wechatagent.json').read_text(encoding='utf-8-sig'))
     if config.get('hook', {}).get('backend') == 'supplier-http':
@@ -66,20 +50,21 @@ def main():
         if startup.returncode or ready.get('probeReady') is not True:
             module = ready.get('module', '')
             raise RuntimeError('Hook probe startup check failed: ' + ready.get('code', 'HOOK_PROBE_FAILED') + (' (' + module + ')' if module else ''))
-    # This must run in a fresh child, rather than inheriting the reader's sys.path.
-    probe = subprocess.run([sys.executable, '-B', str(root / 'scripts/resolve-wechat-image.py'), '--check-runtime'],
+    # A fresh process verifies the receiver without connecting to WeChat.
+    probe = subprocess.run([sys.executable, '-B', str(root / 'scripts/hook-receiver.py'), '--check-runtime'],
         capture_output=True, text=True, encoding='utf-8', timeout=20,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if probe.returncode:
-        code, _ = reader.image_worker_failure(probe.stderr)
-        raise RuntimeError('Image worker startup check failed: ' + code)
+        raise RuntimeError('Hook receiver runtime import check failed')
     try:
         result = json.loads(probe.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
-        raise RuntimeError('Image worker returned an invalid startup result') from None
-    if result.get('success') is not True or result.get('imageWorkerReady') is not True:
-        raise RuntimeError('Image worker startup check did not pass')
-    print('Bundled Python reader dependencies, Hook components and image worker verified: ' + sys.version.split()[0])
+        raise RuntimeError('Hook receiver returned an invalid startup result') from None
+    if result.get('receiverReady') is not True:
+        raise RuntimeError('Hook receiver startup check did not pass')
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-version'], check=True, capture_output=True, timeout=20,
+                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    print('Bundled Hook receiver, media codecs and WeChat 4.1.8.27 components verified: ' + sys.version.split()[0])
 
 
 if __name__ == '__main__':

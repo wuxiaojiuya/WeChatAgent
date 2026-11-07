@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import {imageMetadata} from './native-image-delivery.mjs';
 import {allowedConversation} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import {audioChatKeys} from './audio-capabilities.mjs';
-import {activeReaderAccount} from './reader-account-state.mjs';
+import {activeConnection} from './hook-connection-state.mjs';
 
 const publicFault=Symbol('drawing public error');
 const fault=(message,status=400)=>Object.assign(new Error(message),{status,[publicFault]:true});
@@ -38,7 +38,7 @@ export function validateDrawingPng(bytes){
 }
 const executionMessages=Object.freeze({DRAWING_KEY_INVALID:'绘画 API Key 无效，请核对凭据。',DRAWING_FORBIDDEN:'当前账号没有该绘画模型的访问权限，请核对模型授权。',DRAWING_RATE_LIMIT:'绘画服务额度不足或请求过于频繁，请在服务商后台检查。',DRAWING_REQUEST_REJECTED:'绘画请求被服务商拒绝，请检查模型、尺寸、画质或调整画面描述。',DRAWING_NOT_FOUND:'绘画接口或模型不存在，请检查基础地址和模型名称。',DRAWING_PROVIDER_UNAVAILABLE:'DSH 绘画插件无法连接绘画服务，本次没有自动重试。',DRAWING_RESPONSE_TOO_LARGE:'绘画接口响应过大。',DRAWING_RESPONSE_INVALID:'绘画接口返回格式无效。',DRAWING_MODEL_UNCONFIRMED:'服务未确认所选模型，请核对模型名称，或直接生成试画验证。',DRAWING_IMAGE_INVALID:'绘画接口未返回有效的 PNG 图片。',DRAWING_CONFIG_INVALID:'DSH 绘画插件配置无效，请重新保存绘画设置。'});
 
-export function createDrawingCapability({root,config,delivery,execution,accountScope=()=>activeReaderAccount(root).id,now=Date.now,timeoutMs=240000,retention={}}={}){
+export function createDrawingCapability({root,config,delivery,execution,accountScope=()=>activeConnection(root).id,now=Date.now,timeoutMs=240000,retention={}}={}){
   root=path.resolve(root);
   const settingsFile=path.join(root,'state/drawing/capability.json'),directory=path.join(root,'state/drawing/jobs'),ledgerFile=path.join(root,'state/drawing/retired.json');
   const limits={...drawingRetention,...retention};for(const key of Object.keys(limits))if(!Object.hasOwn(drawingRetention,key)||!Number.isSafeInteger(limits[key])||limits[key]<1||limits[key]>drawingRetention[key])throw new TypeError('Invalid drawing retention');
