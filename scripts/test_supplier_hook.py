@@ -47,7 +47,7 @@ class FakeHook:
             return {'baseResponse': {'ret': 0}, 'userInfo': {'userName': {'String': self.wxid}}}
         if route in ('/api/get_db_handle', '/api/sqlite3_exec'):
             raise AssertionError('Supplier message reception must not use database APIs')
-        if route == '/api/get_frien_lists':
+        if route in ('/api/get_frien_lists', '/api/update_all_friend'):
             return {'code': 1, 'data': self.friends}
         if route == '/api/get_chatroom_list':
             return {'code': 1, 'data': self.groups}

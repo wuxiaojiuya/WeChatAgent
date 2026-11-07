@@ -1,6 +1,6 @@
 {
   "name": "wechatagent",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "private": true,
   "type": "module",
   "description": "Windows 微信 AI 助手：人格对话、原生语音、RVC 翻唱与多模态理解",
@@ -77,7 +77,7 @@
     "sharp": "0.34.5",
     "resedit": "1.7.2"
   },
-  "releaseVersion": "0.2.15",
+  "releaseVersion": "0.2.16",
   "author": "wuxiaojiuya",
   "repository": {
     "type": "git",

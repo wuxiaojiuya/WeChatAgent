@@ -24,7 +24,7 @@ BACKEND = 'supplier-http'
 VOICE_UPLOAD_TIMEOUT_SECONDS = 30
 IMAGE_UPLOAD_TIMEOUT_SECONDS = 30
 DEDICATED_ROUTES = frozenset({
-    '/api/get_profile_new', '/api/get_frien_lists', '/api/get_chatroom_list', '/api/get_room_members',
+    '/api/get_profile_new', '/api/get_frien_lists', '/api/update_all_friend', '/api/get_chatroom_list', '/api/get_room_members',
     '/api/send_text_msg', '/api/send_at_text', '/api/send_quote', '/api/send_pat',
     '/api/send_file_msg', '/api/send_image_msg', '/api/send_emotion_msg', '/api/send_voice', '/api/send_mp3_voice',
     '/api/download_voice', '/api/download_img', '/api/download_video', '/api/download_file', '/api/cdn_download',

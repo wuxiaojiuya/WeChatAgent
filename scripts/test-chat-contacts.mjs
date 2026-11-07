@@ -46,3 +46,38 @@ test('console discovers only friends and resolves allowed names before any messa
   assert.equal((await get('/api/chats')).chats[0].name,''); // Never reuse A's name cache in account B.
   assert.equal((await fetch(base+'/api/contacts')).status,401);
 });
+
+test('every contact discovery queries current receiver data without cached fallback or background sync',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechatagent-contact-sync-'));
+  const config=JSON.parse(fs.readFileSync(new URL('../config/wechatagent.example.json',import.meta.url),'utf8'));
+  const write=(relative,value)=>{const file=path.join(root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify(value));};
+  write('config/wechatagent.json',config);
+  write('state/wechat-io-config.json',{self_wxid:'wxid_self',receiver_token:'fixture-contacts-token'});
+  const before=fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8'),calls=[];
+  let offline=false,name='当前好友';
+  const app=createConsole({root,port:0,fetchImpl:async(input,options)=>{
+    const url=new URL(input);calls.push(url);
+    assert.equal(url.pathname,'/api/v1/contacts');
+    assert.equal(options.headers.Authorization,'Bearer fixture-contacts-token');
+    assert.equal(options.cache,'no-store');
+    if(offline)throw Error('offline');
+    return Response.json({success:true,contacts:[{username:friend,displayName:name,isFriend:true}]});
+  }});
+  t.after(async()=>{app.server.closeAllConnections();if(app.server.listening)await new Promise(r=>app.server.close(r));fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  const address=await app.start(),base='http://127.0.0.1:'+address.port,info=await (await fetch(base+'/api/info')).json();
+  const get=async route=>{const response=await fetch(base+route,{headers:{'X-Console-Token':info.token}});assert.equal(response.status,200);return response.json();};
+  const initial=await get('/api/contacts?kind=private&includeIdentity=1&keyword=%E5%B7%B2%E6%9C%89');
+  assert(!Object.hasOwn(initial,'contactSync'));assert.equal(initial.contacts[0].wechatId,friend);
+  assert.equal(initial.contacts[0].name,'当前好友');
+  assert.equal(calls[0].searchParams.get('kind'),'private');assert(!calls[0].searchParams.has('sync'));
+  assert.equal(calls[0].searchParams.get('refresh'),'1');assert.equal(calls[0].searchParams.get('keyword'),'已有');
+  name='刚改的备注';
+  assert.equal((await get('/api/contacts?kind=private&includeIdentity=1')).contacts[0].name,name);
+  assert(!calls[1].searchParams.has('sync'));
+  await get('/api/contacts?kind=groups&sync=1');assert(!calls[2].searchParams.has('sync'));
+  offline=true;
+  const failed=await fetch(base+'/api/contacts?kind=private',{headers:{'X-Console-Token':info.token}});
+  assert.equal(failed.status,500);const failure=await failed.json();
+  assert(!Object.hasOwn(failure,'contacts'));assert.equal(calls.length,4);
+  assert.equal(fs.readFileSync(path.join(root,'config/wechatagent.json'),'utf8'),before);
+});

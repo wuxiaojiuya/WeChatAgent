@@ -108,8 +108,8 @@ function updateDraftUI() {
   if($('#delete-role'))$('#delete-role').disabled=state.savingAll||roleSaves.size>0||!!state.deletingRole||state.job?.state==='running';
 }
 async function api(route, body, retry = true, options = {}) {
-  const timeout=AbortSignal.timeout(route === '/api/browse' ? 180000 : route === '/api/audio-capabilities/music/request' ? 90000 : route === '/api/audio-capabilities/voice/preview' ? 300000 : route === '/api/audio-capabilities/music/cache' ? 60000 : route === '/api/fish-notebook/write'||route === '/api/persona/default/generate' ? 45000 : route === '/api/plugins/speech-recognition/check' ? 40000 : 20000);
-  const response = await fetch(route, { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Console-Token': state.token, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: options.signal?AbortSignal.any([timeout,options.signal]):timeout });
+  const timeout=AbortSignal.timeout(route === '/api/browse' ? 180000 : route === '/api/contacts'||route.startsWith('/api/contacts?') ? 130000 : route === '/api/audio-capabilities/music/request' ? 90000 : route === '/api/audio-capabilities/voice/preview' ? 300000 : route === '/api/audio-capabilities/music/cache' ? 60000 : route === '/api/fish-notebook/write'||route === '/api/persona/default/generate' ? 45000 : route === '/api/plugins/speech-recognition/check' ? 40000 : 20000);
+  const response = await fetch(route, { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Console-Token': state.token, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: options.signal?AbortSignal.any([timeout,options.signal]):timeout, ...(options.cache?{cache:options.cache}:{}) });
   const result = await response.json();
   if (response.status === 401 && retry) {
     const info = await fetch('/api/info').then(r => r.json());
@@ -199,18 +199,33 @@ function conversationSummary(key) {
 async function chatsPage() { return workspaceLayout.chatsPage(); }
 function addChats(kind = state.chatKind==='groups'?'groups':'private') {
  const picked = new Map(),adminPicked=new Map();
-  modal(kind === 'groups' ? '添加群聊' : '添加好友', `<p class="modal-description">搜索电脑微信中的${kind === 'groups' ? '群聊' : '好友昵称或备注'}，勾选需要允许的聊天。</p><form id="contact-search-form" class="contact-search"><input id="contact-keyword" aria-label="聊天名称" placeholder="输入名称搜索"><button class="button" type="submit">${icon('search')}搜索</button></form><div class="contact-results" id="contact-results">${empty('输入名称，开始搜索', '需要消息接收服务已启动。服务未启动时，可使用下方的 ID 添加。', '', 'search')}</div><details class="advanced"><summary>使用已有的数字 ID 添加</summary><div class="field"><label for="manual-ids">聊天 ID</label><textarea id="manual-ids" placeholder="每行一个数字 ID"></textarea><small>填写已有 OneBot 数字 ID；群名与微信账号标识不能代替数字 ID。</small></div></details><div id="contact-error" class="inline-error" role="alert"></div><div class="modal-actions"><button class="button" data-close>取消</button><button class="button primary" id="contact-add">添加到允许的聊天</button></div>`);
-  $('#contact-search-form').addEventListener('submit', async event => {
-    event.preventDefault(); const button = event.submitter; button.disabled = true; $('#contact-error').textContent = '';
+  let closed=false,requesting=false;
+  const controller=new AbortController();
+  modal(kind === 'groups' ? '添加群聊' : '添加好友', `<p class="modal-description">每次打开和搜索都会通过微信 Hook 接口获取最新${kind === 'groups' ? '群聊' : '好友'}列表，勾选需要允许的聊天。</p><form id="contact-search-form" class="contact-search"><input id="contact-keyword" aria-label="聊天名称" placeholder="输入名称搜索"><button class="button" id="contact-search" type="submit">${icon('search')}搜索</button><button class="button" id="contact-sync" type="button">${icon('refresh')}刷新${kind==='groups'?'群聊':'好友'}列表</button></form><p id="contact-sync-status" class="subtle" role="status" aria-live="polite" hidden></p><div class="contact-results" id="contact-results"></div><details class="advanced"><summary>使用已有的数字 ID 添加</summary><div class="field"><label for="manual-ids">聊天 ID</label><textarea id="manual-ids" placeholder="每行一个数字 ID"></textarea><small>填写已有 OneBot 数字 ID；群名与微信账号标识不能代替数字 ID。</small></div></details><div id="contact-error" class="inline-error" role="alert"></div><div class="modal-actions"><button class="button" data-close>取消</button><button class="button primary" id="contact-add">添加到允许的聊天</button></div>`,{onClose(){closed=true;controller.abort();}});
+  const form=$('#contact-search-form'),searchButton=$('#contact-search'),syncButton=$('#contact-sync'),results=$('#contact-results'),syncStatus=$('#contact-sync-status'),errorBox=$('#contact-error');
+  const active=()=>!closed&&form.isConnected;
+  const search=async()=>{
+    if(!active()||requesting)return;
+    requesting=true;searchButton.disabled=true;syncButton.disabled=true;errorBox.textContent='';
+    results.innerHTML='';syncStatus.hidden=false;syncStatus.textContent='正在通过微信 Hook 接口查询最新列表…';
     try {
-      const data = await api(`/api/contacts?kind=${kind}&includeIdentity=1&keyword=${encodeURIComponent($('#contact-keyword').value)}`);
-      $('#contact-results').innerHTML = data.contacts.length ? data.contacts.map(c => {
+      const data = await api(`/api/contacts?kind=${kind}&includeIdentity=1&keyword=${encodeURIComponent($('#contact-keyword').value)}`,undefined,true,{signal:controller.signal,cache:'no-store'});
+      if(!active())return;
+      results.innerHTML = data.contacts.length ? data.contacts.map(c => {
         const disabled=c.ambiguous||state.draft.wechat.whitelist[kind].map(String).includes(c.id);
         return `<div class="contact-result contact-row"><label class="contact-choice"><input type="checkbox" value="${escapeHtml(c.id)}" data-contact data-name="${escapeHtml(c.name)}" ${disabled?'disabled':''} ${picked.has(c.id)?'checked':''}><span><strong>${escapeHtml(c.name)}</strong><small>ID ${escapeHtml(c.id)}${c.ambiguous?' · 无法唯一识别':disabled?' · 已添加':''}</small></span></label>${kind==='private'&&c.administratorEligible?`<label class="subtle contact-admin"><input type="checkbox" data-contact-admin="${escapeHtml(c.id)}" value="${escapeHtml(c.wechatId)}" ${disabled||!picked.has(c.id)?'disabled':''} ${adminPicked.has(c.id)?'checked':''}> 设为管理员</label>`:''}</div>`;
       }).join('') : empty('没有找到匹配的聊天', '检查名称或备注，确认电脑微信已同步联系人。', '', 'search');
-    } catch (error) { $('#contact-results').innerHTML = empty('暂时无法搜索', '请先在概览页启动服务，或填写已有数字 ID。', '', 'search'); $('#contact-error').textContent = error.message; }
-    finally { button.disabled = false; }
-  });
+      syncStatus.textContent='已通过微信 Hook 接口获取最新列表。';
+    } catch (error) {
+      if(!active())return;
+      results.innerHTML=empty('最新列表查询失败', '请确认微信和消息接收服务正常后重试。', '', 'search');
+      syncStatus.textContent='未取得最新列表，请重试。';
+      errorBox.textContent=error.message;
+    }
+    finally {requesting=false;if(active()){searchButton.disabled=false;syncButton.disabled=false;}}
+  };
+  form.addEventListener('submit',event=>{event.preventDefault();void search();});
+  syncButton.addEventListener('click',()=>{void search();});
   $('#contact-results').addEventListener('change', event => {const input=event.target;
     if(input.matches('[data-contact]')){input.checked?picked.set(input.value,input.dataset.name):picked.delete(input.value);const admin=input.closest('.contact-result').querySelector('[data-contact-admin]');if(admin){admin.disabled=!input.checked;if(!input.checked){admin.checked=false;adminPicked.delete(input.value);}}}
     if(input.matches('[data-contact-admin]'))input.checked?adminPicked.set(input.dataset.contactAdmin,input.value):adminPicked.delete(input.dataset.contactAdmin);
@@ -226,6 +241,7 @@ function addChats(kind = state.chatKind==='groups'?'groups':'private') {
     for (const [id, name] of picked) state.names.set(`wechat:${kind === 'groups' ? 'group' : 'private'}:${id}`, name);
     closeModal(); renderPage(); updateDraftUI(); toast('已加入草稿，保存设置后自动生效。');
   });
+  void search();
 }
 function reconnectGroup(id) {
   if(hasDraft())return toast('请先保存或放弃未保存的设置，再重新关联群聊。');

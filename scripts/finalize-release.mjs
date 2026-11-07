@@ -28,12 +28,17 @@ const sharedMemoryAndHookFiles=[
   'packages/dsh-social-bridge-plugin/request-window.mjs','packages/dsh-social-bridge-plugin/native-context.mjs',
   'packages/dsh-social-bridge-plugin/wechat-management-tools.mjs','packages/dsh-social-bridge-plugin/social-tool-restrict.mjs',
   'packages/dsh-social-bridge-plugin/model-search.mjs','docs/SUPPLIER_HOOK_41827.md','docs/SHARED_IDENTITY_MEMORY.md',
+  'scripts/console-server.mjs','public/console/console.js',
+  'packages/dsh-social-bridge-plugin/drawing-tools.mjs',
+  'scripts/test-live-contact-catalog.py','scripts/test-contact-sync-ui.mjs',
 ];
 for(const name of assets)if(!fs.existsSync(path.join(output,name)))throw Error('RELEASE_ASSET_MISSING: '+name);
 const manifest=JSON.parse(fs.readFileSync(path.join(output,'VERIFICATION.json')));
 if(manifest.version!==version||!/^[a-f0-9]{16}$/.test(manifest.buildId)||manifest.privateAccountDataBundled!==false)throw Error('RELEASE_METADATA_INVALID');
 const report=JSON.parse(fs.readFileSync(path.join(root,'state/source-release-'+version+'.json')));
 if(report.version!==version)throw Error('SOURCE_VERSION_MISMATCH');
+const profile=JSON.parse(fs.readFileSync(path.join(root,'release-profile.json')));
+if(profile.version!==version)throw Error('RELEASE_PROFILE_VERSION_MISMATCH');
 for(const [relative,expected]of Object.entries(report.sourceFiles))if(sha(path.join(root,relative))!==expected)throw Error('SOURCE_CHANGED_AFTER_PACKAGING: '+relative);
 if(sha(path.join(root,report.asset.path))!==report.asset.sha256)throw Error('SOURCE_ARCHIVE_CHANGED');
 let packagedFiles=0;
@@ -54,6 +59,7 @@ for(const directory of [path.join(root,'state/installer-stage/project'),path.joi
   for(const relative of ['state','config/wechatagent.json','config/plugins.json','config/extensions.json'])if(fs.existsSync(path.join(directory,relative)))throw Error('PACKAGED_PRIVATE_DATA_REJECTED');
   for(const relative of ['scripts/music-soulx-worker.py','scripts/soulx-runtime.py','scripts/soulx-assets.json','docs/SOULX_SINGING.md'])
     if(deployment.files.includes(relative)||fs.existsSync(path.join(directory,relative)))throw Error('OBSOLETE_SINGING_ENGINE_PACKAGED: '+relative);
+  if(deployment.files.includes('scripts/supplier_contact_sync.py')||fs.existsSync(path.join(directory,'scripts/supplier_contact_sync.py')))throw Error('OBSOLETE_CONTACT_SYNC_PACKAGED');
   const audioManifest=JSON.parse(fs.readFileSync(path.join(directory,'scripts/audio-runtime-manifest.json')));
   if(Object.keys(audioManifest.bundles).sort().join(',')!=='rvc,tts'||Object.keys(audioManifest.sources).sort().join(',')!=='rvc,tts')throw Error('OBSOLETE_AUDIO_INSTALL_TARGET');
   if(/soulx/i.test(fs.readFileSync(path.join(directory,'public/console/audio-runtime.js'),'utf8')))throw Error('OBSOLETE_AUDIO_SETTINGS_PACKAGED');
@@ -86,6 +92,7 @@ if(binary.toString('ascii',0,2)!=='MZ'||binary.readUInt32LE(pe)!==0x4550)throw E
 const identity=spawnSync('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true,encoding:'utf8'});
 if(identity.status!==0)throw Error('SOURCE_REVISION_UNAVAILABLE');
 Object.assign(manifest,{ok:true,checkedAt:new Date().toISOString(),sourceRevision:identity.stdout.trim(),sourceFilesVerified:Object.keys(report.sourceFiles).length,packagedFileCopiesVerified:packagedFiles,installedChecks,
+  ...(profile.verification?.publicRegression?{regression:profile.verification.publicRegression}:{}),
   capabilityHost:'dsh',capabilityManagementHost:'wechatagent',capabilityExecution:CAPABILITY_EXECUTION_VERSION,capabilityPluginFilesVerified:CAPABILITY_PLUGIN_FILES.length,deliveryFixesPackaged:true,upgradeRequiresDshReload:true,
   sharedIdentityMemory:'account-shared-identity-v1',sharedMemoryAndHookFilesVerified:sharedMemoryAndHookFiles.length,
   wechatMessageSource:'hook-push-project-cache',wechatDatabaseAccess:false,autonomousWechatManagement:true,

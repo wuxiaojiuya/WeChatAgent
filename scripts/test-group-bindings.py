@@ -86,6 +86,7 @@ class GroupRecovery(unittest.TestCase):
         reader.names = {'room@chatroom': '旧名', 'unselected@chatroom': '其他群'}; reader.group_bindings = self.bindings
         reader.own_wxid = 'self'
         reader.refresh_names = lambda **kwargs: None
+        reader.live_contact_catalog = lambda kind='': (dict(reader.names), {})
         self.bindings.reconcile(reader.names, [old])
         reader.names['room@chatroom'] = '重进新名'; self.bindings.reconcile(reader.names, [old])
         self.assertEqual(reader.selected_talkers(), ['room@chatroom'])

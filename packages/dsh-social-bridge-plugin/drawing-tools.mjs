@@ -19,15 +19,18 @@ export function drawingReplyOutcome(text,turn){
   const claims=body.replace(/(?:还没|没有|没|尚未|无法|不能|未)(?:确认|确定)?(?:成功)?(?:发出|发送|送达|生成|画好|完成)(?:了)?/g,'');
   const successClaim=/(?:已经|刚刚|已)(?:发|发送|发出|送达)|(?:图|图片|画|照片|自拍|形象照)(?:发给你了|发你了|已发|发出)|(?:发送|送达)(?:成功|完成)|(?:发给你|发你|发过去|发出)(?:了|啦|咯)|你(?:看|收下)(?:这张|这幅)/.test(claims);
   const generatedClaim=/(?:已经|刚刚|已)(?:画好|生成|完成)|(?:图|图片|画|照片|自拍|形象照)(?:做好了|画好了)|画好了/.test(claims);
+  const progressClaim=/(?:正在|还在|已经开始)(?:画|绘|生成)|(?:绘画|画图|图片|照片|自拍|形象照).{0,8}(?:处理中|生成中|绘制中)/.test(claims);
+  // A status read can concern an older image during otherwise normal chat.
+  // Correct unsupported claims; do not replace every answer with task status.
   if(outcome.state==='failed'||['interrupted','cancelled'].includes(outcome.state)){
-    if(!successClaim&&!generatedClaim&&/失败|没画成|还没|没生成|没有生成|没发出|没有发|出了问题|未能|无法|没能|取消|中断/.test(body))return text;
+    if(!successClaim&&!generatedClaim&&!progressClaim)return text;
     return 'RESPOND: 这次图片没能生成或发送，'+(outcome.error??'绘画服务处理失败了，请稍后再试。');
   }
-  if(outcome.state==='unconfirmed')return !successClaim&&!generatedClaim&&/未确认|没确认|不确定|还没确定|结果不明/.test(body)?text:'RESPOND: 这次绘画请求的结果还没确认，我先不重复生成。';
-  if(outcome.state==='none')return 'RESPOND: 当前聊天没有已启动的绘画任务，还没有生成图片。';
+  if(outcome.state==='unconfirmed')return !successClaim&&!generatedClaim&&!progressClaim?text:'RESPOND: 这次绘画请求的结果还没确认，我先不重复生成。';
+  if(outcome.state==='none')return successClaim||generatedClaim||progressClaim?'RESPOND: 当前聊天没有已启动的绘画任务，还没有生成图片。':text;
   if(outcome.state==='success'){
-    if(outcome.delivery?.state==='failed')return !successClaim&&/发送失败|没发出|没有发|未送达/.test(body)?text:'RESPOND: 图片已经生成，但微信发送失败了，还没有送达。';
-    return !successClaim&&/还没|尚未|未确认|没确认|等待|没发|没有发|发送失败|未送达/.test(body)?text:'RESPOND: 图片已经生成，微信发送结果还没确认。';
+    if(outcome.delivery?.state==='failed')return !successClaim?text:'RESPOND: 图片已经生成，但微信发送失败了，还没有送达。';
+    return !successClaim?text:'RESPOND: 图片已经生成，微信发送结果还没确认。';
   }
   return successClaim||generatedClaim?'RESPOND: 绘画任务已经启动，图片还在处理中，尚未确认发送。':text;
 }
@@ -50,7 +53,7 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
   }
   const definitions=[
     {name:'wechat_draw_image',description:'用户明确要求画图、生成图片，或说“发张你的照片”“给我一张自拍”“让我看看你的样子”时使用。自拍、形象照应结合当前人格与已知外貌生成虚拟角色图片，不声称真实拍照；未指定外貌可合理设计，不必要求用户改说画图。根据当前对话整理完整绘画要求；看图、理解图片、描述内容不等于要求画图，其他需求不清楚先问清。仅生成新图片，不读取本地路径或替用户更改设置。每轮最多提交一次生成，后台异步完成后向当前微信聊天发送图片；必须实际调用工具，不能仅口头承诺已经发图。任务启动或生成成功均不等于送达。超时结果未知时不重复提交，用 wechat_drawing_status 查询。',parameters:{type:'object',properties:{prompt:{type:'string',minLength:1,maxLength:4000,description:'用户请求的完整画面、构图与风格；自拍或形象照结合当前人格和本会话已知外貌，不虚构现实拍摄。不是路径、接口参数或接收者。'}},required:['prompt'],additionalProperties:false}},
-    {name:'wechat_drawing_status',description:'查询当前微信聊天的绘画任务及发送状态。可省略 jobId 查询最近任务。只查询，不启动生成；不要连续轮询，只有 sent:true 才表示图片微信发送已确认。',parameters:{type:'object',properties:{jobId:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'}},additionalProperties:false}},
+    {name:'wechat_drawing_status',description:'用户追问绘画进度或发送问题时，按需查询当前微信聊天的绘画任务及发送状态。可省略 jobId 查询最近任务。只查询，不启动生成；不要连续轮询，只有 sent:true 才表示接口已确认发送。用户说“收到啦”“确认”或发表情时通常是在自然接话，不必再次查询，也不要反复播报未确认。',parameters:{type:'object',properties:{jobId:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'}},additionalProperties:false}},
   ].map(def=>({...def,output:{schema:{type:'object',properties:{content:{type:'string'},isError:{type:'boolean'}},required:['content','isError'],additionalProperties:false},render:(_args,value)=>[{type:'text',text:value.content}]},
     async execute(args,exec){
       const turn=turnFor();
@@ -84,7 +87,7 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
         if(!active()||turnFor()!==turn)throw Error('DRAWING_SCOPE_CHANGED');
         const job=response.job===null?{state:'none',sent:false}:publicJob(response.job,key);
         if(job.id)latest=job.id;turn.drawingOutcome=job;
-        return {content:JSON.stringify({job,notice:job.sent?'图片发送已取得确认回执。':'仅 sent:true 才能声称已发送。queued/running 表示处理中；success 只表示图片已生成；失败按当前人格自然解释，不编造进度、图片内容或送达。用户只让看图时不要生成新图。'}),isError:['failed','interrupted','cancelled'].includes(job.state)};
+        return {content:JSON.stringify({job,notice:job.sent?'图片发送已取得确认回执。':'仅 sent:true 才能声称接口已确认发送。queued/running 表示处理中；success 只表示图片已生成。若查询的是旧任务，本轮正常接话即可，不必复述状态；用户表示已经收到时可自然回应，不将用户反馈伪造成接口确认，也不重复生成或发送。失败按当前人格自然解释，不编造进度、图片内容或送达。用户只让看图时不要生成新图。'}),isError:['failed','interrupted','cancelled'].includes(job.state)};
       }catch(error){
         const state=(submitting&&!error.status&&!error.public)||def.name==='wechat_drawing_status'?'unconfirmed':'failed';
         const message=(error.public||error.status)&&safeMessage(error.message);
@@ -98,5 +101,5 @@ export function bindDrawingTools(agentCtx,root,key,turnFor,{isAllowed=()=>true,f
   // Await this turn's eligibility here so describe sees the same capability
   // as the later instructions; both tools share refresh's per-turn promise.
   const disposers=definitions.map(tool=>agentCtx.tools.register(tool,{when:()=>refresh()}));
-  return {refresh,instructions:()=>active()?'[GPT 绘画]\n用户明确要求画图或生成图片时，调用 wechat_draw_image。“发张你的照片给我看看”“给我一张自拍”“看看你的样子”也属于图片生成请求，结合当前人格与本会话已知外貌生成虚拟角色自拍或形象照；未指定外貌可合理设计，不必追问用户是否要画图，不冒称真实拍照。必须实际调用工具，不能仅口头承诺发图或在没有任务时说正在画。只看图、辨认、描述图片时不能擅自画图；其他需求模糊先问清。结合用户要求整理 prompt，不让用户提供内部接口、文件路径或接收者。每轮最多生成一次，后台异步生成并向当前聊天发送图片，先回复真实的已启动状态；后续追问使用 wechat_drawing_status，不连续轮询、不因响应超时再生成。只有 sent:true 才能说图片、照片或自拍已发送，success 仅表示图片已生成；失败或发送未确认要自然说明，不编造成功、进度或图片细节。':'',dispose(){for(const dispose of disposers)dispose?.();delete agentCtx[DRAWING_POLICY];}};
+  return {refresh,instructions:()=>active()?'[GPT 绘画]\n用户明确要求画图或生成图片时，调用 wechat_draw_image。“发张你的照片给我看看”“给我一张自拍”“看看你的样子”也属于图片生成请求，结合当前人格与本会话已知外貌生成虚拟角色自拍或形象照；未指定外貌可合理设计，不必追问用户是否要画图，不冒称真实拍照。必须实际调用工具，不能仅口头承诺发图或在没有任务时说正在画。只看图、辨认、描述图片时不能擅自画图；其他需求模糊先问清。结合用户要求整理 prompt，不让用户提供内部接口、文件路径或接收者。每轮最多生成一次，后台异步生成并向当前聊天发送图片，先回复真实的已启动状态；只有用户追问进度或发送问题时才按需使用 wechat_drawing_status，不连续轮询、不因响应超时再生成。用户说“收到啦”“确认”、谢谢或发表情时，结合上下文自然接话，不因旧任务尚无接口回执而反复查询和播报。只有 sent:true 才能声称接口已确认图片、照片或自拍发送，success 仅表示图片已生成；可自然接受用户已收到的反馈，但不篡改接口状态。失败或发送未确认按本轮需要自然说明，不编造成功、进度或图片细节。':'',dispose(){for(const dispose of disposers)dispose?.();delete agentCtx[DRAWING_POLICY];}};
 }

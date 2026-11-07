@@ -196,10 +196,23 @@ class HookReceiver:
         self.member_cache, self.member_lock = {}, threading.Lock()
 
     def selected_talkers(self):
-        project = read_json(self.root/'config/wechatagent.json')
+        whitelist = read_json(self.root/'config/wechatagent.json')['wechat']['whitelist']
         bindings = getattr(self, 'group_bindings', None)
         candidates = dict.fromkeys([*self.names, *(bindings.records if bindings else {})])
-        return [talker for talker in candidates if self.conversation_id(talker) in map(str, project['wechat']['whitelist']['groups' if group_username(talker) else 'private'])]
+        events = getattr(self, 'events', None)
+        if events is not None:
+            with events.lock:
+                # Accepted private callbacks can precede the Hook contact catalog.
+                # Group senders stay within their room; this never makes them friends.
+                candidates.update(dict.fromkeys(entry['talker'] for entry in events.entries.values()
+                                                if not group_username(entry['talker'])))
+        return [talker for talker in candidates if self.conversation_allowed(talker, whitelist)]
+
+    def conversation_allowed(self, talker, whitelist=None):
+        if whitelist is None:
+            whitelist = read_json(self.root/'config/wechatagent.json')['wechat']['whitelist']
+        kind = 'groups' if group_username(talker) else 'private'
+        return self.conversation_id(talker) in map(str, whitelist[kind])
 
     def voice_blob(self, record):
         row = self.exact_message(record['talker'], record)
@@ -423,13 +436,40 @@ class HookReceiver:
         self.videos.record(descriptor['videoId'], key)
         return read_json(self.image_dir/(image_id+'.json'))
 
-    def contacts(self, keyword='', kind='', limit=100, refresh=False, selected=False):
-        # The picker reads only Hook catalogs, including unselected chat metadata.
-        self.refresh_names(max_age=0 if refresh else 30)
-        names = self.names
-        friends = getattr(self, 'friend_contacts', {})
-        if not selected and kind != 'groups' and getattr(self, 'contact_catalog_error', RELATIONSHIP_ERROR):
+    def live_contact_catalog(self, kind=''):
+        # Picker results belong to this request, never a previous search or a
+        # background refresh. Keep network waits outside the message lock.
+        self.active_identity()
+        names, friends, catalog_error = {}, {}, ''
+        if kind != 'groups':
+            names, friends, catalog_error = load_contacts(self.api, self.own_wxid, refresh=True)
+            names = {talker: name for talker, name in names.items() if not group_username(talker)}
+        if catalog_error:
+            with self.names_lock:
+                self.friend_contacts, self.contact_catalog_error = {}, catalog_error
             raise RuntimeError(RELATIONSHIP_ERROR)
+        groups = load_groups(self.api) if kind != 'private' else {}
+        names = {**names, **groups}
+        with self.names_lock:
+            retained = {talker: name for talker, name in self.names.items()
+                        if kind == 'private' and group_username(talker)
+                        or kind == 'groups' and not group_username(talker)}
+            self.names = {**retained, **names}
+            if kind != 'groups':
+                self.friend_contacts, self.contact_catalog_error = dict(friends), ''
+            if kind != 'private':
+                allowed = read_json(self.root/'config/wechatagent.json')['wechat']['whitelist']['groups']
+                self.group_bindings.reconcile(self.names, allowed, self.legacy_group_hints([]),
+                                              {talker: [name] for talker, name in groups.items() if name != talker})
+            self.names_refreshed_at = 0
+        return names, friends
+
+    def contacts(self, keyword='', kind='', limit=100, refresh=False, selected=False):
+        if selected:
+            self.refresh_names(max_age=0 if refresh else 30)
+            names, friends = dict(self.names), dict(getattr(self, 'friend_contacts', {}))
+        else:
+            names, friends = self.live_contact_catalog(kind)
         allowed = set(self.selected_talkers()) if selected else None
         keyword = keyword.strip().casefold()
         counts = {}
@@ -917,10 +957,10 @@ class HookReceiver:
                 'createTime': row['createTime'], 'msgSource': row.get('msgSource', '')}
 
     def accept_callback(self, body):
-        allowed = set(self.selected_talkers())
+        whitelist = read_json(self.root/'config/wechatagent.json')['wechat']['whitelist']
         count = 0
         for talker, row in normalize_callbacks(body, self.own_wxid):
-            if talker not in allowed:
+            if not self.conversation_allowed(talker, whitelist):
                 continue
             if self.events.add(talker, row):
                 count += 1
@@ -936,7 +976,7 @@ class HookReceiver:
 
     def dispatch_pending(self):
         for talker, row in self.events.pending():
-            if talker not in self.selected_talkers():
+            if not self.conversation_allowed(talker):
                 self.events.mark_dispatched(row['rawid'])
                 continue
             with self.lock:
@@ -973,6 +1013,10 @@ class HookReceiver:
                 self.quote_media(talker, payload)
             except (RuntimeError, ValueError, OSError, PermissionError):
                 pass
+            # Media preparation may take time; honor removal before AI delivery.
+            if not self.conversation_allowed(talker):
+                self.events.mark_dispatched(row['rawid'])
+                continue
             with self.lock:
                 if not self.clients or any(client.full() for client in self.clients):
                     return
@@ -1002,6 +1046,7 @@ def serve(reader, port, token):
             raw = json.dumps(body, ensure_ascii=False).encode('utf-8')
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Length', str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)

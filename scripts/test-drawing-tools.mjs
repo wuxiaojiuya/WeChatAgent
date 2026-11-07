@@ -123,6 +123,18 @@ test('drawing outcome guard keeps truthful persona wording while refusing invent
   const unsent='RESPOND: 画好了，可微信没发出去。';assert.equal(drawingReplyOutcome(unsent,{drawingOutcome:{state:'success',sent:false}}),unsent);
 });
 
+test('reading an older drawing status never replaces normal acknowledgement or unrelated conversation',()=>{
+  const replies=['RESPOND: 哈哈，笑这么开心。','RESPOND: 那就好，你喜欢就行。','RESPOND: 好呀，知道你收到了。','RESPOND: 今天吃什么？','SILENT'];
+  for(const state of ['success','failed','interrupted','cancelled','unconfirmed','none','queued','running']){
+    for(const delivery of ['unconfirmed','failed'])for(const reply of replies){
+      assert.equal(drawingReplyOutcome(reply,{drawingOutcome:{state,sent:false,delivery:{state:delivery}}}),reply,state+' must not force an old task notice into ordinary chat');
+    }
+  }
+  const generated='RESPOND: 画好了，这个配色你喜欢吗？';
+  assert.equal(drawingReplyOutcome(generated,{drawingOutcome:{state:'success',sent:false,delivery:{state:'unconfirmed'}}}),generated,'generation success is true even without a send receipt');
+  for(const state of ['none','failed','unconfirmed'])assert.notEqual(drawingReplyOutcome('RESPOND: 正在画，等一下。',{drawingOutcome:{state,sent:false}}),'RESPOND: 正在画，等一下。');
+});
+
 test('social tool presentation and execution include only the live drawing policy',async t=>{
   const f=fixture(t),guards=[],handlers=[];f.ctx.tools.guard=guard=>guards.push(guard);f.ctx.on=(name,handler)=>handlers.push({name,handler});restrictTools(f.ctx);
   const guard=guards[0],agent={ctx:f.ctx};assert.equal(typeof guard({agent,name:'wechat_draw_image'}),'string');await f.binding.refresh();assert.equal(guard({agent,name:'wechat_draw_image'}),undefined);

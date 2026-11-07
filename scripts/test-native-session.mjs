@@ -946,6 +946,36 @@ test('native drawing tools require the live enabled chat and guard final text an
  enabled=false;await r.request('/followup',{...info,message:'这次只看图，不要画图。'});assert.equal(requests.length,1);
 });
 
+test('old unconfirmed drawing status cannot overwrite later emoji, receipt and confirmation replies',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json'),jobId='11111111-1111-4111-8111-111111111111',requests=[];
+ fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ const server=http.createServer(async(req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url==='/api/info')return res.end(JSON.stringify({project:'WeChatAgent Console',root:f.dir,token:'drawing-ack-fixture'}));
+  assert.equal(req.headers['x-console-token'],'drawing-ack-fixture');
+  if(req.url==='/api/drawing-capability')return res.end(JSON.stringify({settings:{enabled:true,chats:[key],apiKeyConfigured:true}}));
+  let raw='';for await(const chunk of req)raw+=chunk;requests.push({route:req.url,body:raw?JSON.parse(raw):null});
+  res.end(JSON.stringify({job:{id:jobId,state:'success',conversationKey:key,delivery:{state:'unconfirmed'}}}));
+ });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+ fs.writeFileSync(path.join(f.dir,'state/console-runtime.json'),JSON.stringify({root:f.dir,port:server.address().port}));
+ let turns=0;const options={assistantMessages:[[{type:'text',text:'RESPOND: 图片已经发送成功了。'}]],beforeAssistant:async agent=>{
+  const tool=agent.registeredTools.get(turns++===0?'wechat_draw_image':'wechat_drawing_status');
+  const value=JSON.parse((await tool.execute(turns===1?{prompt:'窗边的小猫，水彩风格。'}:{})).content);
+  assert.equal(value.job.sent,false,'a user acknowledgement must not fabricate a Hook receipt');
+ }};
+ const r=await f.start(options),first=await r.request('/followup',{...info,message:'画一只小猫',batchId:'1'.repeat(64)});
+ assert.match(first.text,/图片已经生成.*还没确认/);
+ const sequence=[['😁','RESPOND: 哈哈，笑这么开心。'],['收到啦','RESPOND: 那就好，你喜欢就行。'],['确认','RESPOND: 好呀，知道你收到了。']];
+ for(const [index,[message,text]] of sequence.entries()){
+  options.assistantMessages=[[{type:'text',text}]];
+  const body={...info,message,batchId:String(index+2).repeat(64)},response=await r.request('/followup',body);
+  assert.equal(response.text,text,'a historical status read must not replace the current conversational answer');
+  const count=requests.length;assert.equal((await r.request('/followup',body)).text,text);assert.equal(requests.length,count,'cached same-batch reply cannot poll or generate again');
+ }
+ assert.equal(requests.filter(row=>row.route.endsWith('/generate')).length,1);
+ assert.equal(requests.filter(row=>row.route.includes('/jobs/')).length,3);
+});
+
 test('drawing schemas are admitted before pre-step with one capability read per turn and disappear after revocation',async t=>{
  const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');
  fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},history:{enabled:true,mode:'window',recentMessages:8,recentChars:4000}}}));

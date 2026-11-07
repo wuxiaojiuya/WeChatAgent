@@ -100,7 +100,7 @@ test('Python supplier contracts cover push reception, local cache, media, authen
   const file=new URL('../config/wechatagent.json',import.meta.url);
   const config=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')):{};
   const python=process.env.WECHATAGENT_TEST_PYTHON??config.runtime?.python??'python';
-  const scripts=['test-supplier-api-surface.py','test-supplier-contacts.py','test-supplier-actions.py','test-supplier-events.py','test_supplier_hook.py','test-supplier-social-actions.py','test-supplier-social-results.py','test-supplier-social-gateway.py'];
+  const scripts=['test-supplier-api-surface.py','test-supplier-contacts.py','test-live-contact-catalog.py','test-supplier-actions.py','test-supplier-events.py','test_supplier_hook.py','test-supplier-social-actions.py','test-supplier-social-results.py','test-supplier-social-gateway.py'];
   for(const script of scripts){
     const {stdout,stderr}=await promisify(execFile)(python,['-B',path.join(root,'scripts',script)],{windowsHide:true,timeout:30000,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'}});
     assert.match(stdout+stderr,/OK/);

@@ -204,16 +204,16 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
     return shutdownPromise;
   }
   async function remote(url, token, timeout = 2200) {
-    const response = await fetchImpl(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(timeout) });
+    const response = await fetchImpl(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(timeout), cache: 'no-store' });
     if (!response.ok) throw fault('连接服务暂不可用。请检查服务是否启动。', 503);
     const data = await response.json();
     if (data.success === false) throw fault('读取服务返回错误，请查看运行日志。', 503);
     return data;
   }
-  async function receiver(route) {
+  async function receiver(route, timeout = 5000) {
     const { config } = snapshot(); const io = optionalJson(path.join(root, 'state', 'wechat-io-config.json'));
     if (!io.receiver_token) throw fault('微信消息接收连接尚未准备，请先启动助手。', 503);
-    return remote(`http://127.0.0.1:${config.ports.receiver}${route}`, io.receiver_token, 5000);
+    return remote(`http://127.0.0.1:${config.ports.receiver}${route}`, io.receiver_token, timeout);
   }
   async function stickerManager(route,body) {
     const {config}=snapshot(),io=optionalJson(path.join(root,'state','wechat-io-config.json'));
@@ -522,8 +522,8 @@ export function createConsole({ root = projectRoot, port = 3210, runner, fetchIm
       if (req.method === 'GET' && route === '/api/contacts') {
         const kind = url.searchParams.get('kind') === 'groups' ? 'groups' : 'private';
         const keyword = (url.searchParams.get('keyword') ?? '').slice(0, 100).trim();
-        // Sessions contain selected chats only; discovery must use the contact catalog.
-        const data = await receiver(`/api/v1/contacts?kind=${kind}&keyword=${encodeURIComponent(keyword)}&limit=100&refresh=1`);
+        // Discovery always waits for this Hook API query; never fall back to stored names.
+        const data = await receiver(`/api/v1/contacts?kind=${kind}&keyword=${encodeURIComponent(keyword)}&limit=100&refresh=1`, 125000);
         const io = optionalJson(path.join(root, 'state', 'wechat-io-config.json'));
         const rows = data.contacts ?? [];
         const contacts = rows.filter(c => c.username && c.username !== io.self_wxid && (c.username.includes('@chatroom') ? 'groups' : 'private') === kind && (kind==='groups'||c.isFriend===true))
